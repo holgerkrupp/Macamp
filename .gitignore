@@ -1,0 +1,10 @@
+.DS_Store
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.env
+Secrets.xcconfig
+*.p8
+
+# Local third-party compatibility fixtures; never redistribute skin artwork.
+/Skins/

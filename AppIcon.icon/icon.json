@@ -1,0 +1,228 @@
+{
+  "fill" : {
+    "automatic-gradient" : "srgb:0.00000,0.53333,1.00000,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:0.92941,0.34902,0.02353,1.00000"
+          },
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "winamp-logo-15.svg",
+          "name" : "Winamp-logo 15",
+          "opacity" : 1
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:0.92549,0.30196,0.00000,1.00000"
+          },
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "winamp-logo-14.svg",
+          "name" : "Winamp-logo 14",
+          "opacity" : 0.6507
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:1.00000,1.00000,1.00000,1.00000"
+          },
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "winamp-logo-13.svg",
+          "name" : "Winamp-logo 13",
+          "opacity" : 0.67475
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:0.92941,0.34510,0.07843,1.00000"
+          },
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "winamp-logo-12.svg",
+          "name" : "Winamp-logo 12",
+          "opacity" : 0.55611
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:1.00000,1.00000,1.00000,1.00000"
+          },
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "winamp-logo-11.svg",
+          "name" : "Winamp-logo 11",
+          "opacity" : 0.68156
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:0.00000,0.00000,0.00000,1.00000"
+          },
+          "glass" : false,
+          "hidden" : true,
+          "image-name" : "winamp-logo-10.svg",
+          "name" : "Winamp-logo 10",
+          "opacity" : 1
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:0.00000,0.00000,0.00000,1.00000"
+          },
+          "glass" : false,
+          "hidden" : true,
+          "image-name" : "winamp-logo-9.svg",
+          "name" : "Winamp-logo 9",
+          "opacity" : 1
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:0.00000,0.00000,0.00000,1.00000"
+          },
+          "glass" : false,
+          "hidden" : true,
+          "image-name" : "winamp-logo-8.svg",
+          "name" : "Winamp-logo 8",
+          "opacity" : 1
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:0.00000,0.00000,0.00000,1.00000"
+          },
+          "glass" : false,
+          "hidden" : true,
+          "image-name" : "winamp-logo-7.svg",
+          "name" : "Winamp-logo 7",
+          "opacity" : 1
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:0.00000,0.00000,0.00000,1.00000"
+          },
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "winamp-logo-6.svg",
+          "name" : "Winamp-logo 6",
+          "opacity" : 1
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "automatic-gradient" : "srgb:0.98824,0.65098,0.00000,1.00000"
+          },
+          "glass" : true,
+          "image-name" : "winamp-logo-5.svg",
+          "name" : "Winamp-logo 5",
+          "opacity" : 1
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:0.00000,0.00000,0.00000,1.00000"
+          },
+          "glass" : false,
+          "hidden" : true,
+          "image-name" : "winamp-logo-4.svg",
+          "name" : "Winamp-logo 4",
+          "opacity" : 1
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:1.00000,1.00000,1.00000,1.00000"
+          },
+          "glass" : false,
+          "hidden" : true,
+          "image-name" : "winamp-logo-3.svg",
+          "name" : "Winamp-logo 3",
+          "opacity" : 1
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:0.00000,0.00000,0.00000,1.00000"
+          },
+          "glass" : false,
+          "hidden" : true,
+          "image-name" : "winamp-logo-2.svg",
+          "name" : "Winamp-logo 2",
+          "opacity" : 1
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "srgb:1.00000,1.00000,1.00000,1.00000"
+          },
+          "glass" : false,
+          "hidden" : true,
+          "image-name" : "winamp-logo-1.svg",
+          "name" : "Winamp-logo 1",
+          "opacity" : 1
+        }
+      ],
+      "lighting" : "combined",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.52
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    },
+    {
+      "layers" : [
+
+      ],
+      "lighting" : "individual",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.6
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    },
+    {
+      "layers" : [
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "automatic-gradient" : "srgb:1.00000,1.00000,1.00000,1.00000"
+          },
+          "glass" : true,
+          "image-name" : "rectangle.svg",
+          "name" : "Rectangle",
+          "opacity" : 1
+        }
+      ],
+      "lighting" : "individual",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.6
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}
