@@ -8,6 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		48E8FCF4301FC1750029A598 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 48E8FCF3301FC1750029A598 /* AppIcon.icon */; };
+		D20000000000000000000001 /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000001 /* Auth */; };
+		D20000000000000000000002 /* EventProducer in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000002 /* EventProducer */; };
+		D20000000000000000000003 /* Player in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000003 /* Player */; };
+		D20000000000000000000004 /* TidalAPI in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000004 /* TidalAPI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -43,6 +47,10 @@
 		000000000000000130000000 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				D20000000000000000000001 /* Auth in Frameworks */,
+				D20000000000000000000002 /* EventProducer in Frameworks */,
+				D20000000000000000000003 /* Player in Frameworks */,
+				D20000000000000000000004 /* TidalAPI in Frameworks */,
 			);
 		};
 		000000000000000230000000 /* Frameworks */ = {
@@ -51,6 +59,24 @@
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		D00000000000000000000001 /* tidal-sdk-ios */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tidal-music/tidal-sdk-ios";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.5;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		D10000000000000000000001 /* Auth */ = {isa = XCSwiftPackageProductDependency; package = D00000000000000000000001 /* tidal-sdk-ios */; productName = Auth; };
+		D10000000000000000000002 /* EventProducer */ = {isa = XCSwiftPackageProductDependency; package = D00000000000000000000001 /* tidal-sdk-ios */; productName = EventProducer; };
+		D10000000000000000000003 /* Player */ = {isa = XCSwiftPackageProductDependency; package = D00000000000000000000001 /* tidal-sdk-ios */; productName = Player; };
+		D10000000000000000000004 /* TidalAPI */ = {isa = XCSwiftPackageProductDependency; package = D00000000000000000000001 /* tidal-sdk-ios */; productName = TidalAPI; };
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin PBXGroup section */
 		000000000000000000000001 = {
@@ -87,6 +113,12 @@
 			);
 			fileSystemSynchronizedGroups = (
 				000000000000000000000010 /* Macamp */,
+			);
+			packageProductDependencies = (
+				D10000000000000000000001 /* Auth */,
+				D10000000000000000000002 /* EventProducer */,
+				D10000000000000000000003 /* Player */,
+				D10000000000000000000004 /* TidalAPI */,
 			);
 			name = Macamp;
 			productName = Macamp;
@@ -137,6 +169,9 @@
 				Base,
 			);
 			mainGroup = 000000000000000000000001;
+			packageReferences = (
+				D00000000000000000000001 /* tidal-sdk-ios */,
+			);
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;

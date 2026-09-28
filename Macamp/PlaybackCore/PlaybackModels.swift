@@ -8,6 +8,11 @@ struct PlaybackProviderID: RawRepresentable, Hashable, Codable, Sendable, Expres
     static let appleMusic: Self = "apple-music"
     static let preview: Self = "preview"
     static let localMedia: Self = "local-media"
+    static let spotify: Self = "spotify"
+    static let tidal: Self = "tidal"
+    static let soundCloud: Self = "soundcloud"
+    static let youtube: Self = "youtube"
+    static let deezer: Self = "deezer"
 }
 
 struct PlaybackItemID: RawRepresentable, Hashable, Codable, Sendable, ExpressibleByStringLiteral {
@@ -37,6 +42,8 @@ struct PlaybackItem: Identifiable, Hashable, Sendable {
     var artwork: ArtworkReference?
     var mediaKind: MediaKind
     var isExplicit: Bool
+    var sourceURL: URL? = nil
+    var attribution: String? = nil
 }
 
 struct PlaybackCollection: Identifiable, Hashable, Sendable {
@@ -46,6 +53,8 @@ struct PlaybackCollection: Identifiable, Hashable, Sendable {
     var subtitle: String?
     var artwork: ArtworkReference?
     var kind: MediaKind
+    var sourceURL: URL? = nil
+    var attribution: String? = nil
 }
 
 enum RepeatMode: String, CaseIterable, Codable, Sendable {
@@ -67,7 +76,8 @@ enum ProviderAuthenticationState: String, Sendable {
 struct ProviderError: Error, Equatable, Sendable, LocalizedError {
     enum Code: String, Sendable {
         case unsupported, authorizationDenied, subscriptionRequired, itemUnavailable
-        case network, cancelled, invalidResponse, playbackFailed, unknown
+        case network, cancelled, invalidResponse, playbackFailed, rateLimited
+        case providerUnavailable, externalDeviceRequired, policyRestriction, reauthorizationRequired, unknown
     }
 
     let code: Code

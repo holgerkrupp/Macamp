@@ -43,6 +43,75 @@ struct PlaybackCoreTests {
         try? await provider.skipToNext()
         #expect(provider.queue.currentIndex == 1)
     }
+
+    @Test func providerRegistrySeparatesAvailableAndUnavailableDescriptors() {
+        let registry = ProviderRegistry()
+        registry.register(TestPlaybackProvider(id: .appleMusic, capabilities: [.catalogueSearch]), descriptor: .appleMusic)
+        registry.register(TestPlaybackProvider(id: .localMedia, capabilities: [.playback]), descriptor: .localMedia)
+        registry.register(MockPlaybackProvider(), descriptor: .preview)
+        registry.registerUnavailable(.spotify)
+        registry.registerUnavailable(.deezer)
+
+        #expect(registry.availableDescriptors.map(\.id) == [.appleMusic, .localMedia, .preview])
+        #expect(registry.allDescriptors.count == 5)
+        #expect(registry.descriptor(for: .spotify)?.availability == .requiresConfiguration)
+        #expect(registry.descriptor(for: .deezer)?.notes.contains("no scraping") == true)
+    }
+
+    @Test func pkceAuthorizationURLContainsChallengeAndState() throws {
+        let client = OAuthPKCEClient(configuration: OAuthPKCEConfiguration(
+            clientID: "client", authorizationEndpoint: try #require(URL(string: "https://example.com/authorize")),
+            tokenEndpoint: try #require(URL(string: "https://example.com/token")), redirectURI: try #require(URL(string: "macamp://oauth")), scopes: ["library.read"]
+        ))
+        let verifier = String(repeating: "a", count: 64)
+        let url = try #require(client.authorizationURL(state: "state-123", verifier: verifier))
+        let query = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false)?.query)
+        #expect(query.contains("state=state-123"))
+        #expect(query.contains("code_challenge_method=S256"))
+        #expect(query.contains("code_challenge="))
+    }
+
+    @Test func externalProvidersKeepHostedAudioBoundaries() {
+        let configuration = ExternalProviderConfiguration(
+            spotifyClientID: nil, spotifyRedirectURI: nil,
+            tidalClientID: nil, tidalClientSecret: nil,
+            soundCloudClientID: nil, soundCloudClientSecret: nil, soundCloudRedirectURI: nil,
+            youtubeAPIKey: nil, youtubeClientID: nil, youtubeRedirectURI: nil
+        )
+        let providers: [any PlaybackProvider] = [
+            SpotifyPlaybackProvider(configuration: configuration),
+            TidalPlaybackProvider(configuration: configuration),
+            SoundCloudPlaybackProvider(configuration: configuration),
+            YouTubePlaybackProvider(configuration: configuration)
+        ]
+
+        #expect(providers.map(\.id) == [.spotify, .tidal, .soundCloud, .youtube])
+        for provider in providers {
+            #expect(provider.capabilities.contains(.catalogueSearch))
+            #expect(!provider.capabilities.contains(.pcmAudio))
+            #expect(!provider.capabilities.contains(.frequencySpectrum))
+            #expect(!provider.capabilities.contains(.waveform))
+            #expect(!provider.capabilities.contains(.nativeEqualizer))
+        }
+    }
+
+    @Test func youtubeRequiresVisibleOfficialPlayerSurface() async {
+        let configuration = ExternalProviderConfiguration(
+            spotifyClientID: nil, spotifyRedirectURI: nil,
+            tidalClientID: nil, tidalClientSecret: nil,
+            soundCloudClientID: nil, soundCloudClientSecret: nil, soundCloudRedirectURI: nil,
+            youtubeAPIKey: nil, youtubeClientID: nil, youtubeRedirectURI: nil
+        )
+        let provider = YouTubePlaybackProvider(configuration: configuration)
+        do {
+            try await provider.play()
+            Issue.record("YouTube playback should require a visible player surface")
+        } catch let error as ProviderError {
+            #expect(error.code == .policyRestriction)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
 }
 
 @MainActor

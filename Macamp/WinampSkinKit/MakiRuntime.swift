@@ -6,9 +6,25 @@ protocol MakiRuntimeHost: AnyObject {
     func makiXMLParameter(objectID: String, name: String) -> String?
     func makiVisibilityChanged(objectID: String, isVisible: Bool)
     func makiTargetChanged(objectID: String, x: Double, speed: Double)
+    func makiTargetReached(objectID: String)
     func makiVolumeChanged(_ value: Double)
     func makiEQBandChanged(index: Int, value: Int)
     func makiRuntimeNeedsDisplay()
+    func makiPlaybackItem() -> PlaybackItem?
+    func makiElapsed() -> Duration
+    func makiDuration() -> Duration?
+    func makiText(objectID: String) -> String?
+    func makiSetText(objectID: String, text: String)
+}
+
+@MainActor
+extension MakiRuntimeHost {
+    func makiTargetReached(objectID: String) {}
+    func makiPlaybackItem() -> PlaybackItem? { nil }
+    func makiElapsed() -> Duration { .zero }
+    func makiDuration() -> Duration? { nil }
+    func makiText(objectID: String) -> String? { nil }
+    func makiSetText(objectID: String, text: String) {}
 }
 
 @MainActor
@@ -92,6 +108,7 @@ final class MakiRuntime {
     private var targetX: [String: Double] = [:]
     private var targetSpeed: [String: Double] = [:]
     private var visibleObjects: [String: Bool] = [:]
+    private var scriptedTexts: [String: String] = [:]
     private var nestedEventDepth = 0
     private(set) var diagnostics: [String] = []
 
@@ -119,6 +136,16 @@ final class MakiRuntime {
     }
 
     func isVisible(objectID: String) -> Bool? { visibleObjects[objectID.lowercased()] }
+
+    func xmlParameter(objectID: String, name: String) -> String? {
+        xmlParameters[objectID.lowercased()]?[name.lowercased()]
+    }
+
+    func text(objectID: String) -> String? { scriptedTexts[objectID.lowercased()] }
+
+    func targetReached(objectID: String) {
+        _ = dispatch(event: "onTargetReached", objectID: objectID.lowercased())
+    }
 
     @discardableResult
     private func dispatch(event eventName: String, objectID: String) -> Bool {
@@ -301,12 +328,24 @@ final class MakiRuntime {
             guard arguments.count >= 2 else { return .void }
             xmlParameters[objectID, default: [:]][arguments[0].string.lowercased()] = arguments[1].string
             host?.makiRuntimeNeedsDisplay(); return .void
+        case "gettext":
+            return .string(scriptedTexts[objectID] ?? host?.makiText(objectID: objectID) ?? "")
+        case "settext":
+            let value = arguments.first?.string ?? ""
+            scriptedTexts[objectID] = value
+            host?.makiSetText(objectID: objectID, text: value)
+            return .void
+        case "getplayitem": return .object("playitem")
+        case "gettitle": return .string(host?.makiPlaybackItem()?.title ?? "")
+        case "getartist": return .string(host?.makiPlaybackItem()?.artist ?? "")
+        case "getalbum": return .string(host?.makiPlaybackItem()?.albumTitle ?? "")
+        case "getlength": return .number(host?.makiDuration()?.secondsValue ?? 0)
+        case "getposition": return .number(host?.makiElapsed().secondsValue ?? 0)
         case "stringtointeger": return .integer(arguments.first?.integer ?? 0)
         case "settargetx": targetX[objectID] = arguments.first?.number ?? 0; return .void
         case "settargetspeed": targetSpeed[objectID] = max(0.01, arguments.first?.number ?? 0.25); return .void
         case "gototarget":
             host?.makiTargetChanged(objectID: objectID, x: targetX[objectID] ?? 0, speed: targetSpeed[objectID] ?? 0.25)
-            _ = dispatch(event: "onTargetReached", objectID: objectID)
             return .void
         case "leftclick": _ = dispatch(event: "onLeftClick", objectID: objectID); return .void
         case "setvolume": host?.makiVolumeChanged((arguments.first?.number ?? 0) / 255); return .void
@@ -326,8 +365,8 @@ final class MakiRuntime {
         case "getprivateint", "setxmlparam", "seteqband": 2
         case "setprivateint": 3
         case "messagebox": 4
-        case "findobject", "getobject", "getcontainer", "getlayout", "getxmlparam", "stringtointeger",
-             "settargetx", "settargetspeed", "setvolume", "setposition": 1
+        case "findobject", "getobject", "getcontainer", "getlayout", "getxmlparam", "gettext", "stringtointeger",
+             "settargetx", "settargetspeed", "setvolume", "setposition", "settext": 1
         default: 0
         }
     }

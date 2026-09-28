@@ -176,11 +176,13 @@ enum ModernSkinParser {
                 if tag == "group", let groupID = attribute("id", element) {
                     groups.append(GroupReference(id: groupID, origin: origin))
                 }
-                if initiallyVisible, let role = textRole(tag: tag, element: element), frame.width > 0, frame.height > 0 {
+                if let role = textRole(tag: tag, element: element), frame.width > 0, frame.height > 0 {
                     let color = textColor(attribute("color", element))
                     textRegions.append(ModernSkinTextRegion(
                         role: role,
                         frame: frame,
+                        elementID: attribute("id", element),
+                        initiallyVisible: initiallyVisible,
                         fontSize: number(attribute("fontsize", element)).map(Double.init) ?? min(14, max(7, Double(frame.height))),
                         red: color.red,
                         green: color.green,

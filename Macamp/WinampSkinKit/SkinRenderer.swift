@@ -1,6 +1,25 @@
 import AppKit
 
 @MainActor
+protocol SkinArtworkLoader {
+    func image(for url: URL) async -> NSImage?
+}
+
+@MainActor
+final class URLSessionSkinArtworkLoader: SkinArtworkLoader {
+    private let cache = NSCache<NSURL, NSImage>()
+
+    func image(for url: URL) async -> NSImage? {
+        if let cached = cache.object(forKey: url as NSURL) { return cached }
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode ?? 200 < 400,
+              let image = NSImage(data: data) else { return nil }
+        cache.setObject(image, forKey: url as NSURL)
+        return image
+    }
+}
+
+@MainActor
 final class SkinRendererView: NSView {
     static let fallbackLogicalSize = CGSize(width: 275, height: 116)
     override var isFlipped: Bool { true }
@@ -12,6 +31,8 @@ final class SkinRendererView: NSView {
     private let playlistToggle: () -> Void
     private let equalizerToggle: () -> Void
     private let visualizationToggle: () -> Void
+    private let artworkLoader: any SkinArtworkLoader
+    var regionPath: NSBezierPath? { skinStore.activeCatalog.regionPath }
     private var refreshTask: Task<Void, Never>?
     private var makiRuntime: MakiRuntime?
     private var runtimeCatalog: SkinAssetCatalog?
@@ -22,6 +43,11 @@ final class SkinRendererView: NSView {
     private var balanceValue = 0.5
     private var drawerTargets: [ModernDrawerRole: Double] = [.left: 1, .right: 1]
     private var drawerAnimations: [ModernDrawerRole: DrawerAnimation] = [:]
+    private var drawerAnimationTargets: [ModernDrawerRole: String] = [:]
+    private var artworkTask: Task<Void, Never>?
+    private var artworkURL: URL?
+    private var remoteArtwork: NSImage?
+    private var artworkRequestID = UUID()
     private(set) var scale: Int
 
     private struct DrawerAnimation {
@@ -38,7 +64,8 @@ final class SkinRendererView: NSView {
         openMedia: @escaping () -> Void,
         playlistToggle: @escaping () -> Void,
         equalizerToggle: @escaping () -> Void,
-        visualizationToggle: @escaping () -> Void
+        visualizationToggle: @escaping () -> Void,
+        artworkLoader: any SkinArtworkLoader = URLSessionSkinArtworkLoader()
     ) {
         self.coordinator = coordinator
         self.skinStore = skinStore
@@ -47,6 +74,7 @@ final class SkinRendererView: NSView {
         self.playlistToggle = playlistToggle
         self.equalizerToggle = equalizerToggle
         self.visualizationToggle = visualizationToggle
+        self.artworkLoader = artworkLoader
         scale = settings.skinScale
         let canvas = skinStore.activeCatalog.canvasSize
         super.init(frame: CGRect(origin: .zero, size: CGSize(width: canvas.width * CGFloat(scale), height: canvas.height * CGFloat(scale))))
@@ -58,6 +86,7 @@ final class SkinRendererView: NSView {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
                 self?.updateMakiPlaybackState()
+                self?.updateRemoteArtwork()
                 self?.needsDisplay = true
                 self?.setAccessibilityValue(self?.coordinator.state.currentItem.map { "\($0.title), \($0.artist ?? "Unknown artist")" } ?? "Nothing playing")
             }
@@ -67,6 +96,7 @@ final class SkinRendererView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit {
         refreshTask?.cancel()
+        artworkTask?.cancel()
         drawerAnimationTasks.values.forEach { $0.cancel() }
     }
 
@@ -92,6 +122,7 @@ final class SkinRendererView: NSView {
             NSGraphicsContext.current?.imageInterpolation = .none
             image.draw(in: CGRect(origin: .zero, size: skinStore.activeCatalog.canvasSize), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
         }
+        if skinStore.activeCatalog.format == .modern { drawModernLayers(drawerRole: nil) }
         if skinStore.activeCatalog.format == .modern { drawModernContent(drawerRole: nil) }
         if skinStore.activeCatalog.format == .modern { drawMakiControlState(drawerRole: nil) }
         if skinStore.activeCatalog.format == .classic { drawTransportControls() }
@@ -104,6 +135,8 @@ final class SkinRendererView: NSView {
         if settings.clickThroughTransparentPixels, !isVisible(at: logical(point)) { return nil }
         return self
     }
+
+    override var mouseDownCanMoveWindow: Bool { true }
 
     override func mouseDown(with event: NSEvent) {
         let point = logical(convert(event.locationInWindow, from: nil))
@@ -123,8 +156,19 @@ final class SkinRendererView: NSView {
             needsDisplay = true
             let frame = effectiveFrame(for: control)
             Task { await activate(control, point: point, frame: frame) }
-        } else if point.y < 18 {
+        } else {
             window?.performDrag(with: event)
+        }
+    }
+
+    private func drawModernLayers(drawerRole: ModernDrawerRole?) {
+        for layer in skinStore.activeCatalog.modernLayers where layer.drawerRole == drawerRole && layer.elementID != nil {
+            guard isElementVisible(layer.elementID, initiallyVisible: layer.initiallyVisible),
+                  let path = skinStore.activeCatalog.modernBitmapFiles[layer.imageID.lowercased()],
+                  let image = skinStore.activeCatalog.images[path.lowercased()] else { continue }
+            guard let frame = effectiveFrame(for: layer).map({ translated($0, for: drawerRole) }) else { continue }
+            let source = layer.cropToFirstFrame ? CGRect(x: 0, y: max(0, image.size.height - frame.height), width: min(image.size.width, frame.width), height: min(image.size.height, frame.height)) : .zero
+            image.draw(in: frame, from: source, operation: .sourceOver, fraction: runtimeOpacity(for: layer), respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
         }
     }
 
@@ -152,6 +196,7 @@ final class SkinRendererView: NSView {
                     hints: [.interpolation: NSImageInterpolation.none]
                 )
             }
+            drawModernLayers(drawerRole: drawer.role)
             drawModernContent(drawerRole: drawer.role)
             drawMakiControlState(drawerRole: drawer.role)
             NSGraphicsContext.restoreGraphicsState()
@@ -160,13 +205,8 @@ final class SkinRendererView: NSView {
 
     private func drawModernContent(drawerRole: ModernDrawerRole?) {
         for region in skinStore.activeCatalog.contentRegions where region.drawerRole == drawerRole {
-            if let elementID = region.elementID {
-                let scriptedVisibility = makiRuntime?.isVisible(objectID: elementID)
-                if scriptedVisibility == false || scriptedVisibility == nil && !region.initiallyVisible { continue }
-            } else if !region.initiallyVisible {
-                continue
-            }
-            let frame = translated(region.frame, for: drawerRole)
+            guard isElementVisible(region.elementID, initiallyVisible: region.initiallyVisible) else { continue }
+            let frame = translated(effectiveFrame(for: region), for: drawerRole)
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: frame).addClip()
             switch region.role {
@@ -184,8 +224,7 @@ final class SkinRendererView: NSView {
     private func drawMakiControlState(drawerRole: ModernDrawerRole?) {
         for control in skinStore.activeCatalog.controls where control.drawerRole == drawerRole {
             guard let elementID = control.elementID?.lowercased() else { continue }
-            let scriptedVisibility = makiRuntime?.isVisible(objectID: elementID)
-            guard scriptedVisibility ?? control.initiallyVisible,
+            guard isElementVisible(elementID, initiallyVisible: control.initiallyVisible),
                   let image = skinStore.activeCatalog.makiControlImages[elementID] else { continue }
             image.draw(
                 in: control.orientation == nil
@@ -193,7 +232,7 @@ final class SkinRendererView: NSView {
                     : sliderThumbFrame(for: control, imageSize: image.size),
                 from: .zero,
                 operation: .sourceOver,
-                fraction: 1,
+                fraction: runtimeOpacity(for: elementID),
                 respectFlipped: true,
                 hints: [.interpolation: NSImageInterpolation.none]
             )
@@ -205,7 +244,8 @@ final class SkinRendererView: NSView {
         let image: NSImage? = switch artwork {
         case let .embedded(data): NSImage(data: data)
         case let .systemSymbol(name): NSImage(systemSymbolName: name, accessibilityDescription: nil)
-        case .remote, nil: NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)
+        case .remote: remoteArtwork ?? NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)
+        case nil: NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)
         }
         NSColor(calibratedWhite: 0.03, alpha: 0.65).setFill()
         frame.fill()
@@ -221,6 +261,33 @@ final class SkinRendererView: NSView {
             destination = CGRect(x: frame.midX - width / 2, y: frame.minY, width: width, height: frame.height)
         }
         image.draw(in: destination, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+    }
+
+    private func updateRemoteArtwork() {
+        guard case let .remote(url) = coordinator.state.currentItem?.artwork else {
+            artworkTask?.cancel()
+            artworkTask = nil
+            artworkURL = nil
+            remoteArtwork = nil
+            return
+        }
+        guard artworkURL != url else { return }
+        artworkTask?.cancel()
+        artworkURL = url
+        remoteArtwork = nil
+        let requestID = UUID()
+        artworkRequestID = requestID
+        artworkTask = Task { [weak self, artworkLoader] in
+            let image = await artworkLoader.image(for: url)
+            guard !Task.isCancelled else { return }
+            self?.setRemoteArtwork(image, for: url, requestID: requestID)
+        }
+    }
+
+    private func setRemoteArtwork(_ image: NSImage?, for url: URL, requestID: UUID) {
+        guard requestID == artworkRequestID, artworkURL == url else { return }
+        remoteArtwork = image
+        needsDisplay = true
     }
 
     private func drawSimulatedVisualization(in frame: CGRect) {
@@ -350,8 +417,9 @@ final class SkinRendererView: NSView {
             NSColor.systemRed.setFill(); CGRect(x: 263, y: 3, width: 8, height: 7).fill()
         } else {
             for region in skinStore.activeCatalog.textRegions {
-                let frame = translated(region.frame, for: region.drawerRole)
-                let text: String = switch region.role {
+                guard isElementVisible(region.elementID, initiallyVisible: region.initiallyVisible) else { continue }
+                let frame = translated(effectiveFrame(for: region), for: region.drawerRole)
+                let fallbackText: String = switch region.role {
                 case .songTitle: title
                 case .elapsedTime: time
                 case .remainingTime:
@@ -359,6 +427,7 @@ final class SkinRendererView: NSView {
                         "-\(formatted(max(0, duration.secondsValue - coordinator.state.elapsed.secondsValue)))"
                     } else { "--:--" }
                 }
+                let text = region.elementID.flatMap { makiRuntime?.text(objectID: $0) } ?? fallbackText
                 let alignment: NSTextAlignment = switch region.alignment {
                 case "center": .center
                 case "right": .right
@@ -405,7 +474,52 @@ final class SkinRendererView: NSView {
     }
 
     private func effectiveFrame(for control: SkinControlDefinition) -> CGRect {
-        translated(control.frame, for: control.drawerRole)
+        translated(effectiveFrame(control.frame, elementID: control.elementID), for: control.drawerRole)
+    }
+
+    private func effectiveFrame(for layer: ModernSkinLayer) -> CGRect? {
+        effectiveFrame(layer.frame, elementID: layer.elementID)
+    }
+
+    private func effectiveFrame(for region: ModernSkinContentRegion) -> CGRect {
+        effectiveFrame(region.frame, elementID: region.elementID)
+    }
+
+    private func effectiveFrame(for region: ModernSkinTextRegion) -> CGRect {
+        effectiveFrame(region.frame, elementID: region.elementID)
+    }
+
+    private func effectiveFrame(_ frame: CGRect, elementID: String?) -> CGRect {
+        guard let elementID else { return frame }
+        var result = frame
+        if let value = runtimeNumber(elementID, "x") { result.origin.x = value }
+        if let value = runtimeNumber(elementID, "y") { result.origin.y = value }
+        if let value = runtimeNumber(elementID, "w"), value > 0 { result.size.width = value }
+        if let value = runtimeNumber(elementID, "h"), value > 0 { result.size.height = value }
+        return result
+    }
+
+    private func runtimeNumber(_ objectID: String, _ name: String) -> CGFloat? {
+        guard let value = makiRuntime?.xmlParameter(objectID: objectID, name: name) else { return nil }
+        return Double(value).map { CGFloat($0) }
+    }
+
+    private func isElementVisible(_ objectID: String?, initiallyVisible: Bool) -> Bool {
+        guard let objectID else { return initiallyVisible }
+        if let value = makiRuntime?.isVisible(objectID: objectID) { return value }
+        if let value = runtimeNumber(objectID, "visible") { return value > 0 }
+        if let value = runtimeNumber(objectID, "alpha") { return value > 0 }
+        return initiallyVisible
+    }
+
+    private func runtimeOpacity(for layer: ModernSkinLayer) -> CGFloat {
+        guard let elementID = layer.elementID else { return CGFloat(layer.opacity) }
+        return runtimeOpacity(for: elementID) * CGFloat(layer.opacity)
+    }
+
+    private func runtimeOpacity(for objectID: String) -> CGFloat {
+        guard let value = runtimeNumber(objectID, "alpha") else { return 1 }
+        return value > 1 ? min(max(value / 255, 0), 1) : min(max(value, 0), 1)
     }
 
     private func sliderThumbFrame(for control: SkinControlDefinition, imageSize: CGSize) -> CGRect {
@@ -478,6 +592,26 @@ final class SkinRendererView: NSView {
         return animation.from + (animation.to - animation.from) * eased
     }
 
+    // Kept internal so the renderer regression suite can assert the state that
+    // drives drawing without reaching into AppKit's private backing surfaces.
+    var drawerProgressForTesting: [ModernDrawerRole: Double] {
+        Dictionary(uniqueKeysWithValues: ModernDrawerRole.allCases.map { ($0, drawerProgress(for: $0)) })
+    }
+
+    var metadataStringsForTesting: [String] {
+        let item = coordinator.state.currentItem
+        let title = item.map { "\($0.artist ?? "UNKNOWN") - \($0.title)" } ?? "MACAMP — READY"
+        let elapsed = Int(coordinator.state.elapsed.secondsValue)
+        let time = String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
+        let remaining: String
+        if let duration = coordinator.state.duration {
+            remaining = "-\(formatted(max(0, duration.secondsValue - coordinator.state.elapsed.secondsValue)))"
+        } else {
+            remaining = "--:--"
+        }
+        return [title, time, remaining]
+    }
+
     private func toggleDrawer(_ role: ModernDrawerRole) {
         let target = (drawerTargets[role] ?? 1) > 0.5 ? 0.0 : 1.0
         animateDrawer(role, to: target, duration: 0.28)
@@ -487,6 +621,7 @@ final class SkinRendererView: NSView {
         let current = drawerProgress(for: role)
         let clampedDuration = min(max(duration, 0.05), 2)
         drawerTargets[role] = target
+        drawerAnimationTargets.removeValue(forKey: role)
         drawerAnimations[role] = DrawerAnimation(
             from: current,
             to: target,
@@ -504,6 +639,9 @@ final class SkinRendererView: NSView {
             self?.drawerAnimations.removeValue(forKey: role)
             self?.drawerAnimationTasks.removeValue(forKey: role)
             self?.needsDisplay = true
+            if let objectID = self?.drawerAnimationTargets.removeValue(forKey: role) {
+                self?.makiTargetReached(objectID: objectID)
+            }
         }
     }
 
@@ -556,7 +694,14 @@ extension SkinRendererView: MakiRuntimeHost {
         guard let role, let drawer = skinStore.activeCatalog.drawers.first(where: { $0.role == role }) else { return }
         let expandedDistance = abs(x - Double(drawer.expandedFrame.minX))
         let collapsedDistance = abs(x - Double(drawer.collapsedOrigin.x))
-        animateDrawer(role, to: expandedDistance <= collapsedDistance ? 1 : 0, duration: speed)
+        let target: Double = expandedDistance <= collapsedDistance ? 1 : 0
+        if abs(drawerProgress(for: role) - target) < 0.001 {
+            drawerTargets[role] = target
+            makiTargetReached(objectID: objectID)
+            return
+        }
+        animateDrawer(role, to: target, duration: speed)
+        drawerAnimationTargets[role] = objectID
     }
 
     func makiVolumeChanged(_ value: Double) {
@@ -571,4 +716,11 @@ extension SkinRendererView: MakiRuntimeHost {
     }
 
     func makiRuntimeNeedsDisplay() { needsDisplay = true }
+
+    func makiPlaybackItem() -> PlaybackItem? { coordinator.state.currentItem }
+    func makiElapsed() -> Duration { coordinator.state.elapsed }
+    func makiDuration() -> Duration? { coordinator.state.duration }
+    func makiText(objectID: String) -> String? { makiRuntime?.text(objectID: objectID) }
+    func makiSetText(objectID: String, text: String) { needsDisplay = true }
+    func makiTargetReached(objectID: String) { makiRuntime?.targetReached(objectID: objectID) }
 }

@@ -8,6 +8,9 @@ struct MacampApp: App {
         WindowGroup("Macamp") {
             ContentView(dependencies: dependencies)
                 .frame(minWidth: 860, minHeight: 580)
+                .onOpenURL { url in
+                    Task { await dependencies.playback.handleOAuthCallback(url) }
+                }
                 .task {
                     dependencies.appleMusic.restoreAuthorization()
                     await dependencies.skins.restoreLibrary()

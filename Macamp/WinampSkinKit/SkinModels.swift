@@ -85,6 +85,8 @@ enum ModernSkinTextRole: Sendable {
 struct ModernSkinTextRegion: Sendable {
     var role: ModernSkinTextRole
     var frame: CGRect
+    var elementID: String? = nil
+    var initiallyVisible = true
     var fontSize: Double
     var red: Double
     var green: Double
@@ -154,6 +156,8 @@ final class SkinAssetCatalog {
     let drawerImages: [ModernDrawerRole: NSImage]
     let modernBaseImage: NSImage?
     let modernOcclusionFrame: CGRect?
+    let modernLayers: [ModernSkinLayer]
+    let modernBitmapFiles: [String: String]
     private let renderedMainImage: NSImage?
 
     var mainImage: NSImage? { renderedMainImage }
@@ -200,6 +204,8 @@ final class SkinAssetCatalog {
             textRegions = modern.textRegions
             contentRegions = modern.contentRegions
             drawers = modern.drawers
+            modernLayers = modern.layers
+            modernBitmapFiles = modern.bitmapFiles
             makiBindings = modern.makiBindings
             makiPrograms = Array(Set(modern.makiBindings.map { $0.path.lowercased() })).sorted().compactMap { path in
                 files[path].flatMap { try? MakiDecoder.decode($0, path: path) }
@@ -222,14 +228,14 @@ final class SkinAssetCatalog {
                 partial.map { $0.union(frame) } ?? frame
             }
             regionPath = nil
-            renderedMainImage = Self.renderModern(modern, images: loadedImages, layers: modern.layers, allowScreenshotFallback: true)
+            renderedMainImage = Self.renderModern(modern, images: loadedImages, layers: modern.layers.filter { $0.elementID == nil && $0.initiallyVisible }, allowScreenshotFallback: true)
             if modern.drawers.isEmpty {
                 modernBaseImage = nil
                 drawerImages = [:]
             } else {
-                modernBaseImage = Self.renderModern(modern, images: loadedImages, layers: modern.layers.filter { $0.drawerRole == nil })
+                modernBaseImage = Self.renderModern(modern, images: loadedImages, layers: modern.layers.filter { $0.drawerRole == nil && $0.elementID == nil && $0.initiallyVisible })
                 drawerImages = Dictionary(uniqueKeysWithValues: ModernDrawerRole.allCases.compactMap { role in
-                    Self.renderModern(modern, images: loadedImages, layers: modern.layers.filter { $0.drawerRole == role }).map { (role, $0) }
+                    Self.renderModern(modern, images: loadedImages, layers: modern.layers.filter { $0.drawerRole == role && $0.elementID == nil && $0.initiallyVisible }).map { (role, $0) }
                 })
             }
         } else {
@@ -238,6 +244,8 @@ final class SkinAssetCatalog {
             textRegions = []
             contentRegions = []
             drawers = []
+            modernLayers = []
+            modernBitmapFiles = [:]
             makiPrograms = []
             makiBindings = []
             makiControlImages = [:]
@@ -251,7 +259,9 @@ final class SkinAssetCatalog {
     }
 
     private static func file(named name: String, in files: [String: Data]) -> Data? {
-        files[name] ?? files.first { $0.key.hasSuffix("/\(name)") }?.value
+        files.first { key, _ in
+            key.caseInsensitiveCompare(name) == .orderedSame || key.lowercased().hasSuffix("/\(name.lowercased())")
+        }?.value
     }
 
     private static func safeImage(data: Data) -> NSImage? {
@@ -261,7 +271,13 @@ final class SkinAssetCatalog {
               let height = properties[kCGImagePropertyPixelHeight] as? Int,
               width > 0, height > 0, width <= 8_192, height <= 8_192,
               width * height <= 32_000_000 else { return nil }
-        guard let image = NSImage(data: data) else { return nil }
+        guard let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        if let masked = applyWinampChromaKey(to: cgImage) {
+            let maskedImage = NSImage(cgImage: masked, size: CGSize(width: width, height: height))
+            maskedImage.size = CGSize(width: width, height: height)
+            return maskedImage
+        }
+        let image = NSImage(cgImage: cgImage, size: CGSize(width: width, height: height))
         // Winamp XML coordinates are always physical asset pixels. NSImage otherwise
         // converts PNGs carrying (for example) 96-DPI metadata into smaller AppKit
         // point sizes, which separates the bitmap from its XML-positioned controls.
@@ -360,6 +376,10 @@ final class SkinAssetCatalog {
         }
         return SkinAssetCatalog(name: "Macamp Night", files: ["main.bmp": bmp], report: .init())
     }
+}
+
+func applyWinampChromaKey(to image: CGImage) -> CGImage? {
+    image.copy(maskingColorComponents: [255, 255, 0, 0, 255, 255])
 }
 
 enum ClassicSkinControls {

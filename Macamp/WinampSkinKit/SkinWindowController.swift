@@ -26,7 +26,7 @@ final class SkinWindowController: NSWindowController, NSWindowDelegate {
         window.hasShadow = settings.playerShadow
         window.level = settings.playerFloating ? .floating : .normal
         window.collectionBehavior = [.managed, .participatesInCycle]
-        window.isMovableByWindowBackground = false
+        window.isMovableByWindowBackground = true
         window.title = "Classic Macamp Player"
         renderer = SkinRendererView(
             coordinator: coordinator,
@@ -40,6 +40,7 @@ final class SkinWindowController: NSWindowController, NSWindowDelegate {
         window.contentView = renderer
         super.init(window: window)
         window.delegate = self
+        applyRegionMask()
         if let restored = settings.restoredPlayerFrame() { window.setFrame(Self.corrected(restored, size: size), display: false) }
         else { window.center() }
     }
@@ -55,11 +56,29 @@ final class SkinWindowController: NSWindowController, NSWindowDelegate {
         guard let window else { return }
         renderer.updateScale(settings.skinScale)
         window.setContentSize(renderer.frame.size)
+        applyRegionMask()
         window.hasShadow = settings.playerShadow
         window.level = settings.playerFloating ? .floating : .normal
     }
 
     func windowDidMove(_ notification: Notification) { if let frame = window?.frame { settings.savePlayerFrame(frame) } }
+
+    private func applyRegionMask() {
+        guard let window, let contentView = window.contentView else { return }
+        guard let region = renderer.regionPath else {
+            contentView.layer?.mask = nil
+            return
+        }
+        contentView.wantsLayer = true
+        let mask = CAShapeLayer()
+        let size = contentView.bounds.size
+        let scale = CGFloat(settings.skinScale)
+        var transform = CGAffineTransform(translationX: 0, y: size.height)
+            .scaledBy(x: scale, y: -scale)
+        mask.path = region.cgPath.copy(using: &transform)
+        mask.frame = contentView.bounds
+        contentView.layer?.mask = mask
+    }
 
     private static func corrected(_ frame: CGRect, size: CGSize) -> CGRect {
         let screens = NSScreen.screens.map(\.visibleFrame)

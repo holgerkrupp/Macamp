@@ -333,6 +333,93 @@ struct SkinTests {
         #expect(view.frame.size == CGSize(width: 825, height: 348))
     }
 
+    @Test @MainActor func rendererDrivesSyntheticWALWithPlaybackAndDrawerAnimation() async throws {
+        let png = try #require(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
+        let xml = """
+        <?xml version="1.0"?>
+        <WinampAbstractionLayer version="1.0">
+          <skininfo><name>Renderer E2E</name></skininfo>
+          <elements>
+            <bitmap id="background" file="background.png" />
+            <bitmap id="drawer" file="drawer.png" />
+          </elements>
+          <container id="main" default_visible="1">
+            <groupdef id="LeftDrawer" w="20" h="40">
+              <layer id="left-layer" image="drawer" x="0" y="0" w="20" h="40" />
+            </groupdef>
+            <groupdef id="RightDrawer" w="20" h="40">
+              <layer id="right-layer" image="drawer" x="0" y="0" w="20" h="40" />
+            </groupdef>
+            <layout id="normal" w="100" h="40">
+              <layer image="background" x="0" y="0" w="100" h="40" />
+              <text id="songname" display="songname" x="22" y="4" w="56" h="12" />
+              <group id="LeftDrawer" x="20" y="0" />
+              <group id="RightDrawer" x="60" y="0" />
+            </layout>
+          </container>
+        </WinampAbstractionLayer>
+        """
+        let source = try temporarySkin(entries: [
+            ("skin.xml", Data(xml.utf8)),
+            ("background.png", png),
+            ("drawer.png", png)
+        ], extension: "wal")
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+
+        let defaultsName = "Macamp.RendererE2E.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skins = SkinLibraryStore(defaults: defaults, root: root)
+        await skins.importSkin(from: source)
+        #expect(skins.lastError == nil)
+        #expect(skins.activeCatalog.drawers.map(\.role).contains(.left))
+        #expect(skins.activeCatalog.drawers.map(\.role).contains(.right))
+
+        let coordinator = PlaybackCoordinator()
+        let provider = MockPlaybackProvider()
+        coordinator.register(provider)
+        let item = PlaybackItem(
+            id: "renderer-e2e",
+            providerID: .preview,
+            providerItemID: "renderer-e2e",
+            title: "Synthetic Song",
+            artist: "Synthetic Artist",
+            albumTitle: "Synthetic Album",
+            duration: .seconds(125),
+            artwork: nil,
+            mediaKind: .song,
+            isExplicit: false
+        )
+        await coordinator.play(item: item)
+
+        let settings = SettingsStore(defaults: defaults)
+        let view = SkinRendererView(
+            coordinator: coordinator,
+            skinStore: skins,
+            settings: settings,
+            openMedia: {},
+            playlistToggle: {},
+            equalizerToggle: {},
+            visualizationToggle: {}
+        )
+        #expect(view.metadataStringsForTesting.first == "Synthetic Artist - Synthetic Song")
+        #expect(view.drawerProgressForTesting[.left] == 1)
+
+        view.makiTargetChanged(objectID: "LeftDrawer", x: 20, speed: 0.05)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(view.drawerProgressForTesting[.left] ?? 1 < 0.01)
+
+        view.makiTargetChanged(objectID: "LeftDrawer", x: 0, speed: 0.05)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(view.drawerProgressForTesting[.left] ?? 0 > 0.99)
+
+        let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        #expect(bitmap.size == view.bounds.size)
+    }
+
     private func temporarySkin(entries: [(String, Data)], extension fileExtension: String = "wsz") throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

@@ -4,14 +4,14 @@ import SwiftUI
 enum AppSection: String, CaseIterable, Identifiable {
     case home = "Home", search = "Search", library = "Library", albums = "Albums", artists = "Artists"
     case playlists = "Playlists", songs = "Songs", localFiles = "Local Files", queue = "Queue", skins = "Skins"
-    case visualizations = "Visualizations", diagnostics = "Diagnostics"
+    case visualizations = "Visualizations", diagnostics = "Diagnostics", services = "Music Services"
     var id: Self { self }
     var icon: String {
         switch self {
         case .home: "house"; case .search: "magnifyingglass"; case .library: "music.note.house"
         case .albums: "square.stack"; case .artists: "person.2"; case .playlists: "music.note.list"
         case .songs: "music.note"; case .localFiles: "internaldrive"; case .queue: "list.number"; case .skins: "paintbrush"
-        case .visualizations: "waveform.path.ecg"; case .diagnostics: "stethoscope"
+        case .visualizations: "waveform.path.ecg"; case .diagnostics: "stethoscope"; case .services: "person.crop.circle.badge.checkmark"
         }
     }
 }
@@ -39,6 +39,7 @@ struct ContentView: View {
                 case .skins: SkinManagerView(dependencies: dependencies)
                 case .visualizations: VisualizationPickerView(dependencies: dependencies)
                 case .diagnostics: DiagnosticsView(dependencies: dependencies)
+                case .services: MusicServicesView(dependencies: dependencies)
                 }
             }
             .safeAreaInset(edge: .bottom) { NowPlayingBar(dependencies: dependencies) }
@@ -50,7 +51,7 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            dependencies.appleMusic.restoreAuthorization()
+            if dependencies.playback.activeProviderID == .appleMusic { dependencies.appleMusic.restoreAuthorization() }
         }
     }
 }
@@ -59,9 +60,13 @@ struct ProviderBadge: View {
     let dependencies: DependencyContainer
     var body: some View {
         Menu {
-            Button("Apple Music") { dependencies.selectProvider(.appleMusic) }
-            Button("Local Files") { dependencies.selectProvider(.localMedia) }
-            Button("Demo Library") { dependencies.selectProvider(.preview) }
+            ForEach(dependencies.providerRegistry.availableDescriptors) { descriptor in
+                Button {
+                    dependencies.selectProvider(descriptor.id)
+                } label: {
+                    Label(descriptor.displayName, systemImage: descriptor.iconName)
+                }
+            }
         } label: {
             HStack { Image(systemName: "dot.radiowaves.left.and.right"); Text(dependencies.playback.activeProviderName); Spacer() }
                 .padding(10).contentShape(Rectangle())
@@ -76,13 +81,18 @@ struct HomeView: View {
             Text("Listen Now").font(.largeTitle.bold())
             if dependencies.playback.authenticationState != .authorized {
                 AuthorizationCard(dependencies: dependencies)
+            } else if dependencies.playback.activeProviderID == .youtube {
+                YouTubePlayerSurface(provider: dependencies.youtube)
+                    .frame(width: 640, height: 360)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .accessibilityLabel("Visible YouTube player")
             } else {
                 ContentUnavailableView(
                     "Ready to play",
                     systemImage: "music.note",
                     description: Text(dependencies.playback.activeProviderID == .localMedia
                         ? "Choose Local Files to browse your imported music."
-                        : "Search the Apple Music catalogue or browse your library.")
+                        : "Search the \(dependencies.playback.activeProviderName) catalogue or browse its library.")
                 )
             }
             Spacer()
@@ -93,14 +103,16 @@ struct HomeView: View {
 struct AuthorizationCard: View {
     let dependencies: DependencyContainer
     var body: some View {
+        let descriptor = dependencies.providerRegistry.descriptor(for: dependencies.playback.activeProviderID)
         VStack(alignment: .leading, spacing: 12) {
-            Label("Connect Music Library", systemImage: "music.note.house.fill").font(.title2.bold())
-            Text("Grant access to browse your personal music library, including cloud-library items MusicKit makes available. Apple Music catalogue playback still requires an eligible subscription.")
+            Label("Connect \(dependencies.playback.activeProviderName)", systemImage: descriptor?.iconName ?? "music.note.house.fill").font(.title2.bold())
+            Text(descriptor?.accountRequirements ?? "Authorize this provider to continue.")
                 .foregroundStyle(.secondary)
+            if let notes = descriptor?.notes { Text(notes).font(.caption).foregroundStyle(.secondary) }
             Text("Status: \(dependencies.playback.authenticationState.rawValue)").font(.caption.monospaced()).foregroundStyle(.secondary)
-            Button("Allow Music Library Access") { Task { await dependencies.playback.authorize() } }
+            Button(descriptor?.authentication == .musicKit ? "Allow Music Library Access" : "Authorize") { Task { await dependencies.playback.authorize() } }
                 .buttonStyle(.borderedProminent)
-                .disabled(dependencies.playback.authenticationState == .authorizing || dependencies.playback.activeProviderID != .appleMusic)
+                .disabled(dependencies.playback.authenticationState == .authorizing)
         }.padding(22).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 }
@@ -123,8 +135,10 @@ struct SearchView: View {
                 AuthorizationCard(dependencies: dependencies).padding()
             } else if let error {
                 ContentUnavailableView("Search unavailable", systemImage: "exclamationmark.triangle", description: Text(error))
+            } else if !dependencies.playback.capabilities.contains(.catalogueSearch) {
+                ContentUnavailableView("Search unavailable", systemImage: "magnifyingglass", description: Text("\(dependencies.playback.activeProviderName) does not provide catalogue search."))
             } else if term.isEmpty {
-                ContentUnavailableView("Search Apple Music", systemImage: "magnifyingglass", description: Text("Results use MusicKit’s supported catalogue API."))
+                ContentUnavailableView("Search \(dependencies.playback.activeProviderName)", systemImage: "magnifyingglass", description: Text("Results use the active provider's supported catalogue API."))
             } else {
                 List {
                     if !results.songs.isEmpty {
@@ -162,10 +176,10 @@ struct LibraryView: View {
             else if let error { ContentUnavailableView("Library unavailable", systemImage: "exclamationmark.triangle", description: Text(error)) }
             else {
                 List {
-                    if section == .library || section == .songs { Section("Songs") { ForEach(library.songs) { item in TrackRow(item: item) { Task { await dependencies.playback.play(item: item) } } } } }
-                    if section == .library || section == .albums { CollectionSection(title: "Albums", collections: library.albums) }
-                    if section == .library || section == .artists { CollectionSection(title: "Artists", collections: library.artists) }
-                    if section == .library || section == .playlists { CollectionSection(title: "Playlists", collections: library.playlists) }
+                    if (section == .library || section == .songs) && dependencies.playback.capabilities.contains(.userLibrary) { Section("Songs") { ForEach(library.songs) { item in TrackRow(item: item) { Task { await dependencies.playback.play(item: item) } } } } }
+                    if (section == .library || section == .albums) && !library.albums.isEmpty { CollectionSection(title: "Albums", collections: library.albums) }
+                    if (section == .library || section == .artists) && !library.artists.isEmpty { CollectionSection(title: "Artists", collections: library.artists) }
+                    if (section == .library || section == .playlists) && dependencies.playback.capabilities.contains(.playlists) { CollectionSection(title: "Playlists", collections: library.playlists) }
                 }
             }
         }.navigationTitle(section.rawValue)
@@ -228,4 +242,49 @@ struct ArtworkView: View {
         }
     }
     private var fallback: some View { Image(systemName: "music.note").resizable().scaledToFit().padding(9).foregroundStyle(.secondary).background(.quaternary) }
+}
+
+struct MusicServicesView: View {
+    let dependencies: DependencyContainer
+
+    var body: some View {
+        List {
+            Section("Connected and available") {
+                ForEach(dependencies.providerRegistry.availableDescriptors) { descriptor in
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: descriptor.iconName).frame(width: 24)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(descriptor.displayName)
+                            Text(descriptor.notes).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if dependencies.playback.activeProviderID == descriptor.id {
+                            VStack(alignment: .trailing, spacing: 4) {
+                                Text("Active").font(.caption).foregroundStyle(.green)
+                                Button("Disconnect") { Task { await dependencies.playback.disconnect() } }
+                                    .buttonStyle(.borderless)
+                            }
+                        } else {
+                            Button("Use") { dependencies.selectProvider(descriptor.id) }
+                        }
+                    }
+                }
+            }
+            Section("Unavailable integrations") {
+                ForEach(dependencies.providerRegistry.allDescriptors.filter { !$0.isSelectable }) { descriptor in
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: descriptor.iconName).frame(width: 24)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(descriptor.displayName)
+                            Text(descriptor.notes).font(.caption).foregroundStyle(.secondary)
+                            Text(descriptor.accountRequirements).font(.caption2).foregroundStyle(.orange)
+                        }
+                        Spacer()
+                        Text(descriptor.availability.rawValue).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Music Services")
+    }
 }

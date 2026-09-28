@@ -48,6 +48,16 @@ final class PlaybackCoordinator {
     }
 
     func authorize() async { await perform { try await $0.authorize() } }
+    func handleOAuthCallback(_ url: URL) async {
+        guard let handler = activeProvider as? any OAuthCallbackHandling else { return }
+        await handler.handleOAuthCallback(url)
+        if let provider = activeProvider { apply(ProviderSnapshot(authenticationState: provider.authenticationState, state: provider.state, queue: provider.queue)) }
+    }
+    func disconnect() async {
+        guard let provider = activeProvider else { return }
+        await provider.disconnect()
+        apply(ProviderSnapshot(authenticationState: provider.authenticationState, state: provider.state, queue: provider.queue))
+    }
     func play() async { await perform(required: .playback) { try await $0.play() } }
     func pause() async { await perform(required: .pause) { try await $0.pause() } }
     func stop() async { await perform(required: .explicitStop) { try await $0.stop() } }
