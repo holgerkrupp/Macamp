@@ -130,14 +130,12 @@ final class SkinRendererView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         configureMakiRuntimeIfNeeded()
         NSGraphicsContext.saveGraphicsState()
-        if skinStore.activeCatalog.format == .modern { drawModernDrawers() }
-        if let image = skinStore.activeCatalog.modernBaseImage ?? skinStore.activeCatalog.mainImage {
+        if skinStore.activeCatalog.format == .modern {
+            drawModernScene()
+        } else if let image = skinStore.activeCatalog.mainImage {
             NSGraphicsContext.current?.imageInterpolation = .none
             image.draw(in: CGRect(origin: .zero, size: skinStore.activeCatalog.canvasSize), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
         }
-        if skinStore.activeCatalog.format == .modern { drawModernLayers(drawerRole: nil) }
-        if skinStore.activeCatalog.format == .modern { drawModernContent(drawerRole: nil) }
-        if skinStore.activeCatalog.format == .modern { drawMakiControlState(drawerRole: nil) }
         if skinStore.activeCatalog.format == .classic { drawTransportControls() }
         drawMetadata()
         NSGraphicsContext.restoreGraphicsState()
@@ -245,6 +243,116 @@ final class SkinRendererView: NSView {
             }
             image.draw(in: frame, from: source, operation: .sourceOver, fraction: runtimeOpacity(for: layer), respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
         }
+    }
+
+    private func drawModernScene() {
+        let catalog = skinStore.activeCatalog
+        let scene = catalog.scene
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+
+        if WasabiScenePainter.renderNodes(in: scene).isEmpty {
+            if let image = catalog.modernBaseImage ?? catalog.mainImage {
+                context.interpolationQuality = .none
+                image.draw(in: CGRect(origin: .zero, size: catalog.canvasSize), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
+            }
+            return
+        }
+
+        WasabiScenePainter.paint(scene, in: context) { node in
+            guard isElementVisible(node.id, initiallyVisible: true) else { return }
+            let localFrame = CGRect(origin: .zero, size: node.localFrame.size)
+            switch node.kind {
+            case .layer, .animatedLayer:
+                drawSceneLayer(node, in: localFrame)
+            case .button, .slider:
+                drawSceneControl(node, in: localFrame)
+            case .content:
+                drawSceneContent(node, in: localFrame)
+            case .text, .songTicker:
+                drawSceneText(node, in: localFrame)
+            case .container, .layout, .group, .unknown:
+                break
+            }
+        }
+    }
+
+    private func drawSceneLayer(_ node: WasabiSceneRenderNode, in frame: CGRect) {
+        guard let imageID = node.attributes["image"],
+              let path = skinStore.activeCatalog.modernBitmapFiles[imageID.lowercased()],
+              let image = skinStore.activeCatalog.images[path.lowercased()] else { return }
+        let declaredSource = skinStore.activeCatalog.modernBitmapSourceRects[imageID.lowercased()]
+        let source: CGRect
+        if let declaredSource {
+            source = CGRect(
+                x: declaredSource.minX,
+                y: image.size.height - declaredSource.maxY,
+                width: min(declaredSource.width, image.size.width - declaredSource.minX),
+                height: min(declaredSource.height, declaredSource.maxY - declaredSource.minY)
+            )
+        } else if node.kind == .animatedLayer, frame.width > 0, frame.height > 0 {
+            source = CGRect(
+                x: 0,
+                y: max(0, image.size.height - frame.height),
+                width: min(image.size.width, frame.width),
+                height: min(image.size.height, frame.height)
+            )
+        } else {
+            source = CGRect(origin: .zero, size: image.size)
+        }
+        image.draw(in: frame, from: source, operation: .sourceOver, fraction: node.alpha, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
+    }
+
+    private func drawSceneControl(_ node: WasabiSceneRenderNode, in frame: CGRect) {
+        guard let image = skinStore.activeCatalog.makiControlImages[node.id] else { return }
+        image.draw(in: frame, from: .zero, operation: .sourceOver, fraction: node.alpha, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
+    }
+
+    private func drawSceneContent(_ node: WasabiSceneRenderNode, in frame: CGRect) {
+        guard let role = node.attributes["role"] else { return }
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: frame).addClip()
+        switch role {
+        case "albumArt": drawAlbumArt(in: frame)
+        case "visualization": drawSimulatedVisualization(in: frame)
+        case "playlist": drawPlaylist(in: frame)
+        default: break
+        }
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func drawSceneText(_ node: WasabiSceneRenderNode, in frame: CGRect) {
+        guard let role = node.attributes["role"] else { return }
+        let item = coordinator.state.currentItem
+        let title = item.map { "\($0.artist ?? "UNKNOWN") - \($0.title)" } ?? "MACAMP — READY"
+        let elapsed = Int(coordinator.state.elapsed.secondsValue)
+        let time = String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
+        let text: String = switch role {
+        case "songTitle": title
+        case "elapsedTime": time
+        case "remainingTime":
+            if let duration = coordinator.state.duration { "-\(formatted(max(0, duration.secondsValue - coordinator.state.elapsed.secondsValue)))" } else { "--:--" }
+        case "bitrate": technicalBitrate
+        case "frequency": technicalFrequency
+        case "channels": technicalChannels
+        case "fileExtension": technicalExtension
+        default: return
+        }
+        let alignment: NSTextAlignment = switch node.attributes["align"] {
+        case "center": .center
+        case "right": .right
+        default: .left
+        }
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = alignment
+        let fontSize = min(max(Double(node.attributes["fontSize"] ?? "9") ?? 9, 5), 36)
+        let red = CGFloat(Double(node.attributes["red"] ?? "1") ?? 1)
+        let green = CGFloat(Double(node.attributes["green"] ?? "1") ?? 1)
+        let blue = CGFloat(Double(node.attributes["blue"] ?? "1") ?? 1)
+        text.draw(in: frame, withAttributes: [
+            .font: NSFont.systemFont(ofSize: CGFloat(fontSize)),
+            .foregroundColor: NSColor(calibratedRed: red, green: green, blue: blue, alpha: node.alpha),
+            .paragraphStyle: paragraph
+        ])
     }
 
     private func drawModernDrawers() {
@@ -509,6 +617,8 @@ final class SkinRendererView: NSView {
         let elapsed = Int(coordinator.state.elapsed.secondsValue)
         let time = String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
         let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 7.5, weight: .medium), .foregroundColor: NSColor.systemGreen]
+        if skinStore.activeCatalog.format == .modern,
+           WasabiScenePainter.renderNodes(in: skinStore.activeCatalog.scene).contains(where: { $0.kind == .text || $0.kind == .songTicker }) { return }
         if skinStore.activeCatalog.format == .classic {
             title.prefix(33).uppercased().draw(at: CGPoint(x: 111, y: 24), withAttributes: attributes)
             time.draw(at: CGPoint(x: 40, y: 24), withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 15, weight: .bold), .foregroundColor: NSColor.systemGreen])
@@ -637,6 +747,11 @@ final class SkinRendererView: NSView {
 
     private func effectiveFrame(_ frame: CGRect, elementID: String?) -> CGRect {
         guard let elementID else { return frame }
+        if skinStore.activeCatalog.format == .modern,
+           let sceneFrame = WasabiScenePainter.renderNodes(in: skinStore.activeCatalog.scene)
+            .first(where: { $0.id == elementID.lowercased() })?.worldFrame {
+            return sceneFrame
+        }
         var result = frame
         if let generic = genericFrames[elementID.lowercased()] { result = generic }
         if let value = runtimeNumber(elementID, "x") { result.origin.x = value }
@@ -647,6 +762,23 @@ final class SkinRendererView: NSView {
     }
 
     private func hitObject(at point: CGPoint) -> WasabiObjectNode? {
+        if skinStore.activeCatalog.format == .modern,
+           let sceneNode = skinStore.activeCatalog.scene.hitTest(point),
+           let node = WasabiScenePainter.renderNodes(in: skinStore.activeCatalog.scene)
+            .first(where: { $0.handle == sceneNode.handle }),
+           isElementVisible(node.id, initiallyVisible: true) {
+            return WasabiObjectNode(
+                id: node.id,
+                kind: node.kind,
+                frame: node.worldFrame,
+                parentID: nil,
+                initiallyVisible: true,
+                attributes: node.attributes,
+                zIndex: node.zIndex
+            )
+        }
+        // Compatibility fallback for hand-built descriptors that predate the
+        // live scene, and for Classic callers.
         let tree = skinStore.activeCatalog.objectTree
         let candidates = tree.nodes.values.filter { node in
             guard node.kind != .container, node.kind != .layout, node.kind != .group else { return false }

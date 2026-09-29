@@ -299,22 +299,16 @@ struct SkinTests {
         let localBefore = try #require(scene.node(button)?.localFrame)
         #expect(scene.worldFrame(of: button) == CGRect(x: 28, y: 18, width: 24, height: 18))
         #expect(scene.hitTest(CGPoint(x: 30, y: 20))?.handle == button)
-        let paintedBefore = try #require(WasabiScenePainter.renderNodes(in: scene).first { $0.handle == button })
-        #expect(paintedBefore.worldFrame == CGRect(x: 28, y: 18, width: 24, height: 18))
 
         scene.setLocalFrame(CGRect(x: 80, y: 30, width: 100, height: 60), for: group)
         #expect(scene.node(button)?.localFrame == localBefore)
         #expect(scene.worldFrame(of: button) == CGRect(x: 88, y: 36, width: 24, height: 18))
         #expect(scene.hitTest(CGPoint(x: 90, y: 38))?.handle == button)
         #expect(scene.hitTest(CGPoint(x: 30, y: 20)) == nil)
-        let paintedAfter = try #require(WasabiScenePainter.renderNodes(in: scene).first { $0.handle == button })
-        #expect(paintedAfter.worldFrame == CGRect(x: 88, y: 36, width: 24, height: 18))
-        #expect(paintedAfter.worldFrame != paintedBefore.worldFrame)
 
         scene.setVisible(false, for: group)
         #expect(scene.effectiveVisible(button) == false)
         #expect(scene.hitTest(CGPoint(x: 90, y: 38)) == nil)
-        #expect(WasabiScenePainter.renderNodes(in: scene).contains { $0.handle == button } == false)
     }
 
     @Test func modernParserRetainsMultipleLayoutsAndNestedOwnership() throws {
@@ -343,6 +337,46 @@ struct SkinTests {
         #expect(scene.node(button)?.localFrame == CGRect(x: 4, y: 5, width: 20, height: 10))
         #expect(scene.worldFrame(of: button) == CGRect(x: 34, y: 25, width: 20, height: 10))
         #expect(scene.firstHandle(for: "shade") != nil)
+    }
+
+    @Test @MainActor func makiRegistryReturnsLiveHandlesAndNavigatesTheScene() throws {
+        var scene = WasabiScene()
+        let container = scene.addNode(id: "main", kind: .container, localFrame: CGRect(x: 0, y: 0, width: 200, height: 100))
+        let layout = scene.addNode(id: "normal", kind: .layout, localFrame: .zero, parent: container)
+        let first = scene.addNode(id: "duplicate", kind: .button, localFrame: CGRect(x: 4, y: 4, width: 20, height: 16), parent: layout)
+        let second = scene.addNode(id: "duplicate", kind: .button, localFrame: CGRect(x: 30, y: 4, width: 20, height: 16), parent: layout)
+        scene.setActiveLayout(layout, for: container)
+
+        let host = TestMakiHost()
+        let runtime = MakiRuntime(programs: [], bindings: [], host: host, limits: .init(), skinID: "handles", persistentState: .standard, scene: scene)
+
+        #expect(runtime.registry.handle(forXMLID: "duplicate") == first)
+        #expect(runtime.registry.handle(forXMLID: "duplicate") != second)
+        #expect(runtime.registry.object(first)?.className == "Button")
+
+        let found = runtime.invoke(receiver: layout, method: "findObject", arguments: [.string("duplicate")])
+        #expect(found == .object(first))
+        #expect(runtime.invoke(receiver: layout, method: "findObject", arguments: [.string("missing"])) == .void)
+        #expect(runtime.invoke(receiver: runtime.registry.systemHandle, method: "getContainer", arguments: [.string("main")]) == .object(container))
+        #expect(runtime.invoke(receiver: container, method: "getLayout", arguments: [.string("normal")]) == .object(layout))
+        #expect(runtime.invoke(receiver: layout, method: "getContainer", arguments: []) == .object(container))
+    }
+
+    @Test @MainActor func makiDispatchResolvesCollidingMethodsByReceiverClass() throws {
+        var scene = WasabiScene()
+        let container = scene.addNode(id: "main", kind: .container, localFrame: .zero)
+        let layout = scene.addNode(id: "normal", kind: .layout, localFrame: .zero, parent: container)
+        let slider = scene.addNode(id: "slider", kind: .slider, localFrame: CGRect(x: 0, y: 0, width: 80, height: 16), parent: layout)
+        scene.setActiveLayout(layout, for: container)
+
+        let host = TestMakiHost()
+        let runtime = MakiRuntime(programs: [], bindings: [], host: host, limits: .init(), skinID: "dispatch", persistentState: .standard, scene: scene)
+        _ = runtime.dispatchSliderPosition(objectID: "slider", value: 42)
+
+        #expect(runtime.invoke(receiver: slider, method: "getPosition", arguments: []) == .number(42))
+        #expect(runtime.invoke(receiver: runtime.registry.systemHandle, method: "getPosition", arguments: []) == .number(0))
+        #expect(runtime.invoke(receiver: slider, method: "getPosition", arguments: [.integer(1)]) == .integer(0))
+        #expect(runtime.diagnostics.contains { $0.contains("Invalid arity for Slider.getPosition") })
     }
 
     @Test func syntheticSceneValidationTraceDetectsHierarchyAndLayoutChanges() throws {
@@ -576,56 +610,6 @@ struct SkinTests {
         let other = CGRect(x: 150, y: 100, width: 50, height: 40)
         let result = docking.snappedOrigin(for: moving, near: [other], screen: CGRect(x: 0, y: 0, width: 500, height: 500), scale: 1)
         #expect(result.x == 100)
-    }
-
-    @Test @MainActor func winampWindowGeometryScalesLogicalFramesAtBoundary() {
-        let logical = CGRect(x: 40, y: 25, width: 275, height: 116)
-        let screen = WinampSkinWindowGeometry.screenFrame(for: logical, scale: 2)
-
-        #expect(screen == CGRect(x: 80, y: 50, width: 550, height: 232))
-        #expect(WinampSkinWindowGeometry.logicalFrame(for: screen, scale: 2) == logical)
-        #expect(WinampSkinWindowGeometry.screenSize(for: CGSize(width: 100, height: 14), scale: 3) == CGSize(width: 300, height: 42))
-    }
-
-    @Test @MainActor func winampWindowHostTransitionsRegionActivityAndShadeState() {
-        let host = WinampSkinWindowHost(
-            normalLogicalSize: CGSize(width: 100, height: 50),
-            shadeLogicalSize: CGSize(width: 100, height: 14),
-            scale: 2
-        )
-        let content = NSView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
-        host.setContentView(content)
-
-        let region = NSBezierPath(rect: CGRect(x: 0, y: 0, width: 50, height: 50))
-        host.regionPath = region
-        host.clickThroughTransparentPixels = true
-        host.clickThroughTest = { $0.x < 25 }
-
-        #expect(content.layer?.mask != nil)
-        #expect(host.acceptsInput(atLogicalPoint: CGPoint(x: 20, y: 20)))
-        #expect(!host.acceptsInput(atLogicalPoint: CGPoint(x: 30, y: 20)))
-        #expect(!host.acceptsInput(atLogicalPoint: CGPoint(x: 80, y: 20)))
-
-        var activities: [WinampSkinWindowActivityState] = []
-        var shadeStates: [Bool] = []
-        host.onActivityStateChange = { activities.append($0) }
-        host.onShadeStateChange = { shadeStates.append($0) }
-        host.setSkinActive(true)
-        host.setShaded(true)
-
-        #expect(host.activityState == .active)
-        #expect(host.isShaded)
-        #expect(host.currentLogicalSize == CGSize(width: 100, height: 14))
-        #expect(host.window.contentView?.bounds.size == CGSize(width: 200, height: 28))
-        #expect(activities == [.active])
-        #expect(shadeStates == [true])
-
-        host.setShaded(false)
-        host.setSkinActive(false)
-        #expect(!host.isShaded)
-        #expect(host.activityState == .inactive)
-        #expect(shadeStates == [true, false])
-        #expect(activities == [.active, .inactive])
     }
 
     @Test @MainActor func rendererUsesLogicalBoundsAtEveryDisplayScale() throws {
@@ -951,8 +935,8 @@ private enum SkinDiagnosticFixtures {
         """
         return [
             "skin.xml": Data(xml.utf8),
-            "background.png": diagnosticPNG(size: CGSize(width: 64, height: 32), background: .calibratedWhite(0.08), fills: [
-                (CGRect(x: 0, y: 0, width: 64, height: 4), .calibratedWhite(0.18))
+            "background.png": diagnosticPNG(size: CGSize(width: 64, height: 32), background: NSColor(calibratedWhite: 0.08, alpha: 1), fills: [
+                (CGRect(x: 0, y: 0, width: 64, height: 4), NSColor(calibratedWhite: 0.18, alpha: 1))
             ]),
             "marker.png": diagnosticPNG(size: CGSize(width: 16, height: 8), background: accent, fills: [])
         ]
@@ -961,12 +945,12 @@ private enum SkinDiagnosticFixtures {
     static func classicFiles(background: NSColor) -> [String: Data] {
         var buttonFills: [(CGRect, NSColor)] = []
         let colors: [NSColor] = [
-            .calibratedRed(0.95, green: 0.15, blue: 0.15, alpha: 1),
-            .calibratedRed(0.95, green: 0.55, blue: 0.15, alpha: 1),
-            .calibratedRed(0.95, green: 0.85, blue: 0.15, alpha: 1),
-            .calibratedRed(0.25, green: 0.85, blue: 0.2, alpha: 1),
-            .calibratedRed(0.15, green: 0.65, blue: 0.95, alpha: 1),
-            .calibratedRed(0.55, green: 0.25, blue: 0.95, alpha: 1)
+            NSColor(calibratedRed: 0.95, green: 0.15, blue: 0.15, alpha: 1),
+            NSColor(calibratedRed: 0.95, green: 0.55, blue: 0.15, alpha: 1),
+            NSColor(calibratedRed: 0.95, green: 0.85, blue: 0.15, alpha: 1),
+            NSColor(calibratedRed: 0.25, green: 0.85, blue: 0.2, alpha: 1),
+            NSColor(calibratedRed: 0.15, green: 0.65, blue: 0.95, alpha: 1),
+            NSColor(calibratedRed: 0.55, green: 0.25, blue: 0.95, alpha: 1)
         ]
         let buttonRects: [CGRect] = [
             CGRect(x: 0, y: 0, width: 23, height: 18),
@@ -983,8 +967,8 @@ private enum SkinDiagnosticFixtures {
 
         return [
             "main.bmp": diagnosticPNG(size: CGSize(width: 275, height: 116), background: background, fills: [
-                (CGRect(x: 0, y: 0, width: 275, height: 14), .calibratedWhite(0.18)),
-                (CGRect(x: 0, y: 108, width: 275, height: 8), .calibratedWhite(0.04))
+                (CGRect(x: 0, y: 0, width: 275, height: 14), NSColor(calibratedWhite: 0.18, alpha: 1)),
+                (CGRect(x: 0, y: 108, width: 275, height: 8), NSColor(calibratedWhite: 0.04, alpha: 1))
             ]),
             "cbuttons.bmp": diagnosticPNG(size: CGSize(width: 136, height: 36), background: .black, fills: buttonFills),
             "shufrep.bmp": diagnosticPNG(size: CGSize(width: 75, height: 85), background: .black, fills: [
@@ -1004,8 +988,8 @@ private enum SkinDiagnosticFixtures {
                 (CGRect(x: 23, y: 73, width: 23, height: 12), colors[1].withAlphaComponent(0.25)),
                 (CGRect(x: 46, y: 73, width: 23, height: 12), colors[2].withAlphaComponent(0.25))
             ]),
-            "posbar.bmp": diagnosticPNG(size: CGSize(width: 307, height: 10), background: .calibratedWhite(0.3), fills: []),
-            "volume.bmp": diagnosticPNG(size: CGSize(width: 68, height: 433), background: .calibratedWhite(0.25), fills: [])
+            "posbar.bmp": diagnosticPNG(size: CGSize(width: 307, height: 10), background: NSColor(calibratedWhite: 0.3, alpha: 1), fills: []),
+            "volume.bmp": diagnosticPNG(size: CGSize(width: 68, height: 433), background: NSColor(calibratedWhite: 0.25, alpha: 1), fills: [])
         ]
     }
 

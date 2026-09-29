@@ -396,7 +396,10 @@ enum ModernSkinParser {
                 parent: parent,
                 visible: control.initiallyVisible,
                 zIndex: z,
-                attributes: ["action": control.action.rawValue]
+                attributes: [
+                    "action": control.action.rawValue,
+                    "orientation": control.orientation.map { $0 == .vertical ? "vertical" : "horizontal" } ?? ""
+                ]
             )
             z += 1
         }
@@ -410,14 +413,29 @@ enum ModernSkinParser {
                 parent: parent,
                 visible: region.initiallyVisible,
                 zIndex: z,
-                attributes: ["fontSize": String(region.fontSize)]
+                attributes: [
+                    "role": textRoleName(region.role),
+                    "fontSize": String(region.fontSize),
+                    "red": String(region.red),
+                    "green": String(region.green),
+                    "blue": String(region.blue),
+                    "align": region.alignment
+                ]
             )
             z += 1
         }
 
         for (index, region) in candidate.contentRegions.enumerated() {
             let id = region.elementID ?? "content-\(index)"
-            _ = scene.addNode(id: id, kind: .content, localFrame: region.frame, parent: parent, visible: region.initiallyVisible, zIndex: z)
+            _ = scene.addNode(
+                id: id,
+                kind: .content,
+                localFrame: region.frame,
+                parent: parent,
+                visible: region.initiallyVisible,
+                zIndex: z,
+                attributes: ["role": contentRoleName(region.role)]
+            )
             z += 1
         }
 
@@ -702,6 +720,26 @@ enum ModernSkinParser {
             node = parent.parent
         }
         return point
+    }
+
+    nonisolated private static func textRoleName(_ role: ModernSkinTextRole) -> String {
+        switch role {
+        case .songTitle: "songTitle"
+        case .elapsedTime: "elapsedTime"
+        case .remainingTime: "remainingTime"
+        case .bitrate: "bitrate"
+        case .frequency: "frequency"
+        case .channels: "channels"
+        case .fileExtension: "fileExtension"
+        }
+    }
+
+    nonisolated private static func contentRoleName(_ role: ModernSkinContentRole) -> String {
+        switch role {
+        case .albumArt: "albumArt"
+        case .visualization: "visualization"
+        case .playlist: "playlist"
+        }
     }
 
     nonisolated private static func mapAction(
