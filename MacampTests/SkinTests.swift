@@ -380,6 +380,45 @@ struct SkinTests {
         #expect(runtime.diagnostics.contains { $0.contains("Invalid arity for Slider.getPosition") })
     }
 
+    @Test @MainActor func makiStandardObjectsSupportTimerAndConfigAttributeState() async throws {
+        let host = TestMakiHost()
+        let runtime = MakiRuntime(programs: [], bindings: [], host: host, limits: .init(), skinID: "standard-objects", persistentState: .standard)
+        let timer = runtime.registry.instantiate(className: "Timer", id: "pulse")
+        #expect(runtime.invoke(receiver: timer, method: "getClassName", arguments: []) == .string("Timer"))
+        #expect(runtime.invoke(receiver: timer, method: "getId", arguments: []) == .string("pulse"))
+        _ = runtime.invoke(receiver: timer, method: "setDelay", arguments: [.integer(5)])
+        #expect(runtime.invoke(receiver: timer, method: "getDelay", arguments: []) == .integer(5))
+        _ = runtime.invoke(receiver: timer, method: "start", arguments: [])
+        #expect(runtime.invoke(receiver: timer, method: "isRunning", arguments: []) == .integer(1))
+        _ = runtime.invoke(receiver: timer, method: "stop", arguments: [])
+        #expect(runtime.invoke(receiver: timer, method: "isRunning", arguments: []) == .integer(0))
+
+        let attribute = runtime.registry.instantiate(className: "ConfigAttribute", id: "volume")
+        _ = runtime.invoke(receiver: attribute, method: "setData", arguments: [.string("128")])
+        #expect(runtime.invoke(receiver: attribute, method: "getData", arguments: []) == .string("128"))
+        try await Task.sleep(for: .milliseconds(1))
+
+        let timerGUID = Data([0x5d, 0x0c, 0x5b, 0xb6, 0x7d, 0xe1, 0x4b, 0x1f, 0xa7, 0x0f, 0x8d, 0x16, 0x59, 0x94, 0x19, 0x41])
+        let program = MakiProgram(
+            path: "dynamic-timer.maki", version: 0x17, classGUIDs: [timerGUID],
+            functions: [MakiFunction(baseType: 0, name: "onScriptLoaded")],
+            variables: [
+                MakiVariable(type: 0, payload: 0, isTransient: false, isStatic: true, string: nil),
+                MakiVariable(type: 0x101, payload: 0, isTransient: false, isStatic: false, string: nil)
+            ],
+            events: [MakiEvent(variableIndex: 0, functionIndex: 0, codeOffset: 0)],
+            code: Data([0x60, 0, 0, 0, 0, 0x03, 1, 0, 0, 0, 0x28])
+        )
+        let dynamicRuntime = MakiRuntime(
+            programs: [program], bindings: [ModernMakiBinding(path: program.path, groupID: "main", parameter: nil)],
+            host: host, limits: .init(), skinID: "dynamic-timer", persistentState: .standard
+        )
+        let objectCount = dynamicRuntime.registry.objects.count
+        dynamicRuntime.start()
+        #expect(dynamicRuntime.registry.objects.count == objectCount + 1)
+        #expect(dynamicRuntime.registry.objects.values.contains { $0.className == "Timer" })
+    }
+
     @Test @MainActor func makiInputLifecyclePreservesArgumentsAndButtonOrdering() throws {
         var scene = WasabiScene()
         let container = scene.addNode(id: "main", kind: .container, localFrame: CGRect(x: 0, y: 0, width: 160, height: 80))

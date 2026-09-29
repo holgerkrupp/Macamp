@@ -129,6 +129,19 @@ final class WasabiObjectRegistry {
         return handle
     }
 
+    func className(for guid: Data) -> String {
+        let known: [String: String] = [
+            "e90dc47b840d4ae7b02c040bd275f7fc": "Container",
+            "45be95e520724191935cbb5ff9f117fd": "Group",
+            "60906d4e537e482eb004cc9461885672": "Layout",
+            "62b65e3f375e408d8dea76814ab91b77": "Slider",
+            "698eddcd8f1e4fec9b12f944f909ff45": "Button",
+            "5d0c5bb67de14b1fa70f8d1659941941": "Timer",
+            "4ee3e199c6364bec97cd78bc9c8628b0": "GuiObject"
+        ]
+        return known[guid.map { String(format: "%02x", $0) }.joined()] ?? "GuiObject"
+    }
+
     /// Temporary bridge for callers that still dispatch input by XML ID.  It
     /// creates a registered runtime object, never a pseudo object value.
     func compatibilityHandle(for id: String, className: String = "GuiObject") -> WasabiHandle {
@@ -158,7 +171,7 @@ final class WasabiObjectRegistry {
         case .layout: "Layout"
         case .button: "Button"
         case .slider: "Slider"
-        case .group: "GuiObject"
+        case .group: "Group"
         case .layer, .animatedLayer, .text, .songTicker, .content, .unknown: "GuiObject"
         }
     }
@@ -299,6 +312,13 @@ final class MakiRuntime {
     private var privateState: [String: Value] = [:]
     private var configAttributes: [String: Value] = [:]
     private var timers: [String: Task<Void, Never>] = [:]
+    private var timerDelays: [WasabiHandle: Int] = [:]
+    private var timerSkipped: [WasabiHandle: Int] = [:]
+    private var timerRunning: Set<WasabiHandle> = []
+    private var activatedButtons: Set<WasabiHandle> = []
+    private var layoutScales: [WasabiHandle: Double] = [:]
+    private var layoutDesktopAlpha: Set<WasabiHandle> = []
+    private var configAttributeValues: [WasabiHandle: String] = [:]
     private var playItemHandle: WasabiHandle?
     private let persistentState: UserDefaults
     private let skinID: String
@@ -424,7 +444,26 @@ final class MakiRuntime {
         }
     }
 
+    private func scheduleTimer(receiver: WasabiHandle, interval: Duration) {
+        let key = timerKey(for: receiver)
+        timers[key]?.cancel()
+        timerRunning.insert(receiver)
+        timers[key] = Task { [weak self] in
+            try? await Task.sleep(for: interval)
+            guard !Task.isCancelled else { return }
+            self?.timerRunning.remove(receiver)
+            self?.dispatch(event: "onTimer", receiver: receiver)
+        }
+    }
+
     func cancelTimer(objectID: String) { timers.removeValue(forKey: objectID.lowercased())?.cancel() }
+
+    private func cancelTimer(receiver: WasabiHandle) {
+        timers.removeValue(forKey: timerKey(for: receiver))?.cancel()
+        timerRunning.remove(receiver)
+    }
+
+    private func timerKey(for receiver: WasabiHandle) -> String { "handle:\(receiver.rawValue)" }
 
     func diagnosticsReport() -> String {
         diagnostics.isEmpty ? "No unsupported MAKI operations encountered." : diagnostics.joined(separator: "\n")
@@ -671,10 +710,20 @@ final class MakiRuntime {
                 default: .number(-value.number)
                 }
                 try push(StackValue(value: result, variableIndex: nil))
+            case 0x60:
+                let classIndex = Int(try operand())
+                guard instance.program.classGUIDs.indices.contains(classIndex) else {
+                    throw runtimeError("new refers to an invalid Wasabi class")
+                }
+                let className = registry.className(for: instance.program.classGUIDs[classIndex])
+                let handle = registry.instantiate(className: className)
+                try push(StackValue(value: .object(handle), variableIndex: nil))
             case 0x61:
-                try push(try pop())
-            case 0x60, 0x68, 0x69:
-                throw runtimeError(String(format: "opcode 0x%02X requires an unsupported dynamic Wasabi object", opcode))
+                let value = try pop().value
+                if case let .object(handle) = value { registry.destroy(handle) }
+                try push(StackValue(value: .void, variableIndex: nil))
+            case 0x68, 0x69:
+                throw runtimeError(String(format: "unsupported dynamic Wasabi opcode 0x%02X", opcode))
             default:
                 throw runtimeError(String(format: "unsupported opcode 0x%02X", opcode))
             }
@@ -742,7 +791,7 @@ final class MakiRuntime {
         case .frameGetPosition:
             return .number(targetStates[objectID]?["position"] ?? 0)
         case .timerStop:
-            cancelTimer(objectID: objectID)
+            if object.dynamic { cancelTimer(receiver: receiver) } else { cancelTimer(objectID: objectID) }
             return .void
         case .legacy:
             break
@@ -750,6 +799,8 @@ final class MakiRuntime {
 
         let instance = instance
         switch name {
+        case "getclassname": return .string(object.className)
+        case "getid": return .string(object.id ?? "")
         case "getruntimeversion": return .number(5.666)
         case "getskinname": return .string("Macamp Modern")
         case "gettimeofday", "getstatus": return .integer(Int32(host?.makiPlaybackStatus() ?? 0))
@@ -758,7 +809,70 @@ final class MakiRuntime {
             return .object(handle)
         case "getobject":
             guard let id = arguments.first?.string, !id.isEmpty else { return .void }
+            if object.className.caseInsensitiveCompare("Group") == .orderedSame {
+                return registry.objects.values.first { $0.parent == receiver && $0.id?.caseInsensitiveCompare(id) == .orderedSame }.map { .object($0.handle) } ?? .void
+            }
             return .object(registry.compatibilityHandle(for: id))
+        case "newdynamiccontainer", "newgroup", "newgroupaslayout":
+            let className: String = switch name {
+            case "newdynamiccontainer": "Container"
+            case "newgroupaslayout": "Layout"
+            default: "Group"
+            }
+            return .object(registry.instantiate(className: className, id: arguments.first?.string))
+        case "getparent": return object.parent.map(MakiValue.object) ?? .void
+        case "getparentlayout": return object.layout.map(MakiValue.object) ?? .void
+        case "isvisible": return .integer(visibleObjects[objectID] == false ? 0 : 1)
+        case "getalpha": return .integer(Int32(((targetStates[objectID]?["alpha"] ?? 1) * 255).rounded()))
+        case "setalpha":
+            targetStates[objectID, default: [:]]["alpha"] = Double(arguments.first?.integer ?? 255) / 255
+            host?.makiRuntimeNeedsDisplay(); return .void
+        case "getleft", "gettop", "getwidth", "getheight":
+            let key = switch name {
+            case "getleft": "x"
+            case "gettop": "y"
+            case "getwidth": "w"
+            default: "h"
+            }
+            return .number(targetStates[objectID]?[key] ?? 0)
+        case "getnumlayouts":
+            return .integer(Int32(registry.objects.values.filter { $0.className.caseInsensitiveCompare("Layout") == .orderedSame && $0.container == receiver }.count))
+        case "enumlayout":
+            let layouts = registry.objects.values.filter { $0.className.caseInsensitiveCompare("Layout") == .orderedSame && $0.container == receiver }.sorted { $0.handle.rawValue < $1.handle.rawValue }
+            let index = Int(arguments.first?.integer ?? -1)
+            return layouts.indices.contains(index) ? .object(layouts[index].handle) : .void
+        case "getcurlayout":
+            let layout = registry.objects.values.first { $0.className.caseInsensitiveCompare("Layout") == .orderedSame && $0.container == receiver }
+            return layout.map { .object($0.handle) } ?? .void
+        case "getnumobjects":
+            return .integer(Int32(registry.objects.values.filter { $0.parent == receiver }.count))
+        case "enumobject":
+            let children = registry.objects.values.filter { $0.parent == receiver }.sorted { $0.handle.rawValue < $1.handle.rawValue }
+            let index = Int(arguments.first?.integer ?? -1)
+            return children.indices.contains(index) ? .object(children[index].handle) : .void
+        case "islayout": return .integer(object.className.caseInsensitiveCompare("Layout") == .orderedSame ? 1 : 0)
+        case "setdelay":
+            timerDelays[receiver] = max(1, Int(arguments.first?.integer ?? 5000)); return .void
+        case "getdelay": return .integer(Int32(timerDelays[receiver] ?? 5000))
+        case "start":
+            scheduleTimer(receiver: receiver, interval: .milliseconds(Int64(timerDelays[receiver] ?? 5000))); return .void
+        case "isrunning": return .integer(timerRunning.contains(receiver) ? 1 : 0)
+        case "getskipped": return .integer(Int32(timerSkipped[receiver] ?? 0))
+        case "setactivated", "setactivatednocallback":
+            if arguments.first?.truthy == true { activatedButtons.insert(receiver) } else { activatedButtons.remove(receiver) }
+            host?.makiRuntimeNeedsDisplay(); return .void
+        case "getactivated": return .integer(activatedButtons.contains(receiver) ? 1 : 0)
+        case "rightclick": _ = dispatch(event: "onRightClick", receiver: receiver); return .void
+        case "getscale": return .number(layoutScales[receiver] ?? 1)
+        case "setscale": layoutScales[receiver] = arguments.first?.number ?? 1; host?.makiRuntimeNeedsDisplay(); return .void
+        case "getdesktopalpha": return .integer(layoutDesktopAlpha.contains(receiver) ? 1 : 0)
+        case "setdesktopalpha":
+            if arguments.first?.truthy == true { layoutDesktopAlpha.insert(receiver) } else { layoutDesktopAlpha.remove(receiver) }
+            host?.makiRuntimeNeedsDisplay(); return .void
+        case "getdata": return .string(configAttributeValues[receiver] ?? "")
+        case "setdata":
+            configAttributeValues[receiver] = arguments.first?.string ?? ""; host?.makiRuntimeNeedsDisplay(); return .void
+        case "getattributename": return .string(object.id ?? "")
         case "hide":
             visibleObjects[objectID] = false; host?.makiVisibilityChanged(objectID: objectID, isVisible: false); return .void
         case "show":

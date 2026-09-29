@@ -139,6 +139,12 @@ nonisolated enum MakiClassCatalog {
     }
 
     private static let common = signatures([
+        ("getclassname", .init(arity: 0)),
+        ("getid", .init(arity: 0)),
+        ("isvisible", .init(arity: 0)), ("setalpha", .init(arity: 1)), ("getalpha", .init(arity: 0)),
+        ("getleft", .init(arity: 0)), ("gettop", .init(arity: 0)),
+        ("getwidth", .init(arity: 0)), ("getheight", .init(arity: 0)),
+        ("getparent", .init(arity: 0)), ("getparentlayout", .init(arity: 0)),
         ("getruntimeversion", .init(arity: 0)),
         ("getskinname", .init(arity: 0)),
         ("gettimeofday", .init(arity: 0)),
@@ -204,25 +210,48 @@ nonisolated enum MakiClassCatalog {
         "system": .init(name: "System", superclass: "Object", methods: common.merging(signatures([
             ("getcontainer", .init(arity: 1, implementation: .systemGetContainer)),
             ("getposition", .init(arity: 0, implementation: .systemGetPosition)),
-            ("stop", .init(arity: 0))
+            ("stop", .init(arity: 0)),
+            ("newdynamiccontainer", .init(arity: 1)),
+            ("newgroup", .init(arity: 1)),
+            ("newgroupaslayout", .init(arity: 1))
         ]), uniquingKeysWith: { _, new in new })),
         "guiobject": .init(name: "GuiObject", superclass: "Object", methods: common.merging(signatures([
             ("findobject", .init(arity: 1, implementation: .findObject))
         ]), uniquingKeysWith: { _, new in new })),
-        "container": .init(name: "Container", superclass: "GuiObject", methods: signatures([
-            ("getlayout", .init(arity: 1, implementation: .containerGetLayout))
-        ])),
-        "layout": .init(name: "Layout", superclass: "GuiObject", methods: signatures([
-            ("getcontainer", .init(arity: 0, implementation: .layoutGetContainer))
-        ])),
-        "slider": .init(name: "Slider", superclass: "GuiObject", methods: signatures([
-            ("getposition", .init(arity: 0, implementation: .sliderGetPosition))
-        ])),
+        "container": .init(name: "Container", superclass: "GuiObject", methods: common.merging(signatures([
+            ("getlayout", .init(arity: 1, implementation: .containerGetLayout)),
+            ("getnumlayouts", .init(arity: 0)), ("enumlayout", .init(arity: 1)),
+            ("switchtolayout", .init(arity: 1)), ("getcurlayout", .init(arity: 0)),
+            ("toggle", .init(arity: 0)), ("close", .init(arity: 0)), ("isdynamic", .init(arity: 0))
+        ]), uniquingKeysWith: { _, new in new })),
+        "layout": .init(name: "Layout", superclass: "GuiObject", methods: common.merging(signatures([
+            ("getcontainer", .init(arity: 0, implementation: .layoutGetContainer)),
+            ("getscale", .init(arity: 0)), ("setscale", .init(arity: 1)),
+            ("getdesktopalpha", .init(arity: 0)), ("setdesktopalpha", .init(arity: 1))
+        ]), uniquingKeysWith: { _, new in new })),
+        "group": .init(name: "Group", superclass: "GuiObject", methods: common.merging(signatures([
+            ("getobject", .init(arity: 1)), ("getnumobjects", .init(arity: 0)),
+            ("enumobject", .init(arity: 1)), ("islayout", .init(arity: 0))
+        ]), uniquingKeysWith: { _, new in new })),
+        "slider": .init(name: "Slider", superclass: "GuiObject", methods: common.merging(signatures([
+            ("getposition", .init(arity: 0, implementation: .sliderGetPosition)),
+            ("lock", .init(arity: 0)), ("unlock", .init(arity: 0))
+        ]), uniquingKeysWith: { _, new in new })),
+        "button": .init(name: "Button", superclass: "GuiObject", methods: common.merging(signatures([
+            ("onactivate", .init(arity: 1)), ("setactivated", .init(arity: 1)),
+            ("setactivatednocallback", .init(arity: 1)), ("getactivated", .init(arity: 0)),
+            ("rightclick", .init(arity: 0))
+        ]), uniquingKeysWith: { _, new in new })),
         "frame": .init(name: "Frame", superclass: "GuiObject", methods: signatures([
             ("getposition", .init(arity: 0, implementation: .frameGetPosition))
         ])),
         "timer": .init(name: "Timer", superclass: "Object", methods: signatures([
-            ("stop", .init(arity: 0, implementation: .timerStop))
+            ("stop", .init(arity: 0, implementation: .timerStop)), ("setdelay", .init(arity: 1)),
+            ("getdelay", .init(arity: 0)), ("start", .init(arity: 0)),
+            ("isrunning", .init(arity: 0)), ("getskipped", .init(arity: 0))
+        ])),
+        "configattribute": .init(name: "ConfigAttribute", superclass: "Object", methods: signatures([
+            ("getdata", .init(arity: 0)), ("setdata", .init(arity: 1)), ("getattributename", .init(arity: 0))
         ]))
     ]
 
