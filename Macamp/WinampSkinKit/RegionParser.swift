@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 
 enum RegionParser {
-    static func parse(_ data: Data) -> NSBezierPath? {
+    static func parse(_ data: Data, section requestedSection: String = "Normal") -> NSBezierPath? {
         guard let text = String(data: data, encoding: .utf8)
                 ?? String(data: data, encoding: .windowsCP1252)
                 ?? String(data: data, encoding: .isoLatin1) else { return nil }
@@ -10,8 +10,9 @@ enum RegionParser {
         // REGION.TXT is an INI-like file. In particular, examples in comments and
         // the WindowShade/Equalizer sections contain perfectly plausible integers,
         // so treating the whole file as one coordinate stream creates bad masks.
-        var inNormalSection = false
-        var foundNormalSection = false
+        let requestedSection = requestedSection.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var inRequestedSection = false
+        var foundRequestedSection = false
         var pointList: [Int] = []
         var pointCounts: [Int]?
         var readingPointList = false
@@ -23,12 +24,12 @@ enum RegionParser {
 
             if line.first == "[", line.last == "]" {
                 let section = line.dropFirst().dropLast().trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                inNormalSection = !foundNormalSection && section == "normal"
-                if inNormalSection { foundNormalSection = true }
+                inRequestedSection = !foundRequestedSection && section == requestedSection
+                if inRequestedSection { foundRequestedSection = true }
                 readingPointList = false
                 continue
             }
-            guard inNormalSection else { continue }
+            guard inRequestedSection else { continue }
 
             guard let separator = line.firstIndex(of: "=") else {
                 if readingPointList { pointList.append(contentsOf: integers(in: line)) }
@@ -50,7 +51,7 @@ enum RegionParser {
             }
         }
 
-        guard foundNormalSection,
+        guard foundRequestedSection,
               let pointCounts,
               !pointCounts.isEmpty,
               pointCounts.count <= 64,

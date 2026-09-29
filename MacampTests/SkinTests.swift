@@ -712,10 +712,18 @@ struct SkinTests {
         [WindowShade]
         NumPoints=3
         PointList=0,0 10,0 0,10
+        [Equalizer]
+        NumPoints=4
+        PointList=0,0 275,0 275,116 0,116
+        [EqualizerWS]
+        NumPoints=4
+        PointList=0,0 275,0 275,14 0,14
         """.utf8)
         let path = RegionParser.parse(data)
         #expect(path?.bounds.width == 275)
         #expect(path?.bounds.height == 116)
+        #expect(RegionParser.parse(data, section: "Equalizer")?.bounds.height == 116)
+        #expect(RegionParser.parse(data, section: "EqualizerWS")?.bounds.height == 14)
     }
 
     @Test @MainActor func malformedRegionFallsBackSafely() {

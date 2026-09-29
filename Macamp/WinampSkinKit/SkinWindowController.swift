@@ -99,14 +99,34 @@ private final class SkinAuxiliaryWindowController: NSObject {
             equalizerHost.window.orderOut(nil)
             return
         }
-        let host = equalizerHost ?? makeHost(
-            title: "Macamp Equalizer",
-            size: skinStore.classicPanelSize(kind: .equalizer, fallback: CGSize(width: 460, height: 300)),
-            rootView: AnyView(SkinEqualizerView(coordinator: coordinator)),
-            background: skinStore.classicPanelImage(kind: .equalizer)
-        )
+        let host = equalizerHost ?? makeEqualizerHost()
         equalizerHost = host
         present(host)
+    }
+
+    private func makeEqualizerHost() -> WinampSkinWindowHost {
+        let host = WinampSkinWindowHost(
+            normalLogicalSize: CGSize(width: 275, height: 116),
+            shadeLogicalSize: CGSize(width: 275, height: 14),
+            scale: 1,
+            allowsResize: false
+        )
+        let surface = ClassicEqualizerSurface(coordinator: coordinator, skinStore: skinStore)
+        surface.windowHost = host
+        host.setContentView(surface)
+        host.regionPath = skinStore.activeCatalog.equalizerRegionPath
+        host.onActivityStateChange = { [weak surface] state in
+            surface?.isActive = state == .active
+            surface?.needsDisplay = true
+        }
+        let store = skinStore
+        host.onShadeStateChange = { [weak host, weak surface] shaded in
+            host?.regionPath = shaded ? store.activeCatalog.equalizerShadeRegionPath : store.activeCatalog.equalizerRegionPath
+            surface?.needsDisplay = true
+        }
+        host.window.isReleasedWhenClosed = false
+        host.window.center()
+        return host
     }
 
     private func makeHost(title: String, size: CGSize, rootView: AnyView, background: NSImage?) -> WinampSkinWindowHost {
@@ -229,6 +249,130 @@ private struct SkinPlaylistView: View {
     private static func time(_ duration: Duration) -> String {
         let seconds = Int(duration.secondsValue)
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+}
+
+/// Native Classic EQ surface. EQMAIN.BMP is a sprite atlas: its first 275x116
+/// pixels are the window background, while the remaining strips contain the
+/// title, buttons, slider tracks and thumbs. Keep all drawing in logical
+/// Winamp pixels and let WinampSkinWindowHost perform the screen conversion.
+@MainActor
+private final class ClassicEqualizerSurface: NSView {
+    private let coordinator: PlaybackCoordinator
+    private let skinStore: SkinLibraryStore
+    weak var windowHost: WinampSkinWindowHost?
+    var isActive = true
+    private let bands = EqualizerBand.winamp10
+
+    override var isFlipped: Bool { true }
+
+    init(coordinator: PlaybackCoordinator, skinStore: SkinLibraryStore) {
+        self.coordinator = coordinator
+        self.skinStore = skinStore
+        super.init(frame: CGRect(x: 0, y: 0, width: 275, height: 116))
+        wantsLayer = true
+        autoresizingMask = [.width, .height]
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Winamp Equalizer")
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.interpolationQuality = .none
+        let shaded = windowHost?.isShaded == true
+        if shaded {
+            if !drawSprite(asset: "eq_ex.bmp", source: CGRect(x: 0, y: isActive ? 0 : 15, width: 275, height: 14), in: CGRect(x: 0, y: 0, width: 275, height: 14)) {
+                _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: 0, y: isActive ? 134 : 149, width: 275, height: 14), in: CGRect(x: 0, y: 0, width: 275, height: 14))
+            }
+            return
+        }
+
+        guard drawSprite(asset: "eqmain.bmp", source: CGRect(x: 0, y: 0, width: 275, height: 116), in: CGRect(x: 0, y: 0, width: 275, height: 116)) else {
+            NSColor(calibratedWhite: 0.08, alpha: 1).setFill()
+            bounds.fill()
+            return
+        }
+        _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: 0, y: isActive ? 134 : 149, width: 275, height: 14), in: CGRect(x: 0, y: 0, width: 275, height: 14))
+
+        let enabled = coordinator.audioEffectState.isEnabled
+        let onX: CGFloat = enabled ? 69 : 10
+        _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: onX, y: 119, width: 26, height: 12), in: CGRect(x: 14, y: 18, width: 26, height: 12))
+        _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: 36, y: 119, width: 32, height: 12), in: CGRect(x: 40, y: 18, width: 32, height: 12))
+        _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: 224, y: 164, width: 44, height: 12), in: CGRect(x: 217, y: 18, width: 44, height: 12))
+
+        _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: 13, y: 164, width: 209, height: 129), in: CGRect(x: 13, y: 38, width: 209, height: 129))
+        drawSliderThumb(gain: coordinator.audioEffectState.preampGain, at: CGPoint(x: 21, y: 38))
+        for (index, band) in bands.enumerated() {
+            let gain = coordinator.audioEffectState.bandGains[band] ?? 0
+            drawSliderThumb(gain: gain, at: CGPoint(x: 78 + CGFloat(index * 18), y: 38))
+        }
+        _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: 0, y: 294, width: 113, height: 19), in: CGRect(x: 86, y: 17, width: 113, height: 19))
+        drawGraph()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if point.y < 14, point.x >= 264 { window?.close(); return }
+        if point.y < 14, point.x >= 254 {
+            windowHost?.setShaded(true)
+            return
+        }
+        if point.x >= 14, point.x < 40, point.y >= 18, point.y < 30 {
+            Task { await coordinator.setEqualizerEnabled(!coordinator.audioEffectState.isEnabled); needsDisplay = true }
+            return
+        }
+        if point.x >= 40, point.x < 72, point.y >= 18, point.y < 30 {
+            Task { await coordinator.resetEqualizer(); needsDisplay = true }
+            return
+        }
+        if point.x >= 21, point.x < 32, point.y >= 38, point.y < 101 {
+            let gain = gain(at: point.y)
+            Task { await coordinator.setPreampGain(Float(gain)); needsDisplay = true }
+            return
+        }
+        for index in bands.indices {
+            let x = 78 + CGFloat(index * 18)
+            guard point.x >= x, point.x < x + 11, point.y >= 38, point.y < 101 else { continue }
+            let gain = gain(at: point.y)
+            Task { await coordinator.setEqualizerBand(index: index, gain: Float(gain)); needsDisplay = true }
+            return
+        }
+    }
+
+    private func gain(at y: CGFloat) -> Double {
+        let fraction = max(0, min(1, (y - 38) / 51))
+        return 12 - Double(fraction) * 24
+    }
+
+    private func drawSliderThumb(gain: Float, at origin: CGPoint) {
+        let fraction = max(0, min(1, (Double(gain) + 12) / 24))
+        let y = origin.y + CGFloat((1 - fraction) * 51)
+        _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: 0, y: isActive ? 176 : 164, width: 11, height: 11), in: CGRect(x: origin.x, y: y, width: 11, height: 11))
+    }
+
+    private func drawGraph() {
+        let values = [coordinator.audioEffectState.preampGain] + bands.map { coordinator.audioEffectState.bandGains[$0] ?? 0 }
+        guard values.count > 1 else { return }
+        let path = NSBezierPath()
+        for (index, value) in values.enumerated() {
+            let x = 87 + CGFloat(index) * 10
+            let y = 26 - CGFloat((Double(value) + 12) / 24 * 15)
+            if index == 0 { path.move(to: CGPoint(x: x, y: y)) } else { path.line(to: CGPoint(x: x, y: y)) }
+        }
+        NSColor(calibratedRed: 0.55, green: 0.9, blue: 0.2, alpha: 1).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+
+    @discardableResult
+    private func drawSprite(asset: String, source: CGRect, in destination: CGRect) -> Bool {
+        guard let image = skinStore.activeCatalog.images[asset] ?? skinStore.activeCatalog.images.first(where: { $0.key.hasSuffix("/\(asset)") })?.value,
+              source.minX >= 0, source.minY >= 0, source.maxX <= image.size.width, source.maxY <= image.size.height else { return false }
+        let flipped = CGRect(x: source.minX, y: image.size.height - source.maxY, width: source.width, height: source.height)
+        image.draw(in: destination, from: flipped, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
+        return true
     }
 }
 

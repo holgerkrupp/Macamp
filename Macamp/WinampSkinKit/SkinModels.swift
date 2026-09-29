@@ -557,6 +557,8 @@ final class SkinAssetCatalog {
     let images: [String: NSImage]
     let report: SkinValidationReport
     let regionPath: NSBezierPath?
+    let equalizerRegionPath: NSBezierPath?
+    let equalizerShadeRegionPath: NSBezierPath?
     let format: SkinFormat
     let canvasSize: CGSize
     let controls: [SkinControlDefinition]
@@ -659,6 +661,8 @@ final class SkinAssetCatalog {
             // alpha-backed window down to their small bounding rectangles.
             let windowRegionPath = modern.windowRegion.flatMap { $0.usesBitmapAlpha ? nil : Self.regionPath($0) }
             regionPath = windowRegionPath
+            equalizerRegionPath = nil
+            equalizerShadeRegionPath = nil
             renderedMainImage = Self.renderModern(
                 modern,
                 images: loadedImages,
@@ -699,7 +703,9 @@ final class SkinAssetCatalog {
             modernOcclusionFrame = nil
             modernWindowUsesBitmapAlpha = false
             let regionData = Self.file(named: "region.txt", in: files)
-            regionPath = regionData.flatMap(RegionParser.parse)
+            regionPath = regionData.flatMap { RegionParser.parse($0) }
+            equalizerRegionPath = regionData.flatMap { RegionParser.parse($0, section: "Equalizer") }
+            equalizerShadeRegionPath = regionData.flatMap { RegionParser.parse($0, section: "EqualizerWS") }
             renderedMainImage = Self.image(named: "main.bmp", in: loadedImages)
         }
     }
