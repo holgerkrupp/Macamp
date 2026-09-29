@@ -2,9 +2,10 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class SkinWindowController: NSWindowController, NSWindowDelegate {
+final class SkinWindowController: NSWindowController {
     private let settings: SettingsStore
     private let renderer: SkinRendererView
+    private let host: WinampSkinWindowHost
     private let auxiliaryWindows: SkinAuxiliaryWindowController
 
     init(
@@ -19,16 +20,6 @@ final class SkinWindowController: NSWindowController, NSWindowDelegate {
         self.auxiliaryWindows = auxiliaryWindows
         let scale = settings.skinScale
         let canvas = skinStore.activeCatalog.canvasSize
-        let size = CGSize(width: canvas.width * CGFloat(scale), height: canvas.height * CGFloat(scale))
-        let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: [.borderless, .miniaturizable], backing: .buffered, defer: false)
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = settings.playerShadow
-        window.level = settings.playerFloating ? .floating : .normal
-        window.collectionBehavior = [.managed, .participatesInCycle]
-        window.isMovableByWindowBackground = true
-        window.acceptsMouseMovedEvents = true
-        window.title = "Classic Macamp Player"
         renderer = SkinRendererView(
             coordinator: coordinator,
             skinStore: skinStore,
@@ -38,12 +29,23 @@ final class SkinWindowController: NSWindowController, NSWindowDelegate {
             equalizerToggle: { [weak auxiliaryWindows] in auxiliaryWindows?.toggleEqualizer() },
             visualizationToggle: visualizationToggle
         )
-        window.contentView = renderer
-        super.init(window: window)
-        window.delegate = self
-        applyRegionMask()
-        if let restored = settings.restoredPlayerFrame() { window.setFrame(Self.corrected(restored, size: size), display: false) }
-        else { window.center() }
+        host = WinampSkinWindowHost(normalLogicalSize: canvas, scale: CGFloat(scale))
+        host.setContentView(renderer)
+        host.regionPath = renderer.regionPath
+        host.window.hasShadow = settings.playerShadow
+        host.window.level = settings.playerFloating ? .floating : .normal
+        super.init(window: host.window)
+        host.onLogicalFrameChange = { [weak settings] frame in
+            settings?.savePlayerLogicalFrame(frame)
+        }
+        if let restored = settings.restoredPlayerLogicalFrame() {
+            host.setLogicalFrame(restored, display: false, clampedToVisibleScreens: true)
+        } else if let restored = settings.restoredPlayerFrame() {
+            let logical = WinampSkinWindowGeometry.logicalFrame(for: restored, scale: CGFloat(scale))
+            host.setLogicalFrame(logical, display: false, clampedToVisibleScreens: true)
+        } else {
+            host.window.center()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -56,44 +58,19 @@ final class SkinWindowController: NSWindowController, NSWindowDelegate {
     func applySettings() {
         guard let window else { return }
         renderer.updateScale(settings.skinScale)
-        window.setContentSize(renderer.frame.size)
-        applyRegionMask()
+        host.setScale(CGFloat(settings.skinScale))
+        host.regionPath = renderer.regionPath
         window.hasShadow = settings.playerShadow
         window.level = settings.playerFloating ? .floating : .normal
-    }
-
-    func windowDidMove(_ notification: Notification) { if let frame = window?.frame { settings.savePlayerFrame(frame) } }
-
-    private func applyRegionMask() {
-        guard let window, let contentView = window.contentView else { return }
-        guard let region = renderer.regionPath else {
-            contentView.layer?.mask = nil
-            return
-        }
-        contentView.wantsLayer = true
-        let mask = CAShapeLayer()
-        mask.fillRule = .nonZero
-        let size = contentView.bounds.size
-        var transform = CGAffineTransform(translationX: 0, y: size.height)
-            .scaledBy(x: 1, y: -1)
-        mask.path = region.cgPath.copy(using: &transform)
-        mask.frame = contentView.bounds
-        contentView.layer?.mask = mask
-    }
-
-    private static func corrected(_ frame: CGRect, size: CGSize) -> CGRect {
-        let screens = NSScreen.screens.map(\.visibleFrame)
-        guard let screen = screens.first(where: { $0.intersects(frame) }) ?? NSScreen.main?.visibleFrame else { return CGRect(origin: frame.origin, size: size) }
-        return CGRect(x: min(max(frame.minX, screen.minX), screen.maxX - size.width), y: min(max(frame.minY, screen.minY), screen.maxY - size.height), width: size.width, height: size.height)
     }
 }
 
 @MainActor
-private final class SkinAuxiliaryWindowController: NSObject, NSWindowDelegate {
+private final class SkinAuxiliaryWindowController: NSObject {
     private let coordinator: PlaybackCoordinator
     private let skinStore: SkinLibraryStore
-    private var playlistPanel: NSPanel?
-    private var equalizerPanel: NSPanel?
+    private var playlistHost: WinampSkinWindowHost?
+    private var equalizerHost: WinampSkinWindowHost?
     private let docking = WindowDockingController()
 
     init(coordinator: PlaybackCoordinator, skinStore: SkinLibraryStore) {
@@ -102,45 +79,40 @@ private final class SkinAuxiliaryWindowController: NSObject, NSWindowDelegate {
     }
 
     func togglePlaylist() {
-        if let playlistPanel, playlistPanel.isVisible {
-            playlistPanel.orderOut(nil)
+        if let playlistHost, playlistHost.window.isVisible {
+            playlistHost.window.orderOut(nil)
             return
         }
-        let panel = playlistPanel ?? makePanel(
+        let host = playlistHost ?? makeHost(
             title: "Macamp Playlist",
             size: skinStore.classicPanelSize(kind: .playlist, fallback: CGSize(width: 430, height: 360)),
             rootView: AnyView(SkinPlaylistView(coordinator: coordinator)),
             background: skinStore.classicPanelImage(kind: .playlist)
         )
-        playlistPanel = panel
-        present(panel)
+        playlistHost = host
+        present(host)
     }
 
     func toggleEqualizer() {
-        if let equalizerPanel, equalizerPanel.isVisible {
-            equalizerPanel.orderOut(nil)
+        if let equalizerHost, equalizerHost.window.isVisible {
+            equalizerHost.window.orderOut(nil)
             return
         }
-        let panel = equalizerPanel ?? makePanel(
+        let host = equalizerHost ?? makeHost(
             title: "Macamp Equalizer",
             size: skinStore.classicPanelSize(kind: .equalizer, fallback: CGSize(width: 460, height: 300)),
             rootView: AnyView(SkinEqualizerView(coordinator: coordinator)),
             background: skinStore.classicPanelImage(kind: .equalizer)
         )
-        equalizerPanel = panel
-        present(panel)
+        equalizerHost = host
+        present(host)
     }
 
-    private func makePanel(title: String, size: CGSize, rootView: AnyView, background: NSImage?) -> NSPanel {
-        let panel = NSPanel(
-            contentRect: CGRect(origin: .zero, size: size),
-            styleMask: [.titled, .closable, .resizable, .utilityWindow],
-            backing: .buffered,
-            defer: false
-        )
-        panel.title = title
-        panel.isReleasedWhenClosed = false
-        panel.minSize = CGSize(width: min(360, size.width), height: min(240, size.height))
+    private func makeHost(title: String, size: CGSize, rootView: AnyView, background: NSImage?) -> WinampSkinWindowHost {
+        let host = WinampSkinWindowHost(normalLogicalSize: size, scale: 1, allowsResize: true)
+        host.window.title = title
+        host.window.isReleasedWhenClosed = false
+        host.window.minSize = CGSize(width: min(360, size.width), height: min(240, size.height))
         let container = ClassicSkinPanelView(background: background)
         let hosted = NSHostingView(rootView: rootView)
         hosted.translatesAutoresizingMaskIntoConstraints = false
@@ -153,20 +125,18 @@ private final class SkinAuxiliaryWindowController: NSObject, NSWindowDelegate {
             hosted.topAnchor.constraint(equalTo: container.topAnchor),
             hosted.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
-        panel.contentView = container
-        panel.delegate = self
-        panel.center()
-        return panel
+        host.setContentView(container)
+        host.onLogicalFrameChange = { [weak self, weak window = host.window] _ in
+            guard let window else { return }
+            self?.docking.update(window: window)
+        }
+        host.window.center()
+        return host
     }
 
-    private func present(_ panel: NSPanel) {
-        panel.makeKeyAndOrderFront(nil)
+    private func present(_ host: WinampSkinWindowHost) {
+        host.window.makeKeyAndOrderFront(nil)
         NSApp.activate()
-    }
-
-    func windowDidMove(_ notification: Notification) {
-        guard let panel = notification.object as? NSPanel else { return }
-        docking.update(panel: panel)
     }
 }
 
@@ -335,7 +305,7 @@ final class WindowDockingController {
         return origin
     }
 
-    func update(panel: NSPanel) {
-        registeredPanelFrames[ObjectIdentifier(panel)] = panel.frame
+    func update(window: NSWindow) {
+        registeredPanelFrames[ObjectIdentifier(window)] = window.frame
     }
 }

@@ -16,6 +16,7 @@ final class SettingsStore {
         static let intensity = "visualizationIntensity"
         static let visualization = "selectedVisualization"
         static let playerFrame = "classicPlayerFrame"
+        static let playerLogicalFrame = "classicPlayerLogicalFrame"
     }
 
     private let defaults: UserDefaults
@@ -45,6 +46,16 @@ final class SettingsStore {
     func savePlayerFrame(_ frame: CGRect) { defaults.set(NSStringFromRect(frame), forKey: Keys.playerFrame) }
     func restoredPlayerFrame() -> CGRect? {
         guard let value = defaults.string(forKey: Keys.playerFrame) else { return nil }
+        let rect = NSRectFromString(value)
+        return rect.isEmpty ? nil : rect
+    }
+
+    func savePlayerLogicalFrame(_ frame: CGRect) {
+        defaults.set(NSStringFromRect(frame), forKey: Keys.playerLogicalFrame)
+    }
+
+    func restoredPlayerLogicalFrame() -> CGRect? {
+        guard let value = defaults.string(forKey: Keys.playerLogicalFrame) else { return nil }
         let rect = NSRectFromString(value)
         return rect.isEmpty ? nil : rect
     }

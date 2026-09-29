@@ -612,6 +612,68 @@ struct SkinTests {
         #expect(result.x == 100)
     }
 
+    @Test @MainActor func winampWindowGeometryScalesLogicalFramesAtBoundary() {
+        let logical = CGRect(x: 40, y: 25, width: 275, height: 116)
+        let screen = WinampSkinWindowGeometry.screenFrame(for: logical, scale: 2)
+
+        #expect(screen == CGRect(x: 80, y: 50, width: 550, height: 232))
+        #expect(WinampSkinWindowGeometry.logicalFrame(for: screen, scale: 2) == logical)
+        #expect(WinampSkinWindowGeometry.screenSize(for: CGSize(width: 100, height: 14), scale: 3) == CGSize(width: 300, height: 42))
+    }
+
+    @Test @MainActor func settingsPersistLogicalPlayerFrame() throws {
+        let suiteName = "Macamp.WindowHostTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = SettingsStore(defaults: defaults)
+        let frame = CGRect(x: 48, y: 32, width: 275, height: 116)
+
+        settings.savePlayerLogicalFrame(frame)
+
+        #expect(settings.restoredPlayerLogicalFrame() == frame)
+    }
+
+    @Test @MainActor func winampWindowHostTransitionsRegionActivityAndShadeState() {
+        let host = WinampSkinWindowHost(
+            normalLogicalSize: CGSize(width: 100, height: 50),
+            shadeLogicalSize: CGSize(width: 100, height: 14),
+            scale: 2
+        )
+        let content = NSView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
+        host.setContentView(content)
+
+        let region = NSBezierPath(rect: CGRect(x: 0, y: 0, width: 50, height: 50))
+        host.regionPath = region
+        host.clickThroughTransparentPixels = true
+        host.clickThroughTest = { $0.x < 25 }
+
+        #expect(content.layer?.mask != nil)
+        #expect(host.acceptsInput(atLogicalPoint: CGPoint(x: 20, y: 20)))
+        #expect(!host.acceptsInput(atLogicalPoint: CGPoint(x: 30, y: 20)))
+        #expect(!host.acceptsInput(atLogicalPoint: CGPoint(x: 80, y: 20)))
+
+        var activities: [WinampSkinWindowActivityState] = []
+        var shadeStates: [Bool] = []
+        host.onActivityStateChange = { activities.append($0) }
+        host.onShadeStateChange = { shadeStates.append($0) }
+        host.setSkinActive(true)
+        host.setShaded(true)
+
+        #expect(host.activityState == .active)
+        #expect(host.isShaded)
+        #expect(host.currentLogicalSize == CGSize(width: 100, height: 14))
+        #expect(host.window.contentView?.bounds.size == CGSize(width: 200, height: 28))
+        #expect(activities == [.active])
+        #expect(shadeStates == [true])
+
+        host.setShaded(false)
+        host.setSkinActive(false)
+        #expect(!host.isShaded)
+        #expect(host.activityState == .inactive)
+        #expect(shadeStates == [true, false])
+        #expect(activities == [.active, .inactive])
+    }
+
     @Test @MainActor func rendererUsesLogicalBoundsAtEveryDisplayScale() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
