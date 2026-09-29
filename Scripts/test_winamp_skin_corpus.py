@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic tests for the developer-only corpus scanner."""
 
+import contextlib
 import io
 import json
 import sys
@@ -48,6 +49,29 @@ class CorpusScannerTests(unittest.TestCase):
         encoded = json.dumps([scanner.asdict(result) for result in scanner.smoke_result()], sort_keys=True)
         self.assertIn('"archive_type": "Classic"', encoded)
         self.assertIn('"findings"', encoded)
+
+    def test_project_owned_validation_report_is_deterministic_and_passes(self):
+        first = scanner.validation_report()
+        second = scanner.validation_report()
+        self.assertTrue(first.passed)
+        self.assertEqual(first, second)
+
+        encoded = json.dumps(scanner.asdict(first), indent=2, sort_keys=True)
+        self.assertIn('"schema_version": 1', encoded)
+        self.assertIn('classic.equalizer.resource-gate', encoded)
+        self.assertIn('classic.playlist.resource-gate', encoded)
+        self.assertIn('modern.xui.independent-instance-input', encoded)
+        self.assertIn('modern.xui.sendparams-and-scope-markers', encoded)
+
+    def test_validation_cli_emits_machine_readable_report(self):
+        # Exercise the same entry point used by local CI/developer checks.
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = scanner.main(["--validation-report", "--json"])
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual({check["status"] for check in payload["checks"]}, {"pass"})
 
 
 if __name__ == "__main__":

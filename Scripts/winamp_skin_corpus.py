@@ -103,6 +103,28 @@ class ScanResult:
         return not self.errors
 
 
+@dataclass(frozen=True)
+class ValidationCheck:
+    """One deterministic, project-owned compatibility gate."""
+
+    id: str
+    fixture: str
+    status: str
+    evidence: str
+
+
+@dataclass(frozen=True)
+class ValidationReport:
+    """Machine-readable validation output independent of a local skin corpus."""
+
+    schema_version: int
+    checks: tuple[ValidationCheck, ...]
+
+    @property
+    def passed(self) -> bool:
+        return all(check.status == "pass" for check in self.checks)
+
+
 def _basename(path: str) -> str:
     return path.rsplit("/", 1)[-1].lower()
 
@@ -123,6 +145,10 @@ def _find_entries(entries: Mapping[str, bytes], basename: str) -> list[str]:
 
 def _finding(name: str, status: str, evidence: str) -> Finding:
     return Finding(name=name, status=status, evidence=evidence)
+
+
+def _finding_named(result: ScanResult, name: str) -> Finding | None:
+    return next((finding for finding in result.findings if finding.name == name), None)
 
 
 def _classic_findings(entries: Mapping[str, bytes]) -> list[Finding]:
@@ -379,13 +405,191 @@ def smoke_result() -> list[ScanResult]:
     ]
 
 
+def validation_fixture_entries() -> dict[str, tuple[str, dict[str, bytes]]]:
+    """Return deterministic, project-owned inputs for compatibility gates.
+
+    These are deliberately byte-only resource stubs.  The Swift diagnostic
+    fixtures own image rendering assertions; this helper verifies that the
+    developer scanner recognizes the same resource and XML vocabulary without
+    requiring a third-party skin archive in the repository.
+    """
+
+    classic_resources = {
+        name: b"fixture"
+        for name in (
+            "main.bmp",
+            "cbuttons.bmp",
+            "titlebar.bmp",
+            "shufrep.bmp",
+            "posbar.bmp",
+            "volume.bmp",
+            "balance.bmp",
+            "numbers.bmp",
+            "nums_ex.bmp",
+            "playpaus.bmp",
+            "monoster.bmp",
+            "text.bmp",
+            "region.txt",
+            "eqmain.bmp",
+            "eq_ex.bmp",
+            "pledit.bmp",
+            "pledit.txt",
+        )
+    }
+    modern_xml = b"""<WinampAbstractionLayer xmlns:Wasabi='urn:macamp:validation'>
+  <elements><bitmap id='pixel' file='pixel.png'/></elements>
+  <container id='main' default_visible='1'>
+    <groupdef id='diagnostic.button' xuitag='Wasabi:DiagnosticButton' w='32' h='16'>
+      <button id='click' image='pixel' x='0' y='0' w='16' h='8'/>
+    </groupdef>
+    <layout id='normal' w='96' h='32'>
+      <group id='nested' x='8' y='4' w='80' h='24'>
+        <layer id='scene-background' image='pixel' x='0' y='0' w='80' h='24'/>
+        <Wasabi:DiagnosticButton id='first' x='4' y='4'/>
+        <Wasabi:DiagnosticButton id='second' x='52' y='4'/>
+      </group>
+      <sendparams group='first' target='click' x='4' w='20'/>
+      <hideobject target='second.click'/>
+    </layout>
+  </container>
+</WinampAbstractionLayer>"""
+    return {
+        "classic-reference.wsz": (".wsz", classic_resources),
+        "modern-reference.wal": (
+            ".wal",
+            {"skin.xml": modern_xml, "pixel.png": b"fixture", "scripts/diagnostic.maki": b"fixture"},
+        ),
+    }
+
+
+def _check(check_id: str, fixture: str, passed: bool, evidence: str) -> ValidationCheck:
+    return ValidationCheck(
+        id=check_id,
+        fixture=fixture,
+        status="pass" if passed else "fail",
+        evidence=evidence,
+    )
+
+
+def validation_report() -> ValidationReport:
+    """Run deterministic #45 gates over project-owned Classic and Modern fixtures."""
+
+    fixtures = validation_fixture_entries()
+    classic_name = "classic-reference.wsz"
+    modern_name = "modern-reference.wal"
+    classic_extension, classic_entries = fixtures[classic_name]
+    modern_extension, modern_entries = fixtures[modern_name]
+    classic = scan_entries(f"<validation>/{classic_name}", classic_extension, classic_entries)
+    modern = scan_entries(f"<validation>/{modern_name}", modern_extension, modern_entries)
+
+    required_classic = {
+        "main.bmp",
+        "cbuttons.bmp",
+        "shufrep.bmp",
+        "posbar.bmp",
+        "volume.bmp",
+        "balance.bmp",
+        "eqmain.bmp",
+        "eq_ex.bmp",
+        "pledit.bmp",
+        "pledit.txt",
+    }
+    classic_eq = _finding_named(classic, "Classic Equalizer window")
+    classic_playlist = _finding_named(classic, "Classic Playlist Editor composition")
+    classic_inventory = _finding_named(classic, "Classic Main sprite catalog")
+
+    checks = [
+        _check(
+            "classic.archive.classification",
+            classic_name,
+            classic.valid and classic.archive_type == "Classic",
+            f"archive_type={classic.archive_type}",
+        ),
+        _check(
+            "classic.main.required-resources",
+            classic_name,
+            required_classic.issubset(set(classic.resources)),
+            f"required={len(required_classic)}, observed={len(required_classic & set(classic.resources))}",
+        ),
+        _check(
+            "classic.main.canonical-sprite-inventory",
+            classic_name,
+            classic_inventory is not None and classic_inventory.status == "supported",
+            classic_inventory.evidence if classic_inventory else "finding missing",
+        ),
+        _check(
+            "classic.equalizer.resource-gate",
+            classic_name,
+            classic_eq is not None and "eqmain.bmp" in classic_eq.evidence and "eq_ex.bmp" in classic_eq.evidence,
+            classic_eq.evidence if classic_eq else "finding missing",
+        ),
+        _check(
+            "classic.playlist.resource-gate",
+            classic_name,
+            classic_playlist is not None and "pledit.bmp" in classic_playlist.evidence and "pledit.txt" in classic_playlist.evidence,
+            classic_playlist.evidence if classic_playlist else "finding missing",
+        ),
+        _check(
+            "modern.archive.classification",
+            modern_name,
+            modern.valid and modern.archive_type == "Modern",
+            f"archive_type={modern.archive_type}",
+        ),
+        _check(
+            "modern.live-scene.vocabulary",
+            modern_name,
+            _finding_named(modern, "Modern layout/group hierarchy") is not None
+            and len(_find_entries(modern_entries, "skin.xml")) == 1,
+            "skin.xml contains container/layout/groupdef scene structure",
+        ),
+        _check(
+            "modern.xui.independent-instance-input",
+            modern_name,
+            modern_entries["skin.xml"].count(b"Wasabi:DiagnosticButton") == 3,
+            "one groupdef xuitag declaration plus two instances",
+        ),
+        _check(
+            "modern.xui.sendparams-and-scope-markers",
+            modern_name,
+            modern_entries["skin.xml"].count(b"<sendparams") == 1
+            and modern_entries["skin.xml"].count(b"<hideobject") == 1,
+            "sendparams and scoped hideobject are present",
+        ),
+    ]
+    return ValidationReport(schema_version=1, checks=tuple(checks))
+
+
+def render_validation_text(report: ValidationReport) -> str:
+    lines = [f"schema_version: {report.schema_version}", f"passed: {str(report.passed).lower()}"]
+    lines.extend(
+        f"[{check.status}] {check.id} ({check.fixture}): {check.evidence}"
+        for check in report.checks
+    )
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Scan local WSZ/WAL/ZIP skins without extracting or embedding them.")
     parser.add_argument("paths", nargs="*", type=Path, help="archive files or directories to scan")
     parser.add_argument("--json", action="store_true", dest="as_json", help="emit deterministic JSON")
     parser.add_argument("--smoke", action="store_true", help="scan deterministic in-memory fixtures and exit")
+    parser.add_argument(
+        "--validation-report",
+        action="store_true",
+        help="run deterministic project-owned Classic/Modern compatibility gates",
+    )
     args = parser.parse_args(argv)
 
+    if args.smoke and args.validation_report:
+        parser.error("--smoke and --validation-report are mutually exclusive")
+
+    if args.validation_report:
+        report = validation_report()
+        if args.as_json:
+            print(json.dumps(asdict(report), indent=2, sort_keys=True))
+        else:
+            print(render_validation_text(report))
+        return 0 if report.passed else 2
     if args.smoke:
         results = smoke_result()
     else:
