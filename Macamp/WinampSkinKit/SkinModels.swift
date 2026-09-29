@@ -340,6 +340,12 @@ nonisolated struct WasabiScene: Sendable, Equatable {
         nodes[handle] = node
     }
 
+    mutating func setAlpha(_ alpha: CGFloat, for handle: WasabiHandle) {
+        guard var node = nodes[handle] else { return }
+        node.alpha = min(max(alpha, 0), 1)
+        nodes[handle] = node
+    }
+
     mutating func setVisible(_ visible: Bool, for handle: WasabiHandle) {
         guard var node = nodes[handle] else { return }
         node.visible = visible
@@ -348,7 +354,18 @@ nonisolated struct WasabiScene: Sendable, Equatable {
 
     mutating func setActiveLayout(_ layout: WasabiHandle, for container: WasabiHandle) {
         guard nodes[layout]?.kind == .layout, nodes[container]?.kind == .container else { return }
+        guard nodes[layout]?.parent == container else { return }
         activeLayoutByContainer[container] = layout
+    }
+
+    func activeLayout(for container: WasabiHandle) -> WasabiHandle? {
+        activeLayoutByContainer[container]
+    }
+
+    func layoutHandle(id: String, in container: WasabiHandle? = nil) -> WasabiHandle? {
+        let candidates = handles(for: id).filter { nodes[$0]?.kind == .layout }
+        guard let container else { return candidates.first }
+        return candidates.first { nodes[$0]?.parent == container }
     }
 
     func isInActiveLayout(_ handle: WasabiHandle) -> Bool {
@@ -372,11 +389,27 @@ nonisolated struct WasabiScene: Sendable, Equatable {
                 !node.ghost && effectiveVisible(node.handle) && effectiveAlpha(node.handle) > 0 &&
                 isInActiveLayout(node.handle) && (worldFrame(of: node.handle)?.contains(point) ?? false)
             }
-            .sorted { lhs, rhs in
-                if lhs.zIndex != rhs.zIndex { return lhs.zIndex > rhs.zIndex }
-                return lhs.handle.rawValue > rhs.handle.rawValue
-            }
+            // Hit testing follows the same hierarchical paint order as the
+            // scene painter. A child of a later sibling must be above an
+            // earlier sibling even when both children have local zIndex 0.
+            .sorted { paintOrderComesAfter($0.handle, than: $1.handle) }
             .first
+    }
+
+    private func paintOrderKey(for handle: WasabiHandle) -> [(Int, UInt64)] {
+        guard let node = nodes[handle] else { return [] }
+        let parentKey = node.parent.map(paintOrderKey(for:)) ?? []
+        return parentKey + [(node.zIndex, node.handle.rawValue)]
+    }
+
+    private func paintOrderComesAfter(_ lhs: WasabiHandle, than rhs: WasabiHandle) -> Bool {
+        let left = paintOrderKey(for: lhs)
+        let right = paintOrderKey(for: rhs)
+        for index in 0..<min(left.count, right.count) {
+            if left[index].0 != right[index].0 { return left[index].0 > right[index].0 }
+            if left[index].1 != right[index].1 { return left[index].1 > right[index].1 }
+        }
+        return left.count > right.count
     }
 
     /// Compatibility projection for the pre-#35 callers. It intentionally

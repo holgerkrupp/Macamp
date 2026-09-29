@@ -35,6 +35,12 @@ enum WinampSkinWindowActivityState: Equatable {
     case inactive
 }
 
+enum WinampSkinWindowDockingState: Equatable {
+    case free
+    case preparingToRedock
+    case docked
+}
+
 /// Shared host for borderless Winamp windows.
 ///
 /// Skin content remains expressed in logical Winamp pixels. Only this host
@@ -45,11 +51,12 @@ enum WinampSkinWindowActivityState: Equatable {
 @MainActor
 final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
     let window: NSWindow
-    let normalLogicalSize: CGSize
+    private(set) var normalLogicalSize: CGSize
     let shadeLogicalSize: CGSize?
 
     private(set) var isShaded = false
     private(set) var activityState: WinampSkinWindowActivityState = .inactive
+    private(set) var dockingState: WinampSkinWindowDockingState = .free
 
     private(set) var scale: CGFloat
 
@@ -136,6 +143,31 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
         resizeWindow(to: CGRect(origin: frame.origin, size: currentLogicalSize), display: display)
         applyRegionMask()
         onShadeStateChange?(shaded)
+    }
+
+    /// Resize the real skin window in Winamp logical pixels.  MAKI Layout
+    /// objects use this entry point instead of maintaining renderer-only
+    /// geometry.
+    func resizeLogicalWindow(to size: CGSize, display: Bool = true) {
+        guard size.width > 0, size.height > 0 else { return }
+        normalLogicalSize = size
+        guard !isShaded else { return }
+        let frame = logicalFrame
+        resizeWindow(to: CGRect(origin: frame.origin, size: size), display: display)
+        applyRegionMask()
+        onLogicalFrameChange?(logicalFrame)
+    }
+
+    func beforeRedock() {
+        dockingState = .preparingToRedock
+    }
+
+    func redock() {
+        dockingState = .docked
+    }
+
+    func undock() {
+        dockingState = .free
     }
 
     func acceptsInput(atLogicalPoint point: CGPoint) -> Bool {

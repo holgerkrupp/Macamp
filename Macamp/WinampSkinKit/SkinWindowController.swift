@@ -30,6 +30,7 @@ final class SkinWindowController: NSWindowController {
             visualizationToggle: visualizationToggle
         )
         host = WinampSkinWindowHost(normalLogicalSize: canvas, scale: CGFloat(scale))
+        renderer.windowHost = host
         host.setContentView(renderer)
         host.regionPath = renderer.regionPath
         host.window.hasShadow = settings.playerShadow
