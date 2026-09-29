@@ -1093,6 +1093,16 @@ struct SkinTests {
         #expect(settings.restoredPlayerLogicalFrame() == frame)
     }
 
+    @Test @MainActor func settingsPersistAuxiliaryLogicalFrames() {
+        let name = "Macamp.AuxiliaryFrame.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let settings = SettingsStore(defaults: defaults)
+        let frame = CGRect(x: 12, y: 34, width: 275, height: 232)
+        settings.saveAuxiliaryLogicalFrame(frame, key: SettingsStore.Keys.playlistLogicalFrame)
+        #expect(settings.restoredAuxiliaryLogicalFrame(key: SettingsStore.Keys.playlistLogicalFrame) == frame)
+    }
+
     @Test @MainActor func winampWindowHostTransitionsRegionActivityAndShadeState() {
         let host = WinampSkinWindowHost(
             normalLogicalSize: CGSize(width: 100, height: 50),

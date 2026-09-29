@@ -17,6 +17,8 @@ final class SettingsStore {
         static let visualization = "selectedVisualization"
         static let playerFrame = "classicPlayerFrame"
         static let playerLogicalFrame = "classicPlayerLogicalFrame"
+        static let equalizerLogicalFrame = "classicEqualizerLogicalFrame"
+        static let playlistLogicalFrame = "classicPlaylistLogicalFrame"
     }
 
     private let defaults: UserDefaults
@@ -56,6 +58,16 @@ final class SettingsStore {
 
     func restoredPlayerLogicalFrame() -> CGRect? {
         guard let value = defaults.string(forKey: Keys.playerLogicalFrame) else { return nil }
+        let rect = NSRectFromString(value)
+        return rect.isEmpty ? nil : rect
+    }
+
+    func saveAuxiliaryLogicalFrame(_ frame: CGRect, key: String) {
+        defaults.set(NSStringFromRect(frame), forKey: key)
+    }
+
+    func restoredAuxiliaryLogicalFrame(key: String) -> CGRect? {
+        guard let value = defaults.string(forKey: key) else { return nil }
         let rect = NSRectFromString(value)
         return rect.isEmpty ? nil : rect
     }

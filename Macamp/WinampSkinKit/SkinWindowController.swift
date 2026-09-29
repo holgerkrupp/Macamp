@@ -17,7 +17,7 @@ final class SkinWindowController: NSWindowController {
         visualizationToggle: @escaping () -> Void
     ) {
         self.settings = settings
-        let auxiliaryWindows = SkinAuxiliaryWindowController(coordinator: coordinator, skinStore: skinStore)
+        let auxiliaryWindows = SkinAuxiliaryWindowController(coordinator: coordinator, skinStore: skinStore, settings: settings)
         self.auxiliaryWindows = auxiliaryWindows
         let scale = settings.skinScale
         let canvas = skinStore.activeCatalog.canvasSize
@@ -74,14 +74,16 @@ final class SkinWindowController: NSWindowController {
 private final class SkinAuxiliaryWindowController: NSObject {
     private let coordinator: PlaybackCoordinator
     private let skinStore: SkinLibraryStore
+    private let settings: SettingsStore
     private var playlistHost: WinampSkinWindowHost?
     private var equalizerHost: WinampSkinWindowHost?
     private let docking = WindowDockingController()
     private let windowGroup = WinampSkinWindowGroup()
 
-    init(coordinator: PlaybackCoordinator, skinStore: SkinLibraryStore) {
+    init(coordinator: PlaybackCoordinator, skinStore: SkinLibraryStore, settings: SettingsStore) {
         self.coordinator = coordinator
         self.skinStore = skinStore
+        self.settings = settings
     }
 
     func attachMainHost(_ host: WinampSkinWindowHost) {
@@ -118,9 +120,16 @@ private final class SkinAuxiliaryWindowController: NSObject {
             surface?.needsDisplay = true
         }
         host.onShadeStateChange = { [weak surface] _ in surface?.needsDisplay = true }
+        host.onLogicalFrameChange = { [weak settings] frame in
+            settings?.saveAuxiliaryLogicalFrame(frame, key: SettingsStore.Keys.playlistLogicalFrame)
+        }
         host.window.isReleasedWhenClosed = false
         host.window.minSize = CGSize(width: 275, height: 116)
-        host.window.center()
+        if let restored = settings.restoredAuxiliaryLogicalFrame(key: SettingsStore.Keys.playlistLogicalFrame) {
+            host.setLogicalFrame(restored, display: false, clampedToVisibleScreens: true)
+        } else {
+            host.window.center()
+        }
         return host
     }
 
@@ -155,8 +164,15 @@ private final class SkinAuxiliaryWindowController: NSObject {
             host?.regionPath = shaded ? store.activeCatalog.equalizerShadeRegionPath : store.activeCatalog.equalizerRegionPath
             surface?.needsDisplay = true
         }
+        host.onLogicalFrameChange = { [weak settings] frame in
+            settings?.saveAuxiliaryLogicalFrame(frame, key: SettingsStore.Keys.equalizerLogicalFrame)
+        }
         host.window.isReleasedWhenClosed = false
-        host.window.center()
+        if let restored = settings.restoredAuxiliaryLogicalFrame(key: SettingsStore.Keys.equalizerLogicalFrame) {
+            host.setLogicalFrame(restored, display: false, clampedToVisibleScreens: true)
+        } else {
+            host.window.center()
+        }
         return host
     }
 
