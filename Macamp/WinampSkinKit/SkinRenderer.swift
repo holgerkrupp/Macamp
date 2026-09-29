@@ -166,8 +166,29 @@ final class SkinRendererView: NSView {
             guard isElementVisible(layer.elementID, initiallyVisible: layer.initiallyVisible),
                   let path = skinStore.activeCatalog.modernBitmapFiles[layer.imageID.lowercased()],
                   let image = skinStore.activeCatalog.images[path.lowercased()] else { continue }
-            guard let frame = effectiveFrame(for: layer).map({ translated($0, for: drawerRole) }) else { continue }
-            let source = layer.cropToFirstFrame ? CGRect(x: 0, y: max(0, image.size.height - frame.height), width: min(image.size.width, frame.width), height: min(image.size.height, frame.height)) : .zero
+            guard var logicalFrame = effectiveFrame(for: layer) else { continue }
+            let declaredSource = skinStore.activeCatalog.modernBitmapSourceRects[layer.imageID.lowercased()]
+            if logicalFrame.width <= 0 { logicalFrame.size.width = declaredSource?.width ?? image.size.width }
+            if logicalFrame.height <= 0 { logicalFrame.size.height = declaredSource?.height ?? image.size.height }
+            guard logicalFrame.width > 0, logicalFrame.height > 0 else { continue }
+            let frame = translated(logicalFrame, for: drawerRole)
+            let source = if let declaredSource {
+                CGRect(
+                    x: declaredSource.minX,
+                    y: image.size.height - declaredSource.maxY,
+                    width: min(declaredSource.width, image.size.width - declaredSource.minX),
+                    height: min(declaredSource.height, declaredSource.maxY - declaredSource.minY)
+                )
+            } else if layer.cropToFirstFrame, frame.width > 0, frame.height > 0 {
+                CGRect(
+                    x: 0,
+                    y: max(0, image.size.height - frame.height),
+                    width: min(image.size.width, frame.width),
+                    height: min(image.size.height, frame.height)
+                )
+            } else {
+                CGRect(origin: .zero, size: image.size)
+            }
             image.draw(in: frame, from: source, operation: .sourceOver, fraction: runtimeOpacity(for: layer), respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
         }
     }
@@ -344,7 +365,13 @@ final class SkinRendererView: NSView {
     }
 
     private func activate(_ control: SkinControlDefinition, point: CGPoint, frame: CGRect) async {
-        if let elementID = control.elementID, makiRuntime?.dispatchClick(objectID: elementID) == true { return }
+        // EQ sliders and their top/bottom nudge buttons have a reliable native
+        // action mapping. Letting partially supported MAKI handlers intercept
+        // them made the visible controls inert when a skin's optional script
+        // used an unsupported Wasabi object.
+        if control.action != .setEqualizerBand,
+           let elementID = control.elementID,
+           makiRuntime?.dispatchClick(objectID: elementID) == true { return }
         switch control.action {
         case .previous: await coordinator.previous()
         case .play: await coordinator.play()
@@ -414,6 +441,8 @@ final class SkinRendererView: NSView {
             title.prefix(33).uppercased().draw(at: CGPoint(x: 111, y: 24), withAttributes: attributes)
             time.draw(at: CGPoint(x: 40, y: 24), withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 15, weight: .bold), .foregroundColor: NSColor.systemGreen])
             "SIM VIS".draw(at: CGPoint(x: 40, y: 47), withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 6, weight: .medium), .foregroundColor: NSColor.systemGreen])
+            drawClassicTechnicalValue(technicalBitrate, in: CGRect(x: 108, y: 45, width: 22, height: 12))
+            drawClassicTechnicalValue(technicalFrequency, in: CGRect(x: 151, y: 45, width: 20, height: 12))
             NSColor.systemRed.setFill(); CGRect(x: 263, y: 3, width: 8, height: 7).fill()
         } else {
             for region in skinStore.activeCatalog.textRegions {
@@ -426,8 +455,14 @@ final class SkinRendererView: NSView {
                     if let duration = coordinator.state.duration {
                         "-\(formatted(max(0, duration.secondsValue - coordinator.state.elapsed.secondsValue)))"
                     } else { "--:--" }
+                case .bitrate: technicalBitrate
+                case .frequency: technicalFrequency
+                case .channels: technicalChannels
+                case .fileExtension: technicalExtension
                 }
-                let text = region.elementID.flatMap { makiRuntime?.text(objectID: $0) } ?? fallbackText
+                let text = region.elementID.flatMap { objectID in
+                    makiRuntime?.text(objectID: objectID).flatMap { $0.isEmpty ? nil : $0 }
+                } ?? fallbackText
                 let alignment: NSTextAlignment = switch region.alignment {
                 case "center": .center
                 case "right": .right
@@ -452,14 +487,53 @@ final class SkinRendererView: NSView {
         return String(format: "%02d:%02d", value / 60, value % 60)
     }
 
+    private var technicalBitrate: String {
+        coordinator.state.currentItem?.bitrateKbps.map(String.init) ?? "--"
+    }
+
+    private var technicalFrequency: String {
+        guard let sampleRate = coordinator.state.currentItem?.sampleRateHz else { return "--" }
+        let khz = Double(sampleRate) / 1_000
+        return khz.rounded() == khz ? String(format: "%.0f", khz) : String(format: "%.1f", khz)
+    }
+
+    private var technicalChannels: String {
+        coordinator.state.currentItem?.channelCount.map(String.init) ?? "--"
+    }
+
+    private var technicalExtension: String {
+        coordinator.state.currentItem?.fileExtension?.uppercased() ?? "--"
+    }
+
+    private func drawClassicTechnicalValue(_ value: String, in frame: CGRect) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        value.draw(
+            in: frame,
+            withAttributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 6, weight: .medium),
+                .foregroundColor: NSColor.systemGreen,
+                .paragraphStyle: paragraph
+            ]
+        )
+    }
+
     private func logical(_ point: CGPoint) -> CGPoint { point }
     private func isVisible(at point: CGPoint) -> Bool {
-        if let region = skinStore.activeCatalog.regionPath { return region.contains(point) }
+        if let region = skinStore.activeCatalog.regionPath, !region.contains(point) { return false }
         if skinStore.activeCatalog.contentRegions.contains(where: { translated($0.frame, for: $0.drawerRole).contains(point) }) { return true }
         if skinStore.activeCatalog.drawers.contains(where: { drawer in
             drawer.expandedFrame.offsetBy(dx: drawerOffset(for: drawer).x, dy: drawerOffset(for: drawer).y).contains(point)
         }) { return true }
-        guard let image = skinStore.activeCatalog.modernBaseImage ?? skinStore.activeCatalog.mainImage,
+        if skinStore.activeCatalog.modernWindowUsesBitmapAlpha {
+            return isOpaquePixel(at: point)
+        }
+        if skinStore.activeCatalog.regionPath != nil { return true }
+        return isOpaquePixel(at: point)
+    }
+
+    private func isOpaquePixel(at point: CGPoint) -> Bool {
+        guard let image = skinStore.activeCatalog.mainImage,
               let tiff = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiff) else { return true }
         let canvas = skinStore.activeCatalog.canvasSize
@@ -609,7 +683,7 @@ final class SkinRendererView: NSView {
         } else {
             remaining = "--:--"
         }
-        return [title, time, remaining]
+        return [title, time, remaining, technicalBitrate, technicalFrequency]
     }
 
     private func toggleDrawer(_ role: ModernDrawerRole) {

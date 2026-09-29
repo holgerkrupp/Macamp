@@ -71,10 +71,10 @@ final class SkinWindowController: NSWindowController, NSWindowDelegate {
         }
         contentView.wantsLayer = true
         let mask = CAShapeLayer()
+        mask.fillRule = .nonZero
         let size = contentView.bounds.size
-        let scale = CGFloat(settings.skinScale)
         var transform = CGAffineTransform(translationX: 0, y: size.height)
-            .scaledBy(x: scale, y: -scale)
+            .scaledBy(x: 1, y: -1)
         mask.path = region.cgPath.copy(using: &transform)
         mask.frame = contentView.bounds
         contentView.layer?.mask = mask

@@ -40,6 +40,13 @@ enum ModernSkinParser {
             descriptor.textRegions = selected.textRegions
             descriptor.contentRegions = deduplicatedContent(selected.contentRegions)
             descriptor.drawers = selected.drawers
+            if !selected.regionShapes.isEmpty || selected.desktopAlpha {
+                descriptor.windowRegion = ModernWindowRegionDescriptor(
+                    shapes: selected.regionShapes,
+                    desktopAlpha: selected.desktopAlpha,
+                    usesBitmapAlpha: selected.desktopAlpha
+                )
+            }
         }
         descriptor.screenshotPath = descriptor.screenshotPath.flatMap { resolve(path: $0, relativeTo: "skin.xml", files: files) }
         return Result(descriptor: descriptor, warnings: warnings)
@@ -55,6 +62,8 @@ enum ModernSkinParser {
         var contentRegions: [ModernSkinContentRegion]
         var groups: [GroupReference]
         var drawers: [ModernDrawerDescriptor]
+        var regionShapes: [ModernWindowRegionShape]
+        var desktopAlpha: Bool
         var inheritedGroupID: String?
         var containerID: String?
         var containerIsDefaultVisible: Bool
@@ -109,10 +118,12 @@ enum ModernSkinParser {
             var textRegions: [ModernSkinTextRegion] = []
             var contentRegions: [ModernSkinContentRegion] = []
             var groups: [GroupReference] = []
+            var regionShapes: [ModernWindowRegionShape] = []
             var drawerTargetX: CGFloat?
             let declaredWidth = number(attribute("w", root)) ?? number(attribute("default_w", root)) ?? 0
             let declaredHeight = number(attribute("h", root)) ?? number(attribute("default_h", root)) ?? 0
             let rootSize = CGSize(width: declaredWidth, height: declaredHeight)
+            let desktopAlpha = bool(attribute("desktopalpha", root))
             if let background = attribute("background", root)?.lowercased() {
                 layers.append(ModernSkinLayer(imageID: background, frame: .zero, elementID: id))
             }
@@ -142,6 +153,7 @@ enum ModernSkinParser {
                 if ["layer", "animatedlayer", "button", "togglebutton", "nstatesbutton", "slider"].contains(tag),
                    let imageID,
                    mapped == nil {
+                    let sysRegion = number(attribute("sysregion", element)).map(Int.init)
                     let visualFrame = tag == "slider" ? CGRect(origin: frame.origin, size: .zero) : frame
                     layers.append(ModernSkinLayer(
                         imageID: imageID.lowercased(),
@@ -151,8 +163,11 @@ enum ModernSkinParser {
                         cropToFirstFrame: tag == "animatedlayer",
                         action: mapped?.action,
                         initiallyVisible: initiallyVisible,
-                        isSystemRegion: number(attribute("sysregion", element)) == 1
+                        sysRegion: sysRegion
                     ))
+                    if let sysRegion, sysRegion != 0, !visualFrame.isEmpty {
+                        regionShapes.append(ModernWindowRegionShape(frame: visualFrame, additive: sysRegion > 0))
+                    }
                 }
                 if let mapped {
                     let sprite = imageID.map { SpriteReference(assetName: $0.lowercased(), sourceRect: .zero) }
@@ -169,7 +184,7 @@ enum ModernSkinParser {
                         action: mapped.action,
                         elementID: attribute("id", element),
                         initiallyVisible: initiallyVisible,
-                        parameter: Int(attribute("param", element) ?? ""),
+                        parameter: Int(attribute("param", element) ?? "") ?? equalizerBandNumber(from: attribute("id", element)),
                         orientation: orientation
                     ))
                 }
@@ -214,6 +229,8 @@ enum ModernSkinParser {
                     contentRegions: contentRegions,
                     groups: groups,
                     drawers: [],
+                    regionShapes: regionShapes,
+                    desktopAlpha: desktopAlpha,
                     inheritedGroupID: attribute("inherit_group", root),
                     containerID: container.flatMap { attribute("id", $0)?.lowercased() },
                     containerIsDefaultVisible: container.flatMap { attribute("default_visible", $0) }.map { $0 != "0" } ?? false,
@@ -252,6 +269,8 @@ enum ModernSkinParser {
             result.textRegions.insert(contentsOf: parent.textRegions, at: 0)
             result.contentRegions.insert(contentsOf: parent.contentRegions, at: 0)
             result.drawers.insert(contentsOf: parent.drawers, at: 0)
+            result.regionShapes.insert(contentsOf: parent.regionShapes, at: 0)
+            result.desktopAlpha = result.desktopAlpha || parent.desktopAlpha
         }
         for reference in candidate.groups {
             let referenceID = reference.id.lowercased()
@@ -262,6 +281,13 @@ enum ModernSkinParser {
             let drawerRole = drawerRole(for: reference.id)
             result.layers.append(contentsOf: child.layers.map { layer in
                 var translated = layer
+                translated.frame.origin.x += origin.x
+                translated.frame.origin.y += origin.y
+                if translated.drawerRole == nil { translated.drawerRole = drawerRole }
+                return translated
+            })
+            result.regionShapes.append(contentsOf: child.regionShapes.map { shape in
+                var translated = shape
                 translated.frame.origin.x += origin.x
                 translated.frame.origin.y += origin.y
                 if translated.drawerRole == nil { translated.drawerRole = drawerRole }
@@ -368,6 +394,11 @@ enum ModernSkinParser {
         return true
     }
 
+    nonisolated private static func bool(_ value: String?) -> Bool {
+        guard let value else { return false }
+        return ["1", "true", "yes", "on"].contains(value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
     nonisolated private static func opacity(of element: XMLElement) -> Double {
         guard let value = number(attribute("alpha", element)) else { return 1 }
         return min(max(Double(value) / 255, 0), 1)
@@ -400,6 +431,10 @@ enum ModernSkinParser {
         }
         if value.contains("remaining") { return .remainingTime }
         if value.contains("elapsed") || value == "time" || value.contains(" timer") || value.hasPrefix("time ") { return .elapsedTime }
+        if value.contains("bitrate") || value.contains("bit rate") { return .bitrate }
+        if value.contains("frequency") || value.contains("sample") || value.contains("khz") { return .frequency }
+        if value.contains("channels") || value.contains("channel") { return .channels }
+        if value.contains("extension") || value.contains("fileext") || value.contains("file type") { return .fileExtension }
         return nil
     }
 
@@ -470,6 +505,13 @@ enum ModernSkinParser {
         if value.contains("eq_band") || value.contains("eqband") {
             return (.equalizer, .setEqualizerBand)
         }
+        if let rawID {
+            let id = rawID.lowercased()
+            if id.contains("eq"), id.contains("top") || id.contains("bottom"),
+               let band = Int(id.filter(\Character.isNumber)), band > 0 {
+                return (.equalizer, .setEqualizerBand)
+            }
+        }
         if value.contains("reseteq") || value.contains("eqreset") || value.contains("reset eq") {
             return (.equalizer, .resetEqualizer)
         }
@@ -496,6 +538,15 @@ enum ModernSkinParser {
         if value.contains("repeat") { return (.repeat, .cycleRepeat) }
         if value.contains("visual") || value.contains("vis") { return (.visualization, .toggleVisualization) }
         return nil
+    }
+
+    nonisolated private static func equalizerBandNumber(from rawID: String?) -> Int? {
+        guard let rawID else { return nil }
+        let id = rawID.lowercased()
+        guard id.contains("eq"), id.contains("top") || id.contains("bottom") else { return nil }
+        let digits = id.filter(\Character.isNumber)
+        guard let value = Int(digits), value > 0 else { return nil }
+        return value
     }
 
     nonisolated private static func resolve(path rawPath: String, relativeTo xmlPath: String, files: [String: Data]) -> String? {

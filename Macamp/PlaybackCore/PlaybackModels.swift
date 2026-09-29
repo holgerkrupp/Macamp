@@ -1,5 +1,7 @@
 import Foundation
 
+// Playback metadata also carries the technical fields used by Winamp skin readouts.
+
 struct PlaybackProviderID: RawRepresentable, Hashable, Codable, Sendable, ExpressibleByStringLiteral {
     var rawValue: String
     init(rawValue: String) { self.rawValue = rawValue }
@@ -44,6 +46,38 @@ struct PlaybackItem: Identifiable, Hashable, Sendable {
     var isExplicit: Bool
     var sourceURL: URL? = nil
     var attribution: String? = nil
+    var bitrateKbps: Int? = nil
+    var sampleRateHz: Int? = nil
+    var channelCount: Int? = nil
+    var fileExtension: String? = nil
+
+    init(
+        id: PlaybackItemID,
+        providerID: PlaybackProviderID,
+        providerItemID: String,
+        title: String,
+        artist: String? = nil,
+        albumTitle: String? = nil,
+        duration: Duration? = nil,
+        artwork: ArtworkReference? = nil,
+        mediaKind: MediaKind,
+        isExplicit: Bool,
+        sourceURL: URL? = nil,
+        attribution: String? = nil
+    ) {
+        self.id = id
+        self.providerID = providerID
+        self.providerItemID = providerItemID
+        self.title = title
+        self.artist = artist
+        self.albumTitle = albumTitle
+        self.duration = duration
+        self.artwork = artwork
+        self.mediaKind = mediaKind
+        self.isExplicit = isExplicit
+        self.sourceURL = sourceURL
+        self.attribution = attribution
+    }
 }
 
 struct PlaybackCollection: Identifiable, Hashable, Sendable {

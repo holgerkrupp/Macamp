@@ -101,9 +101,10 @@ enum LocalMediaImporter {
             let seconds = time.seconds
             return seconds.isFinite && seconds >= 0 ? .seconds(seconds) : nil
         }
+        let technical = technicalMetadata(for: entry.url, duration: duration)
         let rawID = entry.url.absoluteString
         let itemID = PlaybackItemID(rawValue: "local:\(rawID)")
-        return PlaybackItem(
+        var item = PlaybackItem(
             id: itemID,
             providerID: .localMedia,
             providerItemID: rawID,
@@ -115,6 +116,28 @@ enum LocalMediaImporter {
             mediaKind: entry.url.pathExtension.lowercased() == "m3u8" ? .radioStation : .localFile,
             isExplicit: false
         )
+        item.bitrateKbps = technical.bitrateKbps
+        item.sampleRateHz = technical.sampleRateHz
+        item.channelCount = technical.channelCount
+        item.fileExtension = entry.url.pathExtension.lowercased()
+        return item
+    }
+
+    private static func technicalMetadata(for url: URL, duration: Duration?) -> (bitrateKbps: Int?, sampleRateHz: Int?, channelCount: Int?) {
+        guard url.isFileURL else { return (nil, nil, nil) }
+        let audioFile = try? AVAudioFile(forReading: url)
+        let format = audioFile?.processingFormat
+        let sampleRate = format.map { Int($0.sampleRate.rounded()) }
+        let channels = format.map { Int($0.channelCount) }
+        let bitrate: Int?
+        if let duration, duration.secondsValue > 0,
+           let bytes = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           bytes > 0 {
+            bitrate = Int((Double(bytes) * 8 / duration.secondsValue / 1_000).rounded())
+        } else {
+            bitrate = nil
+        }
+        return (bitrate, sampleRate, channels)
     }
 
     private static func stringValue(for key: AVMetadataKey, in metadata: [AVMetadataItem]) async -> String? {

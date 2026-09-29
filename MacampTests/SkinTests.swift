@@ -132,8 +132,10 @@ struct SkinTests {
         #expect(descriptor.drawers.first { $0.role == .left }?.collapsedOrigin.x == 207)
         #expect(descriptor.drawers.first { $0.role == .right }?.expandedFrame.minX == 488)
         #expect(descriptor.drawers.first { $0.role == .right }?.collapsedOrigin.x == 277)
-        #expect(descriptor.controls.filter { $0.action == .setEqualizerBand }.count == 10)
-        #expect(descriptor.controls.filter { $0.action == .setEqualizerBand }.allSatisfy { $0.orientation == .vertical })
+        #expect(descriptor.controls.filter { $0.action == .setEqualizerBand }.count == 30)
+        #expect(descriptor.controls.filter { $0.action == .setEqualizerBand && $0.orientation == .vertical }.count == 10)
+        #expect(descriptor.controls.filter { $0.elementID?.localizedCaseInsensitiveContains("top") == true || $0.elementID?.localizedCaseInsensitiveContains("bottom") == true }.count >= 20)
+        #expect(descriptor.controls.filter { $0.action == .setEqualizerBand }.allSatisfy { $0.parameter != nil })
         #expect(descriptor.contentRegions.contains { $0.role == .visualization && $0.frame == CGRect(x: 283, y: 63, width: 191, height: 138) })
         #expect(descriptor.contentRegions.contains { $0.elementID?.caseInsensitiveCompare("InlineAVS") == .orderedSame && $0.frame == CGRect(x: 283, y: 71, width: 191, height: 132) })
         #expect(loaded.files.keys.filter { ($0 as NSString).pathExtension.lowercased() == "maki" }.count == 4)
@@ -157,6 +159,28 @@ struct SkinTests {
         #expect(host.targets.last?.objectID == "rightdrawer")
         #expect(host.targets.last?.x == 277)
         #expect(!runtime.diagnostics.contains { $0.contains("Disabled") })
+    }
+
+    @Test func bundledCellLayoutAndMetadataWhenFixtureIsAvailable() async throws {
+        let projectRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let url = projectRoot.appending(path: "Skins/CELL V3.wal")
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+
+        let loaded = try await SkinArchiveLoader().load(url: url)
+        let descriptor = try #require(loaded.modern)
+        #expect(descriptor.canvasSize == CGSize(width: 810, height: 448))
+        #expect(descriptor.layers.contains { $0.elementID?.caseInsensitiveCompare("playerbody") == .orderedSame })
+        #expect(descriptor.textRegions.contains { $0.role == .bitrate })
+        #expect(descriptor.textRegions.contains { $0.role == .frequency })
+        #expect(!descriptor.makiBindings.isEmpty)
+        #expect(descriptor.bitmapFiles["big.background"] == "gfx/big.png")
+        let catalog = SkinAssetCatalog(name: "CELL", files: loaded.files, report: loaded.report, format: loaded.format, modern: descriptor)
+        #expect(catalog.images["gfx/big.png"] != nil)
+        #expect(catalog.images["gfx/big.png"]?.size == CGSize(width: 479, height: 451))
+        #expect(catalog.mainImage?.size == CGSize(width: 810, height: 448))
+        #expect(!catalog.makiPrograms.isEmpty)
+        let rendered = try #require(catalog.mainImage?.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+        #expect(rendered.colorAt(x: 100, y: 100)?.alphaComponent ?? 0 > 0)
     }
 
     @Test func modernParserSelectsMainLayoutAndExpandsStaticSemantics() throws {
@@ -293,10 +317,69 @@ struct SkinTests {
     }
 
     @Test @MainActor func regionParserBuildsPolygon() {
-        let data = Data("0,0 275,0 275,116 0,116".utf8)
+        let data = Data("""
+        ; Commented examples must not contribute coordinates.
+        ; [Normal]
+        ; NumPoints=3
+        ; PointList=0,0 10,0 0,10
+        [Normal]
+        NumPoints=4,4
+        PointList=0,0 275,0 275,20 0,20
+        PointList=0,20 275,20 275,116 0,116
+        [WindowShade]
+        NumPoints=3
+        PointList=0,0 10,0 0,10
+        """.utf8)
         let path = RegionParser.parse(data)
         #expect(path?.bounds.width == 275)
         #expect(path?.bounds.height == 116)
+    }
+
+    @Test @MainActor func malformedRegionFallsBackSafely() {
+        let data = Data("[Normal]\nNumPoints=4\nPointList=0,0 275,0 275,116".utf8)
+        #expect(RegionParser.parse(data) == nil)
+    }
+
+    @Test @MainActor func classicChromaKeyDoesNotLeakIntoModernAssets() throws {
+        let png = try alphaAndMagentaPNG()
+        let modern = SkinAssetCatalog(name: "Modern", files: ["asset.png": png], report: .init(), format: .modern, modern: ModernSkinDescriptor())
+        let classic = SkinAssetCatalog(name: "Classic", files: ["asset.png": png], report: .init(), format: .classic)
+        let modernImage = try #require(modern.images["asset.png"])
+        let classicImage = try #require(classic.images["asset.png"])
+        let modernTIFF = try #require(modernImage.tiffRepresentation)
+        let classicTIFF = try #require(classicImage.tiffRepresentation)
+        let modernBitmap = try #require(NSBitmapImageRep(data: modernTIFF))
+        let classicBitmap = try #require(NSBitmapImageRep(data: classicTIFF))
+
+        #expect(try #require(modernBitmap.colorAt(x: 0, y: 0)).alphaComponent > 0.99)
+        #expect(try #require(modernBitmap.colorAt(x: 0, y: 0)).redComponent > 0.9)
+        #expect(try #require(modernBitmap.colorAt(x: 1, y: 0)).alphaComponent < 0.01)
+        #expect((classicBitmap.colorAt(x: 0, y: 0)?.alphaComponent ?? 0) < 0.01)
+    }
+
+    @Test @MainActor func modernRegionPreservesRawSysregionAndComposesCutouts() throws {
+        let xml = """
+        <WinampAbstractionLayer>
+          <container id="main" default_visible="1">
+            <layout id="normal" w="100" h="100" desktopalpha="true">
+              <layer id="outer" image="pixel" x="0" y="0" w="100" h="100" sysregion="1" />
+              <layer id="hole" image="pixel" x="25" y="25" w="50" h="50" sysregion="-2" />
+            </layout>
+          </container>
+        </WinampAbstractionLayer>
+        """
+        let descriptor = ModernSkinParser.parse(files: ["skin.xml": Data(xml.utf8), "pixel.png": try alphaAndMagentaPNG()]).descriptor
+        let region = try #require(descriptor.windowRegion)
+        #expect(region.desktopAlpha)
+        #expect(region.usesBitmapAlpha)
+        #expect(region.shapes.map(\.additive) == [true, false])
+        #expect(descriptor.layers.first { $0.elementID == "outer" }?.sysRegion == 1)
+        #expect(descriptor.layers.first { $0.elementID == "hole" }?.sysRegion == -2)
+
+        let catalog = SkinAssetCatalog(name: "Modern", files: ["skin.xml": Data(xml.utf8), "pixel.png": try alphaAndMagentaPNG()], report: .init(), format: .modern, modern: descriptor)
+        #expect(catalog.regionPath == nil)
+        #expect(catalog.modernWindowUsesBitmapAlpha)
+        #expect(catalog.mainImage != nil)
     }
 
     @Test @MainActor func dockingUsesIntegerScaledThreshold() {
@@ -380,7 +463,7 @@ struct SkinTests {
         let coordinator = PlaybackCoordinator()
         let provider = MockPlaybackProvider()
         coordinator.register(provider)
-        let item = PlaybackItem(
+        var item = PlaybackItem(
             id: "renderer-e2e",
             providerID: .preview,
             providerItemID: "renderer-e2e",
@@ -392,6 +475,10 @@ struct SkinTests {
             mediaKind: .song,
             isExplicit: false
         )
+        item.bitrateKbps = 128
+        item.sampleRateHz = 44_100
+        item.channelCount = 2
+        item.fileExtension = "mp3"
         await coordinator.play(item: item)
 
         let settings = SettingsStore(defaults: defaults)
@@ -405,6 +492,7 @@ struct SkinTests {
             visualizationToggle: {}
         )
         #expect(view.metadataStringsForTesting.first == "Synthetic Artist - Synthetic Song")
+        #expect(Array(view.metadataStringsForTesting.suffix(2)) == ["128", "44.1"])
         #expect(view.drawerProgressForTesting[.left] == 1)
 
         view.makiTargetChanged(objectID: "LeftDrawer", x: 20, speed: 0.05)
@@ -426,6 +514,32 @@ struct SkinTests {
         let url = directory.appending(path: "Synthetic.\(fileExtension)")
         try makeStoredZIP(entries).write(to: url)
         return url
+    }
+
+    private func alphaAndMagentaPNG() throws -> Data {
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 1,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bitmapFormat: [],
+            bytesPerRow: 0,
+            bitsPerPixel: 32
+        ))
+        let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        NSColor.magenta.setFill()
+        NSRect(x: 0, y: 0, width: 1, height: 1).fill()
+        NSColor.clear.setFill()
+        NSRect(x: 1, y: 0, width: 1, height: 1).fill()
+        context.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+        return try #require(bitmap.representation(using: .png, properties: [:]))
     }
 
     private func appendLE<T: FixedWidthInteger>(_ value: T, to data: inout Data) {

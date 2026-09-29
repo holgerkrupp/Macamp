@@ -160,8 +160,10 @@ final class MakiRuntime {
             for event in instance.program.events {
                 guard instance.program.functions[event.functionIndex].name.caseInsensitiveCompare(eventName) == .orderedSame,
                       instance.variables[event.variableIndex] == .object(objectID) else { continue }
-                handled = true
-                do { try execute(instance, at: event.codeOffset) }
+                do {
+                    try execute(instance, at: event.codeOffset)
+                    handled = true
+                }
                 catch {
                     let reason = "Disabled \(instance.program.path): \(error.localizedDescription)"
                     instance.disabledReason = reason

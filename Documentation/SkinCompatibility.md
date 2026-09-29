@@ -4,7 +4,7 @@ Macamp accepts `.wsz`, `.wal`, and `.zip` archives. Plain ZIP files are detected
 
 ## Classic skins
 
-Classic Winamp 2.x skins render `main.bmp`, recognize common optional bitmap/configuration names case-insensitively, use `region.txt` when parsable, and otherwise derive click-through behavior from `main.bmp` alpha. Invalid regions fall back to alpha and then a rectangle. Rendering uses the native 275 × 116 logical canvas, nearest-neighbor interpolation, and integer scale factors.
+Classic Winamp 2.x skins render `main.bmp`, recognize common optional bitmap/configuration names case-insensitively, and apply the legacy `#FF00FF` color key only to Classic assets. `REGION.TXT` is parsed from the active `[Normal]` section, including multiple polygons; malformed regions are ignored and the window falls back to bitmap alpha and then a rectangle. Rendering uses the native 275 × 116 logical canvas, nearest-neighbor interpolation, and integer scale factors. The region mask stays in logical skin coordinates at every display scale.
 
 ## Modern WAL skins
 
@@ -12,7 +12,7 @@ WAL files are ZIP-compatible Wasabi skin packages. Macamp safely parses skin met
 
 Compiled `.maki` versions `0x15`, `0x16`, and `0x17` are decoded and structurally validated before managed storage. A bounded interpreter implements the Winamp VM stack, variables, calls, branches, arithmetic, event tables, and a restricted host-object layer for common `System`, `Group`, `GuiObject`, playback, XML-parameter, visibility, click, volume, EQ, and target-animation calls. HeadAMP’s startup, EQ/playlist toggles, cross-script clicks, and moving drawers are covered by integration tests.
 
-This is not a claim of 100% Wasabi compatibility. Dynamic object opcodes, timers, every animation API, custom classes/components, third-party plug-ins, bitmap fonts, and a number of skin-specific host methods still need implementations. Unsupported calls are diagnostic no-ops; unsafe dynamic behavior disables only the affected script instance and keeps the declarative fallback usable. A screenshot remains the fallback when no renderable layout exists.
+Modern skins preserve native PNG alpha and do not use the Classic magenta color key. A supported `sysregion` subset is composed separately from drawer occlusion: positive values add a layer frame, negative values subtract a cut-out, and `desktopalpha` records that bitmap alpha participates in the window silhouette. This is not a claim of 100% Wasabi compatibility. Dynamic object opcodes, timers, every animation API, custom classes/components, third-party plug-ins, bitmap fonts, and a number of skin-specific host methods still need implementations. Unsupported calls are diagnostic no-ops; unsafe dynamic behavior disables only the affected script instance and keeps the declarative fallback usable. A screenshot remains the fallback when no renderable layout exists.
 
 ## Archive safety
 

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		4872E5B4306BEDAC00CABE90 /* Ressources.md in Resources */ = {isa = PBXBuildFile; fileRef = 4872E5B3306BEDAC00CABE90 /* Ressources.md */; };
 		48E8FCF4301FC1750029A598 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 48E8FCF3301FC1750029A598 /* AppIcon.icon */; };
 		D20000000000000000000001 /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000001 /* Auth */; };
 		D20000000000000000000002 /* EventProducer in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000002 /* EventProducer */; };
@@ -27,6 +28,7 @@
 /* Begin PBXFileReference section */
 		000000000000000000000120 /* Macamp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Macamp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000121 /* MacampTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacampTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		4872E5B3306BEDAC00CABE90 /* Ressources.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = Ressources.md; sourceTree = "<group>"; };
 		48E8FCF3301FC1750029A598 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -60,28 +62,11 @@
 		};
 /* End PBXFrameworksBuildPhase section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		D00000000000000000000001 /* tidal-sdk-ios */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/tidal-music/tidal-sdk-ios";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.9.5;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		D10000000000000000000001 /* Auth */ = {isa = XCSwiftPackageProductDependency; package = D00000000000000000000001 /* tidal-sdk-ios */; productName = Auth; };
-		D10000000000000000000002 /* EventProducer */ = {isa = XCSwiftPackageProductDependency; package = D00000000000000000000001 /* tidal-sdk-ios */; productName = EventProducer; };
-		D10000000000000000000003 /* Player */ = {isa = XCSwiftPackageProductDependency; package = D00000000000000000000001 /* tidal-sdk-ios */; productName = Player; };
-		D10000000000000000000004 /* TidalAPI */ = {isa = XCSwiftPackageProductDependency; package = D00000000000000000000001 /* tidal-sdk-ios */; productName = TidalAPI; };
-/* End XCSwiftPackageProductDependency section */
-
 /* Begin PBXGroup section */
 		000000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
+				4872E5B3306BEDAC00CABE90 /* Ressources.md */,
 				48E8FCF3301FC1750029A598 /* AppIcon.icon */,
 				000000000000000000000010 /* Macamp */,
 				000000000000000000000011 /* MacampTests */,
@@ -114,13 +99,13 @@
 			fileSystemSynchronizedGroups = (
 				000000000000000000000010 /* Macamp */,
 			);
+			name = Macamp;
 			packageProductDependencies = (
 				D10000000000000000000001 /* Auth */,
 				D10000000000000000000002 /* EventProducer */,
 				D10000000000000000000003 /* Player */,
 				D10000000000000000000004 /* TidalAPI */,
 			);
-			name = Macamp;
 			productName = Macamp;
 			productReference = 000000000000000000000120 /* Macamp.app */;
 			productType = "com.apple.product-type.application";
@@ -169,10 +154,10 @@
 				Base,
 			);
 			mainGroup = 000000000000000000000001;
-			packageReferences = (
-				D00000000000000000000001 /* tidal-sdk-ios */,
-			);
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				D00000000000000000000001 /* XCRemoteSwiftPackageReference "tidal-sdk-ios" */,
+			);
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
 			projectDirPath = "";
@@ -188,6 +173,7 @@
 		000000000000000140000000 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
+				4872E5B4306BEDAC00CABE90 /* Ressources.md in Resources */,
 				48E8FCF4301FC1750029A598 /* AppIcon.icon in Resources */,
 			);
 		};
@@ -496,6 +482,40 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		D00000000000000000000001 /* XCRemoteSwiftPackageReference "tidal-sdk-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tidal-music/tidal-sdk-ios";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.5;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		D10000000000000000000001 /* Auth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D00000000000000000000001 /* XCRemoteSwiftPackageReference "tidal-sdk-ios" */;
+			productName = Auth;
+		};
+		D10000000000000000000002 /* EventProducer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D00000000000000000000001 /* XCRemoteSwiftPackageReference "tidal-sdk-ios" */;
+			productName = EventProducer;
+		};
+		D10000000000000000000003 /* Player */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D00000000000000000000001 /* XCRemoteSwiftPackageReference "tidal-sdk-ios" */;
+			productName = Player;
+		};
+		D10000000000000000000004 /* TidalAPI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D00000000000000000000001 /* XCRemoteSwiftPackageReference "tidal-sdk-ios" */;
+			productName = TidalAPI;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 000000000000000000000000 /* Project object */;
 }

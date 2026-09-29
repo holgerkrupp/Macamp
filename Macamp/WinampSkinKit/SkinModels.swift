@@ -60,6 +60,18 @@ struct ModernDrawerDescriptor: Sendable {
     var collapsedOrigin: CGPoint
 }
 
+struct ModernWindowRegionShape: Sendable, Equatable {
+    var frame: CGRect
+    var additive: Bool
+    var drawerRole: ModernDrawerRole? = nil
+}
+
+struct ModernWindowRegionDescriptor: Sendable, Equatable {
+    var shapes: [ModernWindowRegionShape] = []
+    var desktopAlpha = false
+    var usesBitmapAlpha = false
+}
+
 struct ModernMakiBinding: Sendable, Equatable {
     var path: String
     var groupID: String
@@ -75,11 +87,13 @@ struct ModernSkinLayer: Sendable {
     var action: SkinAction? = nil
     var initiallyVisible = true
     var drawerRole: ModernDrawerRole? = nil
-    var isSystemRegion = false
+    var sysRegion: Int? = nil
+
+    var isSystemRegion: Bool { sysRegion != nil && sysRegion != 0 }
 }
 
 enum ModernSkinTextRole: Sendable {
-    case songTitle, elapsedTime, remainingTime
+    case songTitle, elapsedTime, remainingTime, bitrate, frequency, channels, fileExtension
 }
 
 struct ModernSkinTextRegion: Sendable {
@@ -120,6 +134,7 @@ struct ModernSkinDescriptor: Sendable {
     var contentRegions: [ModernSkinContentRegion] = []
     var drawers: [ModernDrawerDescriptor] = []
     var makiBindings: [ModernMakiBinding] = []
+    var windowRegion: ModernWindowRegionDescriptor?
 }
 
 struct LoadedSkinArchive: Sendable {
@@ -156,8 +171,10 @@ final class SkinAssetCatalog {
     let drawerImages: [ModernDrawerRole: NSImage]
     let modernBaseImage: NSImage?
     let modernOcclusionFrame: CGRect?
+    let modernWindowUsesBitmapAlpha: Bool
     let modernLayers: [ModernSkinLayer]
     let modernBitmapFiles: [String: String]
+    let modernBitmapSourceRects: [String: CGRect]
     private let renderedMainImage: NSImage?
 
     var mainImage: NSImage? { renderedMainImage }
@@ -169,7 +186,9 @@ final class SkinAssetCatalog {
         let loadedImages = files.reduce(into: [String: NSImage]()) { result, pair in
             let imageExtensions: Set<String> = ["bmp", "png", "jpg", "jpeg", "gif", "tif", "tiff"]
             guard imageExtensions.contains((pair.key as NSString).pathExtension.lowercased()) else { return }
-            if let image = Self.safeImage(data: pair.value) { result[pair.key.lowercased()] = image }
+            if let image = Self.safeImage(data: pair.value, applyChromaKey: format == .classic) {
+                result[pair.key.lowercased()] = image
+            }
         }
         images = loadedImages
         if format == .modern, let modern {
@@ -206,6 +225,7 @@ final class SkinAssetCatalog {
             drawers = modern.drawers
             modernLayers = modern.layers
             modernBitmapFiles = modern.bitmapFiles
+            modernBitmapSourceRects = modern.bitmapSourceRects
             makiBindings = modern.makiBindings
             makiPrograms = Array(Set(modern.makiBindings.map { $0.path.lowercased() })).sorted().compactMap { path in
                 files[path].flatMap { try? MakiDecoder.decode($0, path: path) }
@@ -222,22 +242,32 @@ final class SkinAssetCatalog {
                 return (elementID, image)
             }, uniquingKeysWith: { first, _ in first })
             let occlusionFrames = modern.layers
-                .filter { $0.drawerRole == nil && $0.isSystemRegion }
+                .filter { $0.drawerRole == nil && ($0.sysRegion ?? 0) > 0 }
                 .compactMap { Self.resolvedFrame(for: $0, descriptor: modern, images: loadedImages) }
             modernOcclusionFrame = occlusionFrames.reduce(nil as CGRect?) { partial, frame in
                 partial.map { $0.union(frame) } ?? frame
             }
-            regionPath = nil
-            renderedMainImage = Self.renderModern(modern, images: loadedImages, layers: modern.layers.filter { $0.elementID == nil && $0.initiallyVisible }, allowScreenshotFallback: true)
-            if modern.drawers.isEmpty {
-                modernBaseImage = nil
-                drawerImages = [:]
-            } else {
-                modernBaseImage = Self.renderModern(modern, images: loadedImages, layers: modern.layers.filter { $0.drawerRole == nil && $0.elementID == nil && $0.initiallyVisible })
-                drawerImages = Dictionary(uniqueKeysWithValues: ModernDrawerRole.allCases.compactMap { role in
-                    Self.renderModern(modern, images: loadedImages, layers: modern.layers.filter { $0.drawerRole == role && $0.elementID == nil && $0.initiallyVisible }).map { (role, $0) }
-                })
-            }
+            modernWindowUsesBitmapAlpha = modern.windowRegion?.usesBitmapAlpha ?? false
+            // With desktopalpha, native bitmap alpha is the silhouette. The
+            // sysregion shapes remain useful for occlusion but must not clip the
+            // alpha-backed window down to their small bounding rectangles.
+            let windowRegionPath = modern.windowRegion.flatMap { $0.usesBitmapAlpha ? nil : Self.regionPath($0) }
+            regionPath = windowRegionPath
+            renderedMainImage = Self.renderModern(
+                modern,
+                images: loadedImages,
+                layers: modern.layers.filter(\.initiallyVisible),
+                allowScreenshotFallback: true,
+                clipPath: windowRegionPath
+            ) ?? NSImage(size: canvasSize, flipped: true) { _ in true }
+            modernBaseImage = Self.renderModern(
+                modern,
+                images: loadedImages,
+                layers: modern.layers.filter { $0.drawerRole == nil && $0.elementID == nil && $0.initiallyVisible }
+            ) ?? NSImage(size: canvasSize, flipped: true) { _ in true }
+            drawerImages = Dictionary(uniqueKeysWithValues: ModernDrawerRole.allCases.compactMap { role in
+                Self.renderModern(modern, images: loadedImages, layers: modern.layers.filter { $0.drawerRole == role && $0.elementID == nil && $0.initiallyVisible }).map { (role, $0) }
+            })
         } else {
             canvasSize = CGSize(width: 275, height: 116)
             controls = ClassicSkinControls.main
@@ -246,12 +276,14 @@ final class SkinAssetCatalog {
             drawers = []
             modernLayers = []
             modernBitmapFiles = [:]
+            modernBitmapSourceRects = [:]
             makiPrograms = []
             makiBindings = []
             makiControlImages = [:]
             drawerImages = [:]
             modernBaseImage = nil
             modernOcclusionFrame = nil
+            modernWindowUsesBitmapAlpha = false
             let regionData = Self.file(named: "region.txt", in: files)
             regionPath = regionData.flatMap(RegionParser.parse)
             renderedMainImage = Self.image(named: "main.bmp", in: loadedImages)
@@ -264,7 +296,7 @@ final class SkinAssetCatalog {
         }?.value
     }
 
-    private static func safeImage(data: Data) -> NSImage? {
+    private static func safeImage(data: Data, applyChromaKey: Bool) -> NSImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
@@ -272,7 +304,7 @@ final class SkinAssetCatalog {
               width > 0, height > 0, width <= 8_192, height <= 8_192,
               width * height <= 32_000_000 else { return nil }
         guard let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
-        if let masked = applyWinampChromaKey(to: cgImage) {
+        if applyChromaKey, let masked = applyWinampChromaKey(to: cgImage) {
             let maskedImage = NSImage(cgImage: masked, size: CGSize(width: width, height: height))
             maskedImage.size = CGSize(width: width, height: height)
             return maskedImage
@@ -305,7 +337,7 @@ final class SkinAssetCatalog {
         return NSImage(size: size, flipped: true) { rect in
             let sourceRect = source.map {
                 CGRect(x: $0.minX, y: sourceImage.size.height - $0.maxY, width: $0.width, height: $0.height)
-            } ?? .zero
+            } ?? CGRect(origin: .zero, size: sourceImage.size)
             sourceImage.draw(in: rect, from: sourceRect, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
             return true
         }
@@ -315,7 +347,8 @@ final class SkinAssetCatalog {
         _ descriptor: ModernSkinDescriptor,
         images: [String: NSImage],
         layers: [ModernSkinLayer],
-        allowScreenshotFallback: Bool = false
+        allowScreenshotFallback: Bool = false,
+        clipPath: NSBezierPath? = nil
     ) -> NSImage? {
         if layers.isEmpty, allowScreenshotFallback, let screenshot = descriptor.screenshotPath {
             return images[screenshot.lowercased()]
@@ -323,6 +356,7 @@ final class SkinAssetCatalog {
         guard !layers.isEmpty else { return nil }
         return NSImage(size: descriptor.canvasSize, flipped: true) { _ in
             NSGraphicsContext.current?.imageInterpolation = .none
+            clipPath?.addClip()
             var renderedControlFrames: [CGRect] = []
             for layer in layers {
                 guard layer.initiallyVisible else { continue }
@@ -337,13 +371,38 @@ final class SkinAssetCatalog {
                           image.size.width >= frame.width, image.size.height >= frame.height {
                     sourceRect = CGRect(x: 0, y: image.size.height - frame.height, width: frame.width, height: frame.height)
                 } else {
-                    sourceRect = .zero
+                    sourceRect = CGRect(origin: .zero, size: image.size)
                 }
-                image.draw(in: frame, from: sourceRect, operation: .sourceOver, fraction: CGFloat(layer.opacity), respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
+                guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
+                let renderedImage = sourceRect == CGRect(origin: .zero, size: image.size)
+                    ? cgImage
+                    : cgImage.cropping(to: sourceRect) ?? cgImage
+                let context = NSGraphicsContext.current?.cgContext
+                context?.saveGState()
+                context?.interpolationQuality = .none
+                context?.setAlpha(CGFloat(layer.opacity))
+                context?.draw(renderedImage, in: frame)
+                context?.restoreGState()
                 if layer.action != nil { renderedControlFrames.append(layer.frame.integral) }
             }
             return true
         }
+    }
+
+    private static func regionPath(_ descriptor: ModernWindowRegionDescriptor) -> NSBezierPath? {
+        guard !descriptor.shapes.isEmpty else { return nil }
+        let path = NSBezierPath()
+        path.windingRule = .nonZero
+        for shape in descriptor.shapes where !shape.frame.isEmpty {
+            let frame = shape.frame
+            let points: [CGPoint] = shape.additive
+                ? [CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.maxY), CGPoint(x: frame.minX, y: frame.maxY)]
+                : [CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.minX, y: frame.maxY), CGPoint(x: frame.maxX, y: frame.maxY), CGPoint(x: frame.maxX, y: frame.minY)]
+            path.move(to: points[0])
+            points.dropFirst().forEach { path.line(to: $0) }
+            path.close()
+        }
+        return path.isEmpty ? nil : path
     }
 
     private static func resolvedFrame(
@@ -379,7 +438,32 @@ final class SkinAssetCatalog {
 }
 
 func applyWinampChromaKey(to image: CGImage) -> CGImage? {
-    image.copy(maskingColorComponents: [255, 255, 0, 0, 255, 255])
+    let width = image.width
+    let height = image.height
+    guard width > 0, height > 0 else { return nil }
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    let bytesPerRow = width * 4
+    guard let context = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: bytesPerRow,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return nil }
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    guard let pixels = context.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
+    for index in stride(from: 0, to: width * height * 4, by: 4) {
+        let isMagenta = pixels[index] == 255 && pixels[index + 1] == 0 && pixels[index + 2] == 255
+        if isMagenta {
+            pixels[index] = 0
+            pixels[index + 1] = 0
+            pixels[index + 2] = 0
+            pixels[index + 3] = 0
+        }
+    }
+    return context.makeImage()
 }
 
 enum ClassicSkinControls {
