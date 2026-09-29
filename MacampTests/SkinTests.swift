@@ -268,6 +268,33 @@ struct SkinTests {
         #expect(descriptor.controls.filter { $0.action == .play }.isEmpty)
     }
 
+    @Test @MainActor func modernParserRetainsWasabiObjectsAndMakiOnlyButtons() {
+        let xml = """
+        <WinampAbstractionLayer>
+          <container id="main" default_visible="1">
+            <layout id="normal" w="120" h="60">
+              <layer id="mouseTrap" image="pixel" x="0" y="0" w="120" h="60" />
+              <button id="makiOnly" image="pixel" x="20" y="10" w="24" h="18" />
+              <slider id="scriptSlider" thumb="pixel" x="50" y="10" w="40" h="18" orientation="horizontal" />
+            </layout>
+          </container>
+        </WinampAbstractionLayer>
+        """
+        let descriptor = ModernSkinParser.parse(files: ["skin.xml": Data(xml.utf8), "pixel.png": Data([1])]).descriptor
+        #expect(descriptor.objectTree.object(id: "main")?.kind == .container)
+        #expect(descriptor.objectTree.object(id: "makionly")?.kind == .button)
+        #expect(descriptor.objectTree.object(id: "mousetrap")?.frame == CGRect(x: 0, y: 0, width: 120, height: 60))
+        #expect(descriptor.controls.contains { $0.elementID == "makiOnly" && $0.action == .scripted })
+        #expect(descriptor.controls.contains { $0.elementID == "scriptSlider" && $0.orientation == .horizontal })
+    }
+
+    @Test @MainActor func classicCatalogExposesStandardWindowAssets() {
+        let catalog = SkinAssetCatalog(name: "Synthetic Classic", files: [:], report: .init(), format: .classic)
+        #expect(catalog.classicAssets?.equalizer == "eqmain.bmp")
+        #expect(catalog.classicAssets?.playlist == "pledit.bmp")
+        #expect(catalog.controls.contains { $0.id == .play && $0.normalSprite?.assetName == "cbuttons.bmp" })
+    }
+
     @Test func duplicateCaseInsensitivePathsAreRejected() async throws {
         let url = try temporarySkin(entries: [("main.bmp", Data([1])), ("MAIN.BMP", Data([2]))])
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
@@ -506,6 +533,33 @@ struct SkinTests {
         let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: bitmap)
         #expect(bitmap.size == view.bounds.size)
+    }
+
+    @Test @MainActor func logicalMouseInjectionUsesWasabiHitTestingPath() async throws {
+        let png = try #require(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
+        let xml = """
+        <WinampAbstractionLayer>
+          <elements><bitmap id="pixel" file="pixel.png" /></elements>
+          <container id="main" default_visible="1">
+            <layout id="normal" w="80" h="40">
+              <layer image="pixel" x="0" y="0" w="80" h="40" />
+              <button id="scriptOnly" image="pixel" x="20" y="10" w="24" h="18" />
+            </layout>
+          </container>
+        </WinampAbstractionLayer>
+        """
+        let source = try temporarySkin(entries: [("skin.xml", Data(xml.utf8)), ("pixel.png", png)], extension: "wal")
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let defaultsName = "Macamp.MouseInjection.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skins = SkinLibraryStore(defaults: defaults, root: root)
+        await skins.importSkin(from: source)
+        let view = SkinRendererView(coordinator: PlaybackCoordinator(), skinStore: skins, settings: SettingsStore(defaults: defaults), openMedia: {}, playlistToggle: {}, equalizerToggle: {}, visualizationToggle: {})
+        #expect(view.injectMouseDown(at: CGPoint(x: 24, y: 16)) == "scriptonly")
+        view.injectMouseUp(at: CGPoint(x: 24, y: 16))
     }
 
     private func temporarySkin(entries: [(String, Data)], extension fileExtension: String = "wsz") throws -> URL {

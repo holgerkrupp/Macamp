@@ -62,8 +62,8 @@ struct PlaybackItem: Identifiable, Hashable, Sendable {
         artwork: ArtworkReference? = nil,
         mediaKind: MediaKind,
         isExplicit: Bool,
-        sourceURL: URL? = nil,
-        attribution: String? = nil
+        sourceURL: URL?,
+        attribution: String?
     ) {
         self.id = id
         self.providerID = providerID
@@ -77,6 +77,40 @@ struct PlaybackItem: Identifiable, Hashable, Sendable {
         self.isExplicit = isExplicit
         self.sourceURL = sourceURL
         self.attribution = attribution
+    }
+
+    // Keep the common initializer free of trailing default-argument entry
+    // points. This also makes the model link reliably when the app is loaded
+    // as a test bundle with Swift's explicit-module build mode.
+    init(
+        id: PlaybackItemID,
+        providerID: PlaybackProviderID,
+        providerItemID: String,
+        title: String,
+        artist: String? = nil,
+        albumTitle: String? = nil,
+        duration: Duration? = nil,
+        artwork: ArtworkReference? = nil,
+        mediaKind: MediaKind,
+        isExplicit: Bool
+    ) {
+        self.init(id: id, providerID: providerID, providerItemID: providerItemID, title: title, artist: artist, albumTitle: albumTitle, duration: duration, artwork: artwork, mediaKind: mediaKind, isExplicit: isExplicit, sourceURL: nil, attribution: nil)
+    }
+
+    init(
+        id: PlaybackItemID,
+        providerID: PlaybackProviderID,
+        providerItemID: String,
+        title: String,
+        artist: String? = nil,
+        albumTitle: String? = nil,
+        duration: Duration? = nil,
+        artwork: ArtworkReference? = nil,
+        mediaKind: MediaKind,
+        isExplicit: Bool,
+        attribution: String
+    ) {
+        self.init(id: id, providerID: providerID, providerItemID: providerItemID, title: title, artist: artist, albumTitle: albumTitle, duration: duration, artwork: artwork, mediaKind: mediaKind, isExplicit: isExplicit, sourceURL: nil, attribution: attribution)
     }
 }
 

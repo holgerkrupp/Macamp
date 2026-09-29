@@ -3,17 +3,19 @@ import Foundation
 import ImageIO
 
 enum SkinAction: String, Sendable {
+    case none, scripted
     case previous, play, pause, stop, next, open, seek, setVolume, setBalance
     case setEqualizerBand, resetEqualizer
     case toggleShuffle, cycleRepeat, togglePlaylist, toggleEqualizer, toggleVisualization
     case windowshade, minimize, close
 }
 
-enum SkinControlOrientation: Sendable {
+nonisolated enum SkinControlOrientation: Sendable, Equatable {
     case horizontal, vertical
 }
 
-enum SkinControlID: String, Sendable {
+enum SkinControlID: String, Sendable, Equatable {
+    case scripted
     case previous, play, pause, stop, next, open, seek, volume, shuffle, `repeat`
     case playlist, equalizer, visualization, minimize, close
 }
@@ -78,6 +80,93 @@ struct ModernMakiBinding: Sendable, Equatable {
     var parameter: String?
 }
 
+/// The stable object identity exposed to MAKI.  Keeping this separate from the
+/// renderer's flattened arrays is important: scripts address Wasabi objects,
+/// not pixels or the native controls that happen to render them.
+nonisolated enum WasabiObjectKind: String, Sendable {
+    case container, layout, group, button, slider, layer, text, content, unknown
+}
+
+nonisolated struct WasabiObjectNode: Sendable, Equatable {
+    var id: String
+    var kind: WasabiObjectKind
+    var frame: CGRect
+    var parentID: String?
+    var children: [String] = []
+    var initiallyVisible = true
+    var attributes: [String: String] = [:]
+    var zIndex: Int = 0
+}
+
+nonisolated struct WasabiObjectTree: Sendable, Equatable {
+    var rootID: String = "main"
+    private(set) var nodes: [String: WasabiObjectNode] = [:]
+
+    init() {}
+
+    mutating func insert(_ node: WasabiObjectNode) {
+        let key = node.id.lowercased()
+        var value = node
+        value.id = key
+        nodes[key] = value
+        if let parentID = value.parentID?.lowercased(), nodes[parentID] != nil,
+           !nodes[parentID]!.children.contains(key) {
+            nodes[parentID]!.children.append(key)
+        }
+    }
+
+    func object(id: String) -> WasabiObjectNode? { nodes[id.lowercased()] }
+
+    func hitTest(_ point: CGPoint, visible: (WasabiObjectNode) -> Bool = { $0.initiallyVisible }) -> WasabiObjectNode? {
+        nodes.values
+            .filter { $0.kind != .container && $0.kind != .layout && $0.kind != .group && $0.frame.contains(point) && visible($0) }
+            .sorted { $0.zIndex > $1.zIndex }
+            .first
+    }
+
+    var objectCount: Int { nodes.count }
+    var eventObjectIDs: [String] { nodes.values.filter { $0.kind == .button || $0.kind == .slider || $0.kind == .layer }.map(\.id).sorted() }
+}
+
+nonisolated struct ModernLayoutDescriptor: Sendable, Equatable {
+    var id: String
+    var frame: CGRect
+    var containerID: String
+    var initiallyVisible: Bool
+}
+
+nonisolated struct ClassicSkinAssetDescriptor: Sendable, Equatable {
+    var main: String = "main.bmp"
+    var controls: String? = "cbuttons.bmp"
+    var shuffleRepeat: String? = "shufrep.bmp"
+    var volume: String? = "volume.bmp"
+    var balance: String? = "balance.bmp"
+    var position: String? = "posbar.bmp"
+    var numbers: String? = "numbers.bmp"
+    var extendedNumbers: String? = "nums_ex.bmp"
+    var playPause: String? = "playpaus.bmp"
+    var monoStereo: String? = "monoster.bmp"
+    var equalizer: String? = "eqmain.bmp"
+    var equalizerExtended: String? = "eq_ex.bmp"
+    var playlist: String? = "pledit.bmp"
+    var playlistText: String? = "pledit.txt"
+    var text: String? = "text.bmp"
+
+    func availableFiles(in files: [String: Data]) -> Set<String> {
+        Set(files.keys.map { ($0 as NSString).lastPathComponent.lowercased() })
+    }
+}
+
+nonisolated struct WasabiCompatibilityReport: Sendable, Equatable {
+    var objectCounts: [String: Int] = [:]
+    var boundMakiPrograms: [String] = []
+    var unsupportedHostCalls: [String] = []
+    var unsupportedOpcodes: [String] = []
+    var interactiveObjectsWithoutBehavior: [String] = []
+    var registeredEvents: [String] = []
+    var targetAnimations: [String] = []
+}
+
 struct ModernSkinLayer: Sendable {
     var imageID: String
     var frame: CGRect
@@ -134,6 +223,8 @@ struct ModernSkinDescriptor: Sendable {
     var contentRegions: [ModernSkinContentRegion] = []
     var drawers: [ModernDrawerDescriptor] = []
     var makiBindings: [ModernMakiBinding] = []
+    var layouts: [ModernLayoutDescriptor] = []
+    var objectTree = WasabiObjectTree()
     var windowRegion: ModernWindowRegionDescriptor?
 }
 
@@ -175,6 +266,9 @@ final class SkinAssetCatalog {
     let modernLayers: [ModernSkinLayer]
     let modernBitmapFiles: [String: String]
     let modernBitmapSourceRects: [String: CGRect]
+    let modernLayouts: [ModernLayoutDescriptor]
+    let objectTree: WasabiObjectTree
+    let classicAssets: ClassicSkinAssetDescriptor?
     private let renderedMainImage: NSImage?
 
     var mainImage: NSImage? { renderedMainImage }
@@ -226,6 +320,9 @@ final class SkinAssetCatalog {
             modernLayers = modern.layers
             modernBitmapFiles = modern.bitmapFiles
             modernBitmapSourceRects = modern.bitmapSourceRects
+            modernLayouts = modern.layouts
+            objectTree = modern.objectTree
+            classicAssets = nil
             makiBindings = modern.makiBindings
             makiPrograms = Array(Set(modern.makiBindings.map { $0.path.lowercased() })).sorted().compactMap { path in
                 files[path].flatMap { try? MakiDecoder.decode($0, path: path) }
@@ -270,13 +367,33 @@ final class SkinAssetCatalog {
             })
         } else {
             canvasSize = CGSize(width: 275, height: 116)
-            controls = ClassicSkinControls.main
+            let classic = ClassicSkinControls.main.map { control -> SkinControlDefinition in
+                let sprite: SpriteReference?
+                let pressed: SpriteReference?
+                switch control.id {
+                case .previous, .play, .pause, .stop, .next:
+                    let index = [.previous, .play, .pause, .stop, .next].firstIndex(of: control.id) ?? 0
+                    sprite = SpriteReference(assetName: "cbuttons.bmp", sourceRect: CGRect(x: CGFloat(index * 23), y: 0, width: 23, height: 18))
+                    pressed = SpriteReference(assetName: "cbuttons.bmp", sourceRect: CGRect(x: CGFloat(index * 23), y: 18, width: 23, height: 18))
+                case .shuffle, .repeat:
+                    let index = control.id == .shuffle ? 0 : 1
+                    sprite = SpriteReference(assetName: "shufrep.bmp", sourceRect: CGRect(x: CGFloat(index * 46), y: 0, width: index == 0 ? 46 : 28, height: 15))
+                    pressed = SpriteReference(assetName: "shufrep.bmp", sourceRect: CGRect(x: CGFloat(index * 46), y: 15, width: index == 0 ? 46 : 28, height: 15))
+                default:
+                    sprite = nil; pressed = nil
+                }
+                return SkinControlDefinition(id: control.id, frame: control.frame, normalSprite: sprite, pressedSprite: pressed, disabledSprite: control.disabledSprite, action: control.action, elementID: control.elementID, initiallyVisible: control.initiallyVisible, drawerRole: control.drawerRole, parameter: control.parameter, orientation: control.orientation)
+            }
+            controls = classic
             textRegions = []
             contentRegions = []
             drawers = []
             modernLayers = []
             modernBitmapFiles = [:]
             modernBitmapSourceRects = [:]
+            modernLayouts = []
+            objectTree = WasabiObjectTree()
+            classicAssets = ClassicSkinAssetDescriptor()
             makiPrograms = []
             makiBindings = []
             makiControlImages = [:]
@@ -478,6 +595,27 @@ enum ClassicSkinControls {
         .init(id: .volume, frame: CGRect(x: 107, y: 57, width: 68, height: 10), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .setVolume),
         .init(id: .shuffle, frame: CGRect(x: 164, y: 89, width: 46, height: 15), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .toggleShuffle),
         .init(id: .repeat, frame: CGRect(x: 210, y: 89, width: 28, height: 15), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .cycleRepeat),
+        .init(id: .equalizer, frame: CGRect(x: 238, y: 89, width: 18, height: 15), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .toggleEqualizer),
+        .init(id: .playlist, frame: CGRect(x: 256, y: 89, width: 18, height: 15), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .togglePlaylist),
         .init(id: .visualization, frame: CGRect(x: 24, y: 43, width: 72, height: 16), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .toggleVisualization)
     ]
+}
+
+@MainActor
+extension SkinAssetCatalog {
+    func compatibilitySmokeReport(runtime: MakiRuntime? = nil) -> WasabiCompatibilityReport {
+        var counts: [String: Int] = [:]
+        for node in objectTree.nodes.values { counts[node.kind.rawValue, default: 0] += 1 }
+        let behavioralIDs = Set(controls.compactMap { $0.elementID?.lowercased() })
+        let interactiveWithoutBehavior = objectTree.eventObjectIDs.filter { !behavioralIDs.contains($0.lowercased()) && makiPrograms.isEmpty }
+        return WasabiCompatibilityReport(
+            objectCounts: counts,
+            boundMakiPrograms: makiPrograms.map(\.path).sorted(),
+            unsupportedHostCalls: runtime?.diagnostics.filter { $0.contains("host call") } ?? [],
+            unsupportedOpcodes: runtime?.diagnostics.filter { $0.contains("opcode") } ?? [],
+            interactiveObjectsWithoutBehavior: interactiveWithoutBehavior,
+            registeredEvents: runtime?.registeredEventNames ?? [],
+            targetAnimations: runtime?.targetAnimationObjectIDs ?? []
+        )
+    }
 }

@@ -40,6 +40,17 @@ enum ModernSkinParser {
             descriptor.textRegions = selected.textRegions
             descriptor.contentRegions = deduplicatedContent(selected.contentRegions)
             descriptor.drawers = selected.drawers
+            descriptor.layouts = expandedCandidates
+                .filter(\.isLayout)
+                .map {
+                    ModernLayoutDescriptor(
+                        id: $0.id,
+                        frame: CGRect(origin: .zero, size: $0.canvasSize),
+                        containerID: $0.containerID ?? "main",
+                        initiallyVisible: $0.containerIsDefaultVisible
+                    )
+                }
+            descriptor.objectTree = makeObjectTree(for: selected)
             if !selected.regionShapes.isEmpty || selected.desktopAlpha {
                 descriptor.windowRegion = ModernWindowRegionDescriptor(
                     shapes: selected.regionShapes,
@@ -187,6 +198,25 @@ enum ModernSkinParser {
                         parameter: Int(attribute("param", element) ?? "") ?? equalizerBandNumber(from: attribute("id", element)),
                         orientation: orientation
                     ))
+                } else if ["button", "togglebutton", "nstatesbutton", "slider"].contains(tag) {
+                    // A button can be completely MAKI-owned. It still needs a
+                    // hit target even when its XML has no native action.
+                    let scriptedID: SkinControlID = .scripted
+                    let orientation: SkinControlOrientation? = tag == "slider"
+                        ? (attribute("orientation", element)?.lowercased() == "vertical" ? .vertical : .horizontal)
+                        : nil
+                    controls.append(SkinControlDefinition(
+                        id: scriptedID,
+                        frame: frame,
+                        normalSprite: imageID.map { SpriteReference(assetName: $0.lowercased(), sourceRect: .zero) },
+                        pressedSprite: attribute("downimage", element).map { SpriteReference(assetName: $0.lowercased(), sourceRect: .zero) },
+                        disabledSprite: nil,
+                        action: .scripted,
+                        elementID: attribute("id", element),
+                        initiallyVisible: initiallyVisible,
+                        parameter: Int(attribute("param", element) ?? "") ?? equalizerBandNumber(from: attribute("id", element)),
+                        orientation: orientation
+                    ))
                 }
                 if tag == "group", let groupID = attribute("id", element) {
                     groups.append(GroupReference(id: groupID, origin: origin))
@@ -239,6 +269,33 @@ enum ModernSkinParser {
             }
         }
         return result
+    }
+
+    nonisolated private static func makeObjectTree(for candidate: LayoutCandidate) -> WasabiObjectTree {
+        var tree = WasabiObjectTree()
+        let containerID = (candidate.containerID ?? "main").lowercased()
+        tree.rootID = containerID
+        tree.insert(WasabiObjectNode(id: containerID, kind: .container, frame: CGRect(origin: .zero, size: candidate.canvasSize), parentID: nil, initiallyVisible: candidate.containerIsDefaultVisible, zIndex: 0))
+        tree.insert(WasabiObjectNode(id: candidate.id, kind: .layout, frame: CGRect(origin: .zero, size: candidate.canvasSize), parentID: containerID, zIndex: 1))
+        for (index, group) in candidate.groups.enumerated() {
+            tree.insert(WasabiObjectNode(id: group.id, kind: .group, frame: CGRect(origin: group.origin, size: .zero), parentID: candidate.id, zIndex: index + 2))
+        }
+        var z = candidate.groups.count + 2
+        for (index, layer) in candidate.layers.enumerated() {
+            let id = (layer.elementID?.lowercased() ?? "layer-\(index)")
+            tree.insert(WasabiObjectNode(id: id, kind: .layer, frame: layer.frame, parentID: candidate.id, initiallyVisible: layer.initiallyVisible, attributes: ["alpha": String(layer.opacity)], zIndex: z)); z += 1
+        }
+        for (index, control) in candidate.controls.enumerated() {
+            let id = (control.elementID?.lowercased() ?? "control-\(index)")
+            tree.insert(WasabiObjectNode(id: id, kind: control.orientation == nil ? (control.action == .scripted ? .button : .button) : .slider, frame: control.frame, parentID: candidate.id, initiallyVisible: control.initiallyVisible, zIndex: z)); z += 1
+        }
+        for (index, region) in candidate.textRegions.enumerated() {
+            tree.insert(WasabiObjectNode(id: (region.elementID?.lowercased() ?? "text-\(index)"), kind: .text, frame: region.frame, parentID: candidate.id, initiallyVisible: region.initiallyVisible, zIndex: z)); z += 1
+        }
+        for (index, region) in candidate.contentRegions.enumerated() {
+            tree.insert(WasabiObjectNode(id: (region.elementID?.lowercased() ?? "content-\(index)"), kind: .content, frame: region.frame, parentID: candidate.id, initiallyVisible: region.initiallyVisible, zIndex: z)); z += 1
+        }
+        return tree
     }
 
     nonisolated private static func score(_ candidate: LayoutCandidate) -> Int {

@@ -40,10 +40,16 @@ final class SkinRendererView: NSView {
     private var drawerAnimationTasks: [ModernDrawerRole: Task<Void, Never>] = [:]
     private var pressedControl: SkinControlID?
     private var activeControl: SkinControlDefinition?
+    private var hoveredObjectID: String?
     private var balanceValue = 0.5
     private var drawerTargets: [ModernDrawerRole: Double] = [.left: 1, .right: 1]
     private var drawerAnimations: [ModernDrawerRole: DrawerAnimation] = [:]
     private var drawerAnimationTargets: [ModernDrawerRole: String] = [:]
+    private var genericAnimationTasks: [String: Task<Void, Never>] = [:]
+    private var genericFrames: [String: CGRect] = [:]
+    private var genericAlphas: [String: CGFloat] = [:]
+    private var activeLayoutID: String?
+    private var redockSuspended = false
     private var artworkTask: Task<Void, Never>?
     private var artworkURL: URL?
     private var remoteArtwork: NSImage?
@@ -98,6 +104,7 @@ final class SkinRendererView: NSView {
         refreshTask?.cancel()
         artworkTask?.cancel()
         drawerAnimationTasks.values.forEach { $0.cancel() }
+        genericAnimationTasks.values.forEach { $0.cancel() }
     }
 
     func updateScale(_ value: Int) {
@@ -105,6 +112,12 @@ final class SkinRendererView: NSView {
         drawerAnimationTasks.values.forEach { $0.cancel() }
         drawerAnimationTasks.removeAll()
         drawerAnimations.removeAll()
+        genericAnimationTasks.values.forEach { $0.cancel() }
+        genericAnimationTasks.removeAll()
+        genericFrames.removeAll()
+        genericAlphas.removeAll()
+        activeLayoutID = skinStore.activeCatalog.modernLayouts.first(where: { $0.initiallyVisible })?.id
+        redockSuspended = false
         let initialProgress = skinStore.activeCatalog.makiPrograms.isEmpty ? 1.0 : 0.0
         drawerTargets = [.left: initialProgress, .right: initialProgress]
         let canvas = skinStore.activeCatalog.canvasSize
@@ -149,6 +162,8 @@ final class SkinRendererView: NSView {
             } else if !control.initiallyVisible { return false }
             return effectiveFrame(for: control).contains(point)
         }
+        let object = hitObject(at: point)
+        let mouseDownHandled = object.flatMap { makiRuntime?.dispatchMouseDown(objectID: $0.id) } ?? false
         let control = candidates.first(where: { coordinator.state.isPlaying ? $0.action == .pause : $0.action == .play }) ?? candidates.first
         if let control {
             pressedControl = control.id
@@ -157,7 +172,46 @@ final class SkinRendererView: NSView {
             let frame = effectiveFrame(for: control)
             Task { await activate(control, point: point, frame: frame) }
         } else {
-            window?.performDrag(with: event)
+            if !mouseDownHandled { window?.performDrag(with: event) }
+        }
+    }
+
+    /// Deterministic logical-coordinate input used by compatibility fixtures.
+    /// It enters the same object hit-test and MAKI event path as AppKit input.
+    @discardableResult
+    func injectMouseDown(at point: CGPoint) -> String? {
+        let object = hitObject(at: point)
+        _ = object.flatMap { makiRuntime?.dispatchMouseDown(objectID: $0.id) }
+        guard let control = skinStore.activeCatalog.controls.first(where: { effectiveFrame(for: $0).contains(point) && isElementVisible($0.elementID, initiallyVisible: $0.initiallyVisible) }) else { return object?.id }
+        pressedControl = control.id
+        activeControl = control
+        Task { await activate(control, point: point, frame: effectiveFrame(for: control)) }
+        return object?.id ?? control.elementID
+    }
+
+    func injectMouseDrag(at point: CGPoint) {
+        guard let control = activeControl, control.orientation != nil else { return }
+        if let elementID = control.elementID {
+            let frame = effectiveFrame(for: control)
+            let value = Int((sliderValueFrom(point, frame: frame, orientation: control.orientation) * 255).rounded())
+            _ = makiRuntime?.dispatchSliderPosition(objectID: elementID, value: value, posted: true)
+        }
+        Task { await activate(control, point: point, frame: effectiveFrame(for: control)) }
+    }
+
+    func injectMouseUp(at point: CGPoint) {
+        if let object = hitObject(at: point) { _ = makiRuntime?.dispatchMouseUp(objectID: object.id) }
+        pressedControl = nil
+        activeControl = nil
+        needsDisplay = true
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let object = hitObject(at: logical(convert(event.locationInWindow, from: nil)))
+        if object?.id != hoveredObjectID {
+            if let hoveredObjectID { _ = makiRuntime?.dispatchMouseLeave(objectID: hoveredObjectID) }
+            if let object { _ = makiRuntime?.dispatchMouseEnter(objectID: object.id) }
+            hoveredObjectID = object?.id
         }
     }
 
@@ -355,23 +409,24 @@ final class SkinRendererView: NSView {
         guard let control = activeControl, control.orientation != nil else { return }
         let point = logical(convert(event.locationInWindow, from: nil))
         let frame = effectiveFrame(for: control)
+        if let elementID = control.elementID {
+            let value = Int((sliderValueFrom(point, frame: frame, orientation: control.orientation) * 255).rounded())
+            _ = makiRuntime?.dispatchSliderPosition(objectID: elementID, value: value, posted: true)
+        }
         Task { await activate(control, point: point, frame: frame) }
     }
 
     override func mouseUp(with event: NSEvent) {
+        if let object = hitObject(at: logical(convert(event.locationInWindow, from: nil))) {
+            _ = makiRuntime?.dispatchMouseUp(objectID: object.id)
+            if object.kind == .slider { _ = makiRuntime?.dispatchSliderPosition(objectID: object.id, value: 0, final: true) }
+        }
         pressedControl = nil
         activeControl = nil
         needsDisplay = true
     }
 
     private func activate(_ control: SkinControlDefinition, point: CGPoint, frame: CGRect) async {
-        // EQ sliders and their top/bottom nudge buttons have a reliable native
-        // action mapping. Letting partially supported MAKI handlers intercept
-        // them made the visible controls inert when a skin's optional script
-        // used an unsupported Wasabi object.
-        if control.action != .setEqualizerBand,
-           let elementID = control.elementID,
-           makiRuntime?.dispatchClick(objectID: elementID) == true { return }
         switch control.action {
         case .previous: await coordinator.previous()
         case .play: await coordinator.play()
@@ -406,15 +461,22 @@ final class SkinRendererView: NSView {
         case .toggleVisualization: visualizationToggle()
         case .close: window?.close()
         case .minimize: window?.miniaturize(nil)
-        default: break
+        case .windowshade: break
+        case .none, .scripted: break
         }
+        // Declarative behavior and MAKI are both part of a Winamp Button's
+        // lifecycle. A handled script event must not swallow the XML action.
+        if let elementID = control.elementID { _ = makiRuntime?.dispatchClick(objectID: elementID) }
     }
 
     private func drawTransportControls() {
-        let icons: [SkinControlID: String] = [.previous: "⏮", .play: "▶", .pause: "Ⅱ", .stop: "■", .next: "⏭", .open: "⌃", .shuffle: "SHUF", .repeat: "REP"]
+        let icons: [SkinControlID: String] = [.previous: "⏮", .play: "▶", .pause: "Ⅱ", .stop: "■", .next: "⏭", .open: "⌃", .shuffle: "SHUF", .repeat: "REP", .equalizer: "EQ", .playlist: "PL"]
         for control in skinStore.activeCatalog.controls where control.id != .seek && control.id != .volume && control.id != .visualization {
+            let pressed = pressedControl == control.id
+            if let sprite = pressed ? control.pressedSprite ?? control.normalSprite : control.normalSprite,
+               drawClassicSprite(sprite, in: control.frame) { continue }
             let enabled = capability(for: control.action).map(coordinator.capabilities.contains) ?? true
-            let color = enabled ? NSColor(calibratedWhite: pressedControl == control.id ? 0.22 : 0.14, alpha: 0.92) : NSColor(calibratedWhite: 0.1, alpha: 0.5)
+            let color = enabled ? NSColor(calibratedWhite: pressed ? 0.22 : 0.14, alpha: 0.92) : NSColor(calibratedWhite: 0.1, alpha: 0.5)
             color.setFill(); control.frame.fill()
             (enabled ? NSColor.systemGreen : NSColor.disabledControlTextColor).setStroke(); NSBezierPath(rect: control.frame.insetBy(dx: 0.5, dy: 0.5)).stroke()
             let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: control.id == .shuffle || control.id == .repeat ? 6 : 9, weight: .bold), .foregroundColor: enabled ? NSColor.systemGreen : NSColor.disabledControlTextColor]
@@ -429,6 +491,16 @@ final class SkinRendererView: NSView {
         CGRect(x: 16, y: 72, width: 248 * progress, height: 10).fill()
         let volume = coordinator.capabilities.contains(.applicationVolume) ? coordinator.state.volume : 0
         CGRect(x: 107, y: 57, width: 68 * volume, height: 10).fill()
+    }
+
+    private func drawClassicSprite(_ sprite: SpriteReference, in frame: CGRect) -> Bool {
+        guard skinStore.activeCatalog.format == .classic,
+              let image = skinStore.activeCatalog.images[sprite.assetName.lowercased()] ?? skinStore.activeCatalog.images.first(where: { $0.key.hasSuffix("/\(sprite.assetName.lowercased())") })?.value else { return false }
+        let source = sprite.sourceRect
+        guard !source.isEmpty else { return false }
+        let flippedSource = CGRect(x: source.minX, y: image.size.height - source.maxY, width: source.width, height: source.height)
+        image.draw(in: frame, from: flippedSource, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        return true
     }
 
     private func drawMetadata() {
@@ -566,11 +638,29 @@ final class SkinRendererView: NSView {
     private func effectiveFrame(_ frame: CGRect, elementID: String?) -> CGRect {
         guard let elementID else { return frame }
         var result = frame
+        if let generic = genericFrames[elementID.lowercased()] { result = generic }
         if let value = runtimeNumber(elementID, "x") { result.origin.x = value }
         if let value = runtimeNumber(elementID, "y") { result.origin.y = value }
         if let value = runtimeNumber(elementID, "w"), value > 0 { result.size.width = value }
         if let value = runtimeNumber(elementID, "h"), value > 0 { result.size.height = value }
         return result
+    }
+
+    private func hitObject(at point: CGPoint) -> WasabiObjectNode? {
+        let tree = skinStore.activeCatalog.objectTree
+        let candidates = tree.nodes.values.filter { node in
+            guard node.kind != .container, node.kind != .layout, node.kind != .group else { return false }
+            guard isElementVisible(node.id, initiallyVisible: node.initiallyVisible) else { return false }
+            return effectiveFrame(node.frame, elementID: node.id).contains(point)
+        }
+        return candidates.sorted { $0.zIndex > $1.zIndex }.first
+    }
+
+    private func sliderValueFrom(_ point: CGPoint, frame: CGRect, orientation: SkinControlOrientation?) -> Double {
+        switch orientation {
+        case .vertical: return min(max((point.y - frame.minY) / max(1, frame.height), 0), 1)
+        case .horizontal, nil: return horizontalFraction(point, frame: frame)
+        }
     }
 
     private func runtimeNumber(_ objectID: String, _ name: String) -> CGFloat? {
@@ -592,6 +682,7 @@ final class SkinRendererView: NSView {
     }
 
     private func runtimeOpacity(for objectID: String) -> CGFloat {
+        if let value = genericAlphas[objectID.lowercased()] { return value }
         guard let value = runtimeNumber(objectID, "alpha") else { return 1 }
         return value > 1 ? min(max(value / 255, 0), 1) : min(max(value, 0), 1)
     }
@@ -738,7 +829,7 @@ final class SkinRendererView: NSView {
         let initialProgress = catalog.makiPrograms.isEmpty ? 1.0 : 0.0
         drawerTargets = [.left: initialProgress, .right: initialProgress]
         guard !catalog.makiPrograms.isEmpty else { return }
-        makiRuntime = MakiRuntime(programs: catalog.makiPrograms, bindings: catalog.makiBindings, host: self)
+        makiRuntime = MakiRuntime(programs: catalog.makiPrograms, bindings: catalog.makiBindings, host: self, limits: .init(), skinID: catalog.name, persistentState: .standard)
         makiRuntime?.start()
     }
 
@@ -778,6 +869,71 @@ extension SkinRendererView: MakiRuntimeHost {
         drawerAnimationTargets[role] = objectID
     }
 
+    func makiTargetGeometryChanged(objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double) {
+        let key = objectID.lowercased()
+        if (key.contains("leftdrawer") || key.contains("rightdrawer")), let x {
+            makiTargetChanged(objectID: objectID, x: x, speed: speed)
+            return
+        }
+        guard let node = skinStore.activeCatalog.objectTree.object(id: key) else {
+            makiTargetChanged(objectID: objectID, x: x ?? 0, speed: speed)
+            return
+        }
+        var target = genericFrames[key] ?? node.frame
+        if let x { target.origin.x = x }
+        if let y { target.origin.y = y }
+        if let width, width > 0 { target.size.width = width }
+        if let height, height > 0 { target.size.height = height }
+        let start = genericFrames[key] ?? node.frame
+        genericAnimationTasks[key]?.cancel()
+        let duration = min(max(speed, 0.05), 2)
+        let started = Date.timeIntervalSinceReferenceDate
+        genericAnimationTasks[key] = Task { [weak self] in
+            let frameCount = max(1, Int(ceil(duration / 0.016)) + 1)
+            for _ in 0..<frameCount {
+                guard !Task.isCancelled else { return }
+                let progress = min(max((Date.timeIntervalSinceReferenceDate - started) / duration, 0), 1)
+                let eased = progress * progress * (3 - 2 * progress)
+                var frame = start
+                frame.origin.x += (target.origin.x - start.origin.x) * CGFloat(eased)
+                frame.origin.y += (target.origin.y - start.origin.y) * CGFloat(eased)
+                frame.size.width += (target.width - start.width) * CGFloat(eased)
+                frame.size.height += (target.height - start.height) * CGFloat(eased)
+                self?.genericFrames[key] = frame
+                if let alpha { self?.genericAlphas[key] = CGFloat(alpha > 1 ? alpha / 255 : alpha) }
+                self?.needsDisplay = true
+                try? await Task.sleep(for: .milliseconds(16))
+            }
+            self?.genericFrames[key] = target
+            self?.genericAnimationTasks.removeValue(forKey: key)
+            self?.needsDisplay = true
+            self?.makiTargetReached(objectID: objectID)
+        }
+    }
+
+    func makiLayoutSwitched(containerID: String, layoutID: String) {
+        guard skinStore.activeCatalog.modernLayouts.contains(where: { $0.id.caseInsensitiveCompare(layoutID) == .orderedSame }) else {
+            makiRuntime?.recordExternalDiagnostic("Unsupported layout \(layoutID) requested by \(containerID).")
+            return
+        }
+        activeLayoutID = layoutID.lowercased()
+        needsDisplay = true
+    }
+
+    func makiLayoutResized(objectID: String, frame: CGRect) {
+        guard frame.width > 0, frame.height > 0, frame.width <= 2_048, frame.height <= 2_048 else {
+            makiRuntime?.recordExternalDiagnostic("Rejected unsafe layout resize for \(objectID).")
+            return
+        }
+        genericFrames[objectID.lowercased()] = frame
+        needsDisplay = true
+    }
+
+    func makiRedock(objectID: String, before: Bool) {
+        redockSuspended = before
+        needsDisplay = true
+    }
+
     func makiVolumeChanged(_ value: Double) {
         Task { await coordinator.setVolume(min(max(value, 0), 1)) }
     }
@@ -787,6 +943,26 @@ extension SkinRendererView: MakiRuntimeHost {
         guard EqualizerBand.winamp10.indices.contains(normalizedIndex) else { return }
         let gain = Float(12 - Double(min(max(value, 0), 255)) / 255 * 24)
         Task { await coordinator.setEqualizerBand(index: normalizedIndex, gain: gain) }
+    }
+
+    func makiEQBandValue(index: Int) -> Int {
+        let normalizedIndex = EqualizerBand.winamp10.indices.contains(index) ? index : index - 1
+        guard EqualizerBand.winamp10.indices.contains(normalizedIndex),
+              let gain = coordinator.audioEffectState.bandGains[EqualizerBand.winamp10[normalizedIndex]] else { return 128 }
+        return Int(((Double(gain) + 12) / 24 * 255).rounded())
+    }
+
+    func makiEQPreampValue() -> Int {
+        Int(((Double(coordinator.audioEffectState.preampGain) + 12) / 24 * 255).rounded())
+    }
+
+    func makiEQEnabled() -> Bool { coordinator.audioEffectState.isEnabled }
+
+    func makiEQEnabledChanged(_ enabled: Bool) { Task { await coordinator.setEqualizerEnabled(enabled) } }
+
+    func makiEQPreampChanged(value: Int) {
+        let gain = Float(Double(min(max(value, 0), 255)) / 255 * 24 - 12)
+        Task { await coordinator.setPreampGain(gain) }
     }
 
     func makiRuntimeNeedsDisplay() { needsDisplay = true }

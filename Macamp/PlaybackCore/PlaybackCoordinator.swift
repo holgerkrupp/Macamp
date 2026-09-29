@@ -83,6 +83,10 @@ final class PlaybackCoordinator {
         await performAudioEffect { try await $0.setBandGain(gain, band: EqualizerBand.winamp10[index]) }
     }
 
+    func setPreampGain(_ gain: Float) async {
+        await performAudioEffect { try await $0.setPreampGain(gain.clamped(to: -12...12)) }
+    }
+
     func resetEqualizer() async {
         guard let effects = activeProvider as? any AudioEffectController else { return }
         do {

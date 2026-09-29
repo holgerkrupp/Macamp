@@ -15,7 +15,7 @@ final class SkinWindowController: NSWindowController, NSWindowDelegate {
         visualizationToggle: @escaping () -> Void
     ) {
         self.settings = settings
-        let auxiliaryWindows = SkinAuxiliaryWindowController(coordinator: coordinator)
+        let auxiliaryWindows = SkinAuxiliaryWindowController(coordinator: coordinator, skinStore: skinStore)
         self.auxiliaryWindows = auxiliaryWindows
         let scale = settings.skinScale
         let canvas = skinStore.activeCatalog.canvasSize
@@ -27,6 +27,7 @@ final class SkinWindowController: NSWindowController, NSWindowDelegate {
         window.level = settings.playerFloating ? .floating : .normal
         window.collectionBehavior = [.managed, .participatesInCycle]
         window.isMovableByWindowBackground = true
+        window.acceptsMouseMovedEvents = true
         window.title = "Classic Macamp Player"
         renderer = SkinRendererView(
             coordinator: coordinator,
@@ -88,13 +89,16 @@ final class SkinWindowController: NSWindowController, NSWindowDelegate {
 }
 
 @MainActor
-private final class SkinAuxiliaryWindowController {
+private final class SkinAuxiliaryWindowController: NSObject, NSWindowDelegate {
     private let coordinator: PlaybackCoordinator
+    private let skinStore: SkinLibraryStore
     private var playlistPanel: NSPanel?
     private var equalizerPanel: NSPanel?
+    private let docking = WindowDockingController()
 
-    init(coordinator: PlaybackCoordinator) {
+    init(coordinator: PlaybackCoordinator, skinStore: SkinLibraryStore) {
         self.coordinator = coordinator
+        self.skinStore = skinStore
     }
 
     func togglePlaylist() {
@@ -104,8 +108,9 @@ private final class SkinAuxiliaryWindowController {
         }
         let panel = playlistPanel ?? makePanel(
             title: "Macamp Playlist",
-            size: CGSize(width: 430, height: 360),
-            rootView: AnyView(SkinPlaylistView(coordinator: coordinator))
+            size: skinStore.classicPanelSize(kind: .playlist, fallback: CGSize(width: 430, height: 360)),
+            rootView: AnyView(SkinPlaylistView(coordinator: coordinator)),
+            background: skinStore.classicPanelImage(kind: .playlist)
         )
         playlistPanel = panel
         present(panel)
@@ -118,14 +123,15 @@ private final class SkinAuxiliaryWindowController {
         }
         let panel = equalizerPanel ?? makePanel(
             title: "Macamp Equalizer",
-            size: CGSize(width: 460, height: 300),
-            rootView: AnyView(SkinEqualizerView(coordinator: coordinator))
+            size: skinStore.classicPanelSize(kind: .equalizer, fallback: CGSize(width: 460, height: 300)),
+            rootView: AnyView(SkinEqualizerView(coordinator: coordinator)),
+            background: skinStore.classicPanelImage(kind: .equalizer)
         )
         equalizerPanel = panel
         present(panel)
     }
 
-    private func makePanel(title: String, size: CGSize, rootView: AnyView) -> NSPanel {
+    private func makePanel(title: String, size: CGSize, rootView: AnyView, background: NSImage?) -> NSPanel {
         let panel = NSPanel(
             contentRect: CGRect(origin: .zero, size: size),
             styleMask: [.titled, .closable, .resizable, .utilityWindow],
@@ -135,7 +141,20 @@ private final class SkinAuxiliaryWindowController {
         panel.title = title
         panel.isReleasedWhenClosed = false
         panel.minSize = CGSize(width: min(360, size.width), height: min(240, size.height))
-        panel.contentView = NSHostingView(rootView: rootView)
+        let container = ClassicSkinPanelView(background: background)
+        let hosted = NSHostingView(rootView: rootView)
+        hosted.translatesAutoresizingMaskIntoConstraints = false
+        hosted.wantsLayer = true
+        hosted.layer?.backgroundColor = NSColor.clear.cgColor
+        container.addSubview(hosted)
+        NSLayoutConstraint.activate([
+            hosted.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hosted.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hosted.topAnchor.constraint(equalTo: container.topAnchor),
+            hosted.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+        panel.contentView = container
+        panel.delegate = self
         panel.center()
         return panel
     }
@@ -143,6 +162,44 @@ private final class SkinAuxiliaryWindowController {
     private func present(_ panel: NSPanel) {
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate()
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        guard let panel = notification.object as? NSPanel else { return }
+        docking.update(panel: panel)
+    }
+}
+
+private enum ClassicPanelKind { case equalizer, playlist }
+
+private extension SkinLibraryStore {
+    func classicPanelImage(kind: ClassicPanelKind) -> NSImage? {
+        let name = kind == .equalizer ? activeCatalog.classicAssets?.equalizer : activeCatalog.classicAssets?.playlist
+        guard let name else { return nil }
+        return activeCatalog.images[name.lowercased()] ?? activeCatalog.images.first(where: { $0.key.hasSuffix("/\(name.lowercased())") })?.value
+    }
+
+    func classicPanelSize(kind: ClassicPanelKind, fallback: CGSize) -> CGSize {
+        classicPanelImage(kind: kind)?.size ?? fallback
+    }
+}
+
+private final class ClassicSkinPanelView: NSView {
+    private let background: NSImage?
+
+    init(background: NSImage?) {
+        self.background = background
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let background else { return }
+        background.draw(in: bounds, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
     }
 }
 
@@ -265,6 +322,7 @@ private struct SkinEqualizerView: View {
 final class WindowDockingController {
     var isEnabled = true
     var snapDistance: CGFloat = 10
+    private(set) var registeredPanelFrames: [ObjectIdentifier: CGRect] = [:]
 
     func snappedOrigin(for movingFrame: CGRect, near otherFrames: [CGRect], screen: CGRect, scale: Int) -> CGPoint {
         guard isEnabled else { return movingFrame.origin }
@@ -275,5 +333,9 @@ final class WindowDockingController {
         if let x = candidatesX.min(by: { abs($0 - origin.x) < abs($1 - origin.x) }), abs(x - origin.x) <= threshold { origin.x = x }
         if let y = candidatesY.min(by: { abs($0 - origin.y) < abs($1 - origin.y) }), abs(y - origin.y) <= threshold { origin.y = y }
         return origin
+    }
+
+    func update(panel: NSPanel) {
+        registeredPanelFrames[ObjectIdentifier(panel)] = panel.frame
     }
 }

@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 @MainActor
@@ -6,9 +7,18 @@ protocol MakiRuntimeHost: AnyObject {
     func makiXMLParameter(objectID: String, name: String) -> String?
     func makiVisibilityChanged(objectID: String, isVisible: Bool)
     func makiTargetChanged(objectID: String, x: Double, speed: Double)
+    func makiTargetGeometryChanged(objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double)
+    func makiLayoutSwitched(containerID: String, layoutID: String)
+    func makiLayoutResized(objectID: String, frame: CGRect)
+    func makiRedock(objectID: String, before: Bool)
     func makiTargetReached(objectID: String)
     func makiVolumeChanged(_ value: Double)
     func makiEQBandChanged(index: Int, value: Int)
+    func makiEQBandValue(index: Int) -> Int
+    func makiEQPreampValue() -> Int
+    func makiEQPreampChanged(value: Int)
+    func makiEQEnabled() -> Bool
+    func makiEQEnabledChanged(_ enabled: Bool)
     func makiRuntimeNeedsDisplay()
     func makiPlaybackItem() -> PlaybackItem?
     func makiElapsed() -> Duration
@@ -20,6 +30,19 @@ protocol MakiRuntimeHost: AnyObject {
 @MainActor
 extension MakiRuntimeHost {
     func makiTargetReached(objectID: String) {}
+    func makiEQBandValue(index: Int) -> Int { 128 }
+    func makiEQPreampValue() -> Int { 128 }
+    func makiEQPreampChanged(value: Int) {}
+    func makiEQEnabled() -> Bool { false }
+    func makiEQEnabledChanged(_ enabled: Bool) {}
+    func makiTargetGeometryChanged(objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double) {
+        if let x, y == nil, width == nil, height == nil, alpha == nil {
+            makiTargetChanged(objectID: objectID, x: x, speed: speed)
+        }
+    }
+    func makiLayoutSwitched(containerID: String, layoutID: String) {}
+    func makiLayoutResized(objectID: String, frame: CGRect) {}
+    func makiRedock(objectID: String, before: Bool) {}
     func makiPlaybackItem() -> PlaybackItem? { nil }
     func makiElapsed() -> Duration { .zero }
     func makiDuration() -> Duration? { nil }
@@ -109,12 +132,20 @@ final class MakiRuntime {
     private var targetSpeed: [String: Double] = [:]
     private var visibleObjects: [String: Bool] = [:]
     private var scriptedTexts: [String: String] = [:]
+    private var targetStates: [String: [String: Double]] = [:]
+    private var privateState: [String: Value] = [:]
+    private var configAttributes: [String: Value] = [:]
+    private var timers: [String: Task<Void, Never>] = [:]
+    private let persistentState: UserDefaults
+    private let skinID: String
     private var nestedEventDepth = 0
     private(set) var diagnostics: [String] = []
 
-    init(programs: [MakiProgram], bindings: [ModernMakiBinding], host: any MakiRuntimeHost, limits: Limits = .init()) {
+    init(programs: [MakiProgram], bindings: [ModernMakiBinding], host: any MakiRuntimeHost, limits: Limits, skinID: String, persistentState: UserDefaults) {
         self.host = host
         self.limits = limits
+        self.skinID = skinID
+        self.persistentState = persistentState
         let programByPath = Dictionary(programs.map { ($0.path.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
         instances = bindings.compactMap { binding in
             guard let program = programByPath[binding.path.lowercased()] else { return nil }
@@ -122,8 +153,88 @@ final class MakiRuntime {
         }
     }
 
+    convenience init(programs: [MakiProgram], bindings: [ModernMakiBinding], host: any MakiRuntimeHost) {
+        self.init(programs: programs, bindings: bindings, host: host, limits: .init(), skinID: "default", persistentState: .standard)
+    }
+
     func start() {
         dispatch(event: "onScriptLoaded", objectID: "system")
+    }
+
+    deinit { timers.values.forEach { $0.cancel() } }
+
+    @discardableResult
+    func dispatchMouseDown(objectID: String) -> Bool {
+        dispatch(event: "onLeftButtonDown", objectID: objectID.lowercased())
+    }
+
+    @discardableResult
+    func dispatchMouseUp(objectID: String) -> Bool {
+        dispatch(event: "onLeftButtonUp", objectID: objectID.lowercased())
+    }
+
+    @discardableResult
+    func dispatchMouseEnter(objectID: String) -> Bool {
+        dispatch(event: "onEnter", objectID: objectID.lowercased())
+    }
+
+    @discardableResult
+    func dispatchMouseLeave(objectID: String) -> Bool {
+        dispatch(event: "onLeave", objectID: objectID.lowercased())
+    }
+
+    @discardableResult
+    func dispatchSliderPosition(objectID: String, value: Int, final: Bool = false, posted: Bool = false) -> Bool {
+        let event = final ? "onSetFinalPosition" : posted ? "onPostedPosition" : "onSetPosition"
+        targetStates[objectID.lowercased(), default: [:]]["position"] = Double(value)
+        return dispatch(event: event, objectID: objectID.lowercased())
+    }
+
+    func scheduleTimer(objectID: String, interval: Duration, event: String = "onTimer") {
+        let key = objectID.lowercased()
+        timers[key]?.cancel()
+        timers[key] = Task { [weak self] in
+            try? await Task.sleep(for: interval)
+            guard !Task.isCancelled else { return }
+            self?.dispatch(event: event, objectID: key)
+        }
+    }
+
+    func cancelTimer(objectID: String) { timers.removeValue(forKey: objectID.lowercased())?.cancel() }
+
+    func diagnosticsReport() -> String {
+        diagnostics.isEmpty ? "No unsupported MAKI operations encountered." : diagnostics.joined(separator: "\n")
+    }
+
+    var registeredEventNames: [String] {
+        Array(Set(instances.flatMap { instance in
+            instance.program.events.compactMap { event in
+                instance.program.functions.indices.contains(event.functionIndex) ? instance.program.functions[event.functionIndex].name : nil
+            }
+        })).sorted()
+    }
+
+    var targetAnimationObjectIDs: [String] { targetStates.keys.sorted() }
+
+    func recordExternalDiagnostic(_ message: String) { record(message) }
+
+    private func persistentKey(_ key: String) -> String { "Macamp.MAKI.\(skinID).\(key)" }
+
+    private func readPersisted(_ key: String) -> Value? {
+        guard let value = persistentState.object(forKey: persistentKey(key)) else { return nil }
+        if let value = value as? Int { return .integer(Int32(clamping: value)) }
+        if let value = value as? Double { return .number(value) }
+        if let value = value as? String { return .string(value) }
+        return nil
+    }
+
+    private func persist(_ value: Value, for key: String) {
+        switch value {
+        case let .integer(value): persistentState.set(Int(value), forKey: persistentKey(key))
+        case let .number(value): persistentState.set(value, forKey: persistentKey(key))
+        case let .string(value), let .object(value): persistentState.set(value, forKey: persistentKey(key))
+        case .void: persistentState.removeObject(forKey: persistentKey(key))
+        }
     }
 
     @discardableResult
@@ -344,18 +455,63 @@ final class MakiRuntime {
         case "getlength": return .number(host?.makiDuration()?.secondsValue ?? 0)
         case "getposition": return .number(host?.makiElapsed().secondsValue ?? 0)
         case "stringtointeger": return .integer(arguments.first?.integer ?? 0)
-        case "settargetx": targetX[objectID] = arguments.first?.number ?? 0; return .void
+        case "settargetx":
+            targetX[objectID] = arguments.first?.number ?? 0
+            targetStates[objectID, default: [:]]["x"] = arguments.first?.number ?? 0
+            return .void
+        case "settargety": targetStates[objectID, default: [:]]["y"] = arguments.first?.number ?? 0; return .void
+        case "settargetw", "settargetwidth": targetStates[objectID, default: [:]]["w"] = arguments.first?.number ?? 0; return .void
+        case "settargeth", "settargetheight": targetStates[objectID, default: [:]]["h"] = arguments.first?.number ?? 0; return .void
+        case "settargetalpha": targetStates[objectID, default: [:]]["alpha"] = arguments.first?.number ?? 1; return .void
         case "settargetspeed": targetSpeed[objectID] = max(0.01, arguments.first?.number ?? 0.25); return .void
         case "gototarget":
-            host?.makiTargetChanged(objectID: objectID, x: targetX[objectID] ?? 0, speed: targetSpeed[objectID] ?? 0.25)
+            let state = targetStates[objectID] ?? [:]
+            if state.isEmpty {
+                host?.makiTargetChanged(objectID: objectID, x: targetX[objectID] ?? 0, speed: targetSpeed[objectID] ?? 0.25)
+            } else {
+                host?.makiTargetGeometryChanged(objectID: objectID, x: targetX[objectID], y: state["y"], width: state["w"], height: state["h"], alpha: state["alpha"], speed: targetSpeed[objectID] ?? 0.25)
+            }
             return .void
         case "leftclick": _ = dispatch(event: "onLeftClick", objectID: objectID); return .void
         case "setvolume": host?.makiVolumeChanged((arguments.first?.number ?? 0) / 255); return .void
         case "seteqband":
             if arguments.count >= 2 { host?.makiEQBandChanged(index: Int(arguments[0].integer), value: Int(arguments[1].integer)) }
             return .void
-        case "setposition", "setprivateint", "messagebox": return .void
-        case "getprivateint": return .integer(arguments.last?.integer ?? 0)
+        case "geteqband": return .integer(Int32(host?.makiEQBandValue(index: Int(arguments.first?.integer ?? 0)) ?? 128))
+        case "geteqpreamp": return .integer(Int32(host?.makiEQPreampValue() ?? 128))
+        case "geteq": return .integer(host?.makiEQEnabled() == true ? 1 : 0)
+        case "seteq": host?.makiEQEnabledChanged((arguments.first?.integer ?? 0) != 0); return .void
+        case "seteqpreamp": host?.makiEQPreampChanged(value: Int(arguments.first?.integer ?? 128)); return .void
+        case "setposition":
+            if let value = arguments.first?.number { targetStates[objectID, default: [:]]["position"] = value; host?.makiRuntimeNeedsDisplay() }
+            return .void
+        case "setprivateint", "setprivatestring":
+            guard !arguments.isEmpty else { return .void }
+            let key = arguments.dropLast().map(\.string).joined(separator: ".")
+            let value = arguments.last ?? .void
+            privateState[key] = value; persist(value, for: key); return .void
+        case "getprivateint", "getprivatestring":
+            let key = arguments.dropLast().map(\.string).joined(separator: ".")
+            return privateState[key] ?? readPersisted(key) ?? arguments.last ?? .void
+        case "getconfigattribute":
+            let key = arguments.first?.string ?? ""
+            return configAttributes[key] ?? readPersisted("config.\(key)") ?? .void
+        case "setconfigattribute":
+            guard arguments.count >= 2 else { return .void }
+            let key = arguments[0].string; let value = arguments[1]
+            configAttributes[key] = value; persist(value, for: "config.\(key)"); return .void
+        case "settimer", "settimerinterval":
+            let interval = max(0.001, arguments.first?.number ?? 0.25)
+            scheduleTimer(objectID: objectID, interval: .milliseconds(Int64(interval * 1_000))); return .void
+        case "killtimer": cancelTimer(objectID: objectID); return .void
+        case "switchtolayout": host?.makiLayoutSwitched(containerID: objectID, layoutID: arguments.first?.string ?? "normal"); return .void
+        case "resize":
+            if arguments.count >= 4 { host?.makiLayoutResized(objectID: objectID, frame: CGRect(x: CGFloat(arguments[0].number), y: CGFloat(arguments[1].number), width: CGFloat(arguments[2].number), height: CGFloat(arguments[3].number))) }
+            return .void
+        case "beforeredock": host?.makiRedock(objectID: objectID, before: true); return .void
+        case "redock": host?.makiRedock(objectID: objectID, before: false); return .void
+        case "snapadjust": host?.makiRuntimeNeedsDisplay(); return .void
+        case "messagebox": record("MAKI messageBox is unsupported but was safely ignored."); return .void
         default:
             if !name.hasPrefix("on") { record("Unsupported MAKI host call: \(rawName)") }
             return .integer(0)
@@ -364,11 +520,12 @@ final class MakiRuntime {
 
     private func arity(of rawName: String) -> Int {
         switch rawName.lowercased() {
-        case "getprivateint", "setxmlparam", "seteqband": 2
-        case "setprivateint": 3
+        case "getprivateint", "getprivatestring", "setxmlparam", "seteqband": 2
+        case "setprivateint", "setprivatestring", "setconfigattribute": 3
         case "messagebox": 4
         case "findobject", "getobject", "getcontainer", "getlayout", "getxmlparam", "gettext", "stringtointeger",
-             "settargetx", "settargetspeed", "setvolume", "setposition", "settext": 1
+             "settargetx", "settargety", "settargetw", "settargeth", "settargetalpha", "settargetspeed", "setvolume", "setposition", "settext", "settimer", "settimerinterval", "getconfigattribute", "switchtolayout", "geteqband", "seteq", "seteqpreamp": 1
+        case "resize": 4
         default: 0
         }
     }
