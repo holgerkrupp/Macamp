@@ -119,7 +119,12 @@ final class SkinRendererView: NSView {
             NSGraphicsContext.current?.imageInterpolation = .none
             image.draw(in: CGRect(origin: .zero, size: skinStore.activeCatalog.canvasSize), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
         }
-        if skinStore.activeCatalog.format == .classic { drawTransportControls() }
+        if skinStore.activeCatalog.format == .classic {
+            drawClassicChrome()
+            drawTransportControls()
+            drawClassicMetadata()
+            drawClassicVisualization()
+        }
         drawMetadata()
         NSGraphicsContext.restoreGraphicsState()
     }
@@ -134,7 +139,6 @@ final class SkinRendererView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = logical(convert(event.locationInWindow, from: nil))
-        if skinStore.activeCatalog.format == .classic, point.x > 263, point.y < 13 { window?.close(); return }
         let candidates = skinStore.activeCatalog.controls.filter { control in
             if let elementID = control.elementID {
                 guard let handle = liveScene.firstHandle(for: elementID) else { return false }
@@ -461,19 +465,14 @@ final class SkinRendererView: NSView {
     }
 
     private func drawTransportControls() {
-        let icons: [SkinControlID: String] = [.previous: "⏮", .play: "▶", .pause: "Ⅱ", .stop: "■", .next: "⏭", .open: "⌃", .shuffle: "SHUF", .repeat: "REP", .equalizer: "EQ", .playlist: "PL"]
-        for control in skinStore.activeCatalog.controls where control.id != .seek && control.id != .volume && control.id != .visualization {
+        for control in skinStore.activeCatalog.controls where control.id != .seek && control.id != .volume && control.id != .balance && control.id != .visualization {
             let pressed = pressedControl == control.id
-            if let sprite = pressed ? control.pressedSprite ?? control.normalSprite : control.normalSprite,
+            if let sprite = classicSprite(for: control, pressed: pressed),
                drawClassicSprite(sprite, in: control.frame) { continue }
             let enabled = capability(for: control.action).map(coordinator.capabilities.contains) ?? true
             let color = enabled ? NSColor(calibratedWhite: pressed ? 0.22 : 0.14, alpha: 0.92) : NSColor(calibratedWhite: 0.1, alpha: 0.5)
             color.setFill(); control.frame.fill()
-            (enabled ? NSColor.systemGreen : NSColor.disabledControlTextColor).setStroke(); NSBezierPath(rect: control.frame.insetBy(dx: 0.5, dy: 0.5)).stroke()
-            let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: control.id == .shuffle || control.id == .repeat ? 6 : 9, weight: .bold), .foregroundColor: enabled ? NSColor.systemGreen : NSColor.disabledControlTextColor]
-            let text = icons[control.id] ?? ""
-            let size = text.size(withAttributes: attributes)
-            text.draw(at: CGPoint(x: control.frame.midX - size.width / 2, y: control.frame.midY - size.height / 2), withAttributes: attributes)
+            NSColor.disabledControlTextColor.setStroke(); NSBezierPath(rect: control.frame.insetBy(dx: 0.5, dy: 0.5)).stroke()
         }
 
         let progress = coordinator.state.duration.map { max(0, min(1, coordinator.state.elapsed.secondsValue / max(0.001, $0.secondsValue))) } ?? 0
@@ -486,6 +485,27 @@ final class SkinRendererView: NSView {
             _ = drawClassicSprite(volume.track, in: ClassicSpriteCatalog.main[.volume]?.frame ?? .zero)
             _ = drawClassicSprite(volume.thumb, in: volume.thumbFrame)
         }
+        if let balance = ClassicSpriteCatalog.balancePlacement(value: balanceValue, pressed: pressedControl == .balance) {
+            _ = drawClassicSprite(balance.track, in: ClassicSpriteCatalog.main[.balance]?.frame ?? .zero)
+            _ = drawClassicSprite(balance.thumb, in: balance.thumbFrame)
+        }
+    }
+
+    private func classicSprite(for control: SkinControlDefinition, pressed: Bool) -> SpriteReference? {
+        if pressed { return control.pressedSprite ?? control.normalSprite }
+        switch control.id {
+        case .shuffle:
+            return coordinator.state.shuffleMode == .off ? control.normalSprite : ClassicSpriteCatalog.main[.shuffle]?.active
+        case .repeat:
+            return coordinator.state.repeatMode == .off ? control.normalSprite : ClassicSpriteCatalog.main[.repeat]?.active
+        default:
+            return control.normalSprite
+        }
+    }
+
+    private func drawClassicChrome() {
+        let titleBar = (window?.isKeyWindow ?? true) ? ClassicSpriteCatalog.activeTitleBar : ClassicSpriteCatalog.inactiveTitleBar
+        _ = drawClassicSprite(titleBar, in: CGRect(x: 0, y: 0, width: 275, height: 14))
     }
 
     private func drawClassicSprite(_ sprite: SpriteReference, in frame: CGRect) -> Bool {
@@ -507,12 +527,8 @@ final class SkinRendererView: NSView {
         if skinStore.activeCatalog.format == .modern,
            WasabiScenePainter.renderNodes(in: liveScene).contains(where: { $0.kind == .text || $0.kind == .songTicker }) { return }
         if skinStore.activeCatalog.format == .classic {
-            title.prefix(33).uppercased().draw(at: CGPoint(x: 111, y: 24), withAttributes: attributes)
-            time.draw(at: CGPoint(x: 40, y: 24), withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 15, weight: .bold), .foregroundColor: NSColor.systemGreen])
-            "SIM VIS".draw(at: CGPoint(x: 40, y: 47), withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 6, weight: .medium), .foregroundColor: NSColor.systemGreen])
-            drawClassicTechnicalValue(technicalBitrate, in: CGRect(x: 108, y: 45, width: 22, height: 12))
-            drawClassicTechnicalValue(technicalFrequency, in: CGRect(x: 151, y: 45, width: 20, height: 12))
-            NSColor.systemRed.setFill(); CGRect(x: 263, y: 3, width: 8, height: 7).fill()
+            // Classic metadata is painted by drawClassicMetadata after the
+            // titlebar and before the Modern text path reaches this branch.
         } else {
             for region in skinStore.activeCatalog.textRegions {
                 guard isElementVisible(region.elementID, initiallyVisible: region.initiallyVisible) else { continue }
@@ -548,6 +564,117 @@ final class SkinRendererView: NSView {
                     ]
                 )
             }
+        }
+    }
+
+    private func drawClassicMetadata() {
+        let item = coordinator.state.currentItem
+        let title = item.map { "\($0.artist ?? "UNKNOWN") - \($0.title)" } ?? "MACAMP — READY"
+        let elapsed = Int(coordinator.state.elapsed.secondsValue)
+        let time = String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
+        let titleFrame = CGRect(x: 110, y: 27, width: 155, height: 9)
+        if !drawClassicText(title, in: titleFrame, alignment: .center) {
+            String(title.prefix(31)).draw(at: CGPoint(x: titleFrame.minX, y: titleFrame.minY), withAttributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 7.5, weight: .medium),
+                .foregroundColor: NSColor.systemGreen
+            ])
+        }
+        if !drawClassicTime(time, in: CGRect(x: 33, y: 24, width: 70, height: 18)) {
+            time.draw(at: CGPoint(x: 40, y: 24), withAttributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 15, weight: .bold),
+                .foregroundColor: NSColor.systemGreen
+            ])
+        }
+        if !drawClassicText(technicalBitrate, in: CGRect(x: 109, y: 43, width: 17, height: 9), alignment: .left) {
+            drawClassicTechnicalValue(technicalBitrate, in: CGRect(x: 109, y: 43, width: 17, height: 9))
+        }
+        if !drawClassicText(technicalFrequency, in: CGRect(x: 154, y: 43, width: 12, height: 9), alignment: .left) {
+            drawClassicTechnicalValue(technicalFrequency, in: CGRect(x: 154, y: 43, width: 12, height: 9))
+        }
+        let statusSprite: SpriteReference = switch coordinator.state.status {
+        case .playing: ClassicSpriteCatalog.playStatus
+        case .paused: ClassicSpriteCatalog.pauseStatus
+        case .connecting, .buffering: ClassicSpriteCatalog.workingStatus
+        case .failed, .interrupted: ClassicSpriteCatalog.failedStatus
+        default: ClassicSpriteCatalog.stoppedStatus
+        }
+        _ = drawClassicSprite(statusSprite, in: CGRect(x: 26, y: 28, width: statusSprite.sourceRect.width, height: statusSprite.sourceRect.height))
+
+        let channels = coordinator.state.currentItem?.channelCount ?? 0
+        _ = drawClassicSprite(channels == 1 ? ClassicSpriteCatalog.monoActive : ClassicSpriteCatalog.monoInactive, in: CGRect(x: 212, y: 41, width: 27, height: 12))
+        _ = drawClassicSprite(channels > 1 ? ClassicSpriteCatalog.stereoActive : ClassicSpriteCatalog.stereoInactive, in: CGRect(x: 239, y: 41, width: 29, height: 12))
+    }
+
+    private func drawClassicText(_ value: String, in frame: CGRect, alignment: NSTextAlignment) -> Bool {
+        guard skinStore.activeCatalog.images.keys.contains(where: { $0.hasSuffix("/text.bmp") || $0 == "text.bmp" }) else { return false }
+        let characters = Array(value)
+        let maximumCount = max(0, Int(frame.width / 5))
+        let shown = Array(characters.prefix(maximumCount))
+        let width = CGFloat(shown.count * 5)
+        let startX: CGFloat = switch alignment {
+        case .center: frame.midX - width / 2
+        case .right: frame.maxX - width
+        default: frame.minX
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: frame).addClip()
+        for (index, character) in shown.enumerated() {
+            guard let sprite = ClassicSpriteCatalog.textSprite(for: character) else { continue }
+            _ = drawClassicSprite(sprite, in: CGRect(x: startX + CGFloat(index * 5), y: frame.minY, width: 5, height: 6))
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return true
+    }
+
+    private func drawClassicTime(_ value: String, in frame: CGRect) -> Bool {
+        let sheet: ClassicSpriteSheet
+        if skinStore.activeCatalog.images.keys.contains(where: { $0.hasSuffix("/nums_ex.bmp") || $0 == "nums_ex.bmp" }) {
+            sheet = .numsExtra
+        } else if skinStore.activeCatalog.images.keys.contains(where: { $0.hasSuffix("/numbers.bmp") || $0 == "numbers.bmp" }) {
+            sheet = .numbers
+        } else {
+            return false
+        }
+        let characters = Array(value)
+        let glyphWidth: CGFloat = 9
+        let spacing: CGFloat = 3
+        let totalWidth = CGFloat(characters.count) * glyphWidth + CGFloat(max(0, characters.count - 1)) * spacing
+        var x = frame.maxX - totalWidth
+        for character in characters {
+            if let sprite = ClassicSpriteCatalog.bigNumberSprite(for: character, sheet: sheet) {
+                _ = drawClassicSprite(sprite, in: CGRect(x: x, y: frame.minY + 1, width: glyphWidth, height: 13))
+            } else if let sprite = ClassicSpriteCatalog.textSprite(for: character), character == ":" {
+                guard skinStore.activeCatalog.images.keys.contains(where: { $0.hasSuffix("/text.bmp") || $0 == "text.bmp" }) else { return false }
+                _ = drawClassicSprite(sprite, in: CGRect(x: x + 2, y: frame.minY + 4, width: 5, height: 6))
+            } else {
+                return false
+            }
+            x += glyphWidth + spacing
+        }
+        return true
+    }
+
+    private func drawClassicVisualization() {
+        let frame = CGRect(x: 24, y: 43, width: 72, height: 16)
+        let palette = skinStore.activeCatalog.classicVisualizationPalette
+        let colors: [NSColor]
+        if let palette {
+            colors = palette.spectrum.map { NSColor(calibratedRed: CGFloat($0.red) / 255, green: CGFloat($0.green) / 255, blue: CGFloat($0.blue) / 255, alpha: 1) }
+            NSColor(calibratedRed: CGFloat(palette.background.red) / 255, green: CGFloat(palette.background.green) / 255, blue: CGFloat(palette.background.blue) / 255, alpha: 1).setFill()
+            frame.fill()
+        } else {
+            colors = [NSColor.systemGreen]
+        }
+        let barCount = 12
+        let spacing = CGFloat(2)
+        let barWidth = max(1, (frame.width - spacing * CGFloat(barCount + 1)) / CGFloat(barCount))
+        let phase = coordinator.state.elapsed.secondsValue * (coordinator.state.isPlaying ? 2.2 : 0.25)
+        for index in 0..<barCount {
+            let harmonic = sin(Double(index) * 0.73 + phase) * 0.28 + sin(Double(index) * 0.19 - phase * 0.7) * 0.17
+            let level = min(max(0.12 + harmonic + Double(index % 5) * 0.08, 0.06), 0.94)
+            let height = frame.height * CGFloat(level)
+            colors[index % max(1, colors.count)].setFill()
+            CGRect(x: frame.minX + spacing + CGFloat(index) * (barWidth + spacing), y: frame.maxY - height, width: barWidth, height: height).fill()
         }
     }
 

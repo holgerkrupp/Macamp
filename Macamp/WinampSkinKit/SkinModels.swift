@@ -17,6 +17,7 @@ nonisolated enum SkinControlOrientation: Sendable, Equatable {
 enum SkinControlID: String, Sendable, Equatable {
     case scripted
     case previous, play, pause, stop, next, open, seek, volume, shuffle, `repeat`
+    case balance
     case playlist, equalizer, visualization, minimize, close
 }
 
@@ -82,6 +83,24 @@ enum ClassicSpriteCatalog {
         SpriteReference(assetName: sheet.rawValue, sourceRect: CGRect(x: x, y: y, width: width, height: height))
     }
 
+    static let activeTitleBar = sprite(.titlebar, 27, 0, 275, 14)
+    static let inactiveTitleBar = sprite(.titlebar, 27, 15, 275, 14)
+    static let playStatus = sprite(.playPause, 0, 0, 9, 9)
+    static let pauseStatus = sprite(.playPause, 9, 0, 9, 9)
+    static let stoppedStatus = sprite(.playPause, 18, 0, 9, 9)
+    static let workingStatus = sprite(.playPause, 36, 0, 3, 9)
+    static let failedStatus = sprite(.playPause, 39, 0, 3, 9)
+    static let stereoInactive = sprite(.monoStereo, 0, 12, 29, 12)
+    static let stereoActive = sprite(.monoStereo, 0, 0, 29, 12)
+    static let monoInactive = sprite(.monoStereo, 29, 12, 27, 12)
+    static let monoActive = sprite(.monoStereo, 29, 0, 27, 12)
+
+    static let mainControlOrder: [SkinControlID] = [
+        .previous, .play, .pause, .stop, .next, .open,
+        .seek, .volume, .balance, .shuffle, .repeat,
+        .equalizer, .playlist, .visualization, .minimize, .close
+    ]
+
     static let main: [SkinControlID: ClassicElementDescriptor] = [
         .previous: .init(id: .previous, frame: CGRect(x: 16, y: 88, width: 23, height: 18), normal: sprite(.cbuttons, 0, 0, 23, 18), pressed: sprite(.cbuttons, 0, 18, 23, 18), active: nil, activePressed: nil, action: .previous),
         .play: .init(id: .play, frame: CGRect(x: 39, y: 88, width: 23, height: 18), normal: sprite(.cbuttons, 23, 0, 23, 18), pressed: sprite(.cbuttons, 23, 18, 23, 18), active: nil, activePressed: nil, action: .play),
@@ -94,8 +113,26 @@ enum ClassicSpriteCatalog {
         .equalizer: .init(id: .equalizer, frame: CGRect(x: 219, y: 58, width: 23, height: 12), normal: sprite(.shufrep, 0, 61, 23, 12), pressed: sprite(.shufrep, 46, 61, 23, 12), active: sprite(.shufrep, 0, 73, 23, 12), activePressed: sprite(.shufrep, 46, 73, 23, 12), action: .toggleEqualizer),
         .playlist: .init(id: .playlist, frame: CGRect(x: 242, y: 58, width: 23, height: 12), normal: sprite(.shufrep, 23, 61, 23, 12), pressed: sprite(.shufrep, 69, 61, 23, 12), active: sprite(.shufrep, 23, 73, 23, 12), activePressed: sprite(.shufrep, 69, 73, 23, 12), action: .togglePlaylist),
         .seek: .init(id: .seek, frame: CGRect(x: 16, y: 72, width: 248, height: 10), normal: sprite(.posbar, 0, 0, 248, 10), pressed: sprite(.posbar, 278, 0, 29, 10), active: sprite(.posbar, 248, 0, 29, 10), activePressed: nil, action: .seek),
-        .volume: .init(id: .volume, frame: CGRect(x: 107, y: 57, width: 68, height: 10), normal: sprite(.volume, 0, 0, 68, 420), pressed: sprite(.volume, 15, 422, 14, 11), active: sprite(.volume, 0, 422, 14, 11), activePressed: nil, action: .setVolume)
+        .volume: .init(id: .volume, frame: CGRect(x: 107, y: 57, width: 68, height: 10), normal: sprite(.volume, 0, 0, 68, 420), pressed: sprite(.volume, 15, 422, 14, 11), active: sprite(.volume, 0, 422, 14, 11), activePressed: nil, action: .setVolume),
+        .balance: .init(id: .balance, frame: CGRect(x: 177, y: 57, width: 38, height: 13), normal: sprite(.balance, 9, 0, 38, 420), pressed: sprite(.balance, 0, 422, 14, 11), active: sprite(.balance, 15, 422, 14, 11), activePressed: nil, action: .setBalance),
+        .minimize: .init(id: .minimize, frame: CGRect(x: 244, y: 3, width: 9, height: 9), normal: sprite(.titlebar, 9, 0, 9, 9), pressed: sprite(.titlebar, 9, 9, 9, 9), active: nil, activePressed: nil, action: .minimize),
+        .close: .init(id: .close, frame: CGRect(x: 264, y: 3, width: 9, height: 9), normal: sprite(.titlebar, 18, 0, 9, 9), pressed: sprite(.titlebar, 18, 9, 9, 9), active: nil, activePressed: nil, action: .close)
     ]
+
+    static var mainControls: [SkinControlDefinition] {
+        mainControlOrder.compactMap { id in
+            guard let descriptor = main[id] else { return nil }
+            return SkinControlDefinition(
+                id: id,
+                frame: descriptor.frame,
+                normalSprite: descriptor.normal,
+                pressedSprite: descriptor.pressed,
+                disabledSprite: nil,
+                action: descriptor.action,
+                orientation: id == .seek || id == .volume || id == .balance ? .horizontal : nil
+            )
+        }
+    }
 
     /// Winamp's VOLUME.BMP contains 28 68x10 track frames on a 15-pixel
     /// stride, followed by the two 14x11 thumbs.  The track frame is selected
@@ -104,6 +141,9 @@ enum ClassicSpriteCatalog {
     static let volumeTrackFrameCount = 28
     static let volumeTrackStride: CGFloat = 15
     static let volumeTrackHeight: CGFloat = 10
+    static let balanceTrackFrameCount = 28
+    static let balanceTrackStride: CGFloat = 15
+    static let balanceTrackHeight: CGFloat = 13
 
     static func seekPlacement(progress: Double, pressed: Bool) -> ClassicSliderPlacement? {
         guard let descriptor = main[.seek],
@@ -135,6 +175,54 @@ enum ClassicSpriteCatalog {
             thumb: thumb,
             thumbFrame: thumbFrame
         )
+    }
+
+    static func balancePlacement(value: Double, pressed: Bool) -> ClassicSliderPlacement? {
+        guard let descriptor = main[.balance],
+              let thumb = (pressed ? descriptor.pressed : descriptor.active) ?? descriptor.pressed else { return nil }
+        let normalized = min(max(value, 0), 1)
+        let frameIndex = min(
+            balanceTrackFrameCount - 1,
+            max(0, Int((normalized * Double(balanceTrackFrameCount)).rounded()) - 1)
+        )
+        let trackSource = descriptor.normal.sourceRect.offsetBy(dx: 0, dy: CGFloat(frameIndex) * balanceTrackStride)
+        let thumbSize = thumb.sourceRect.size
+        let thumbFrame = CGRect(
+            x: descriptor.frame.minX + normalized * max(0, descriptor.frame.width - thumbSize.width),
+            y: descriptor.frame.minY + 1,
+            width: thumbSize.width,
+            height: thumbSize.height
+        )
+        return ClassicSliderPlacement(
+            track: SpriteReference(assetName: descriptor.normal.assetName, sourceRect: CGRect(x: trackSource.minX, y: trackSource.minY, width: trackSource.width, height: balanceTrackHeight)),
+            thumb: thumb,
+            thumbFrame: thumbFrame
+        )
+    }
+
+    static func textSprite(for character: Character) -> SpriteReference? {
+        let pairs: [(Character, (row: Int, column: Int))] = [
+            ("a", (0, 0)), ("b", (0, 1)), ("c", (0, 2)), ("d", (0, 3)), ("e", (0, 4)), ("f", (0, 5)),
+            ("g", (0, 6)), ("h", (0, 7)), ("i", (0, 8)), ("j", (0, 9)), ("k", (0, 10)), ("l", (0, 11)),
+            ("m", (0, 12)), ("n", (0, 13)), ("o", (0, 14)), ("p", (0, 15)), ("q", (0, 16)), ("r", (0, 17)),
+            ("s", (0, 18)), ("t", (0, 19)), ("u", (0, 20)), ("v", (0, 21)), ("w", (0, 22)), ("x", (0, 23)),
+            ("y", (0, 24)), ("z", (0, 25)), ("\"", (0, 26)), ("@", (0, 27)), (" ", (0, 30)),
+            ("0", (1, 0)), ("1", (1, 1)), ("2", (1, 2)), ("3", (1, 3)), ("4", (1, 4)), ("5", (1, 5)),
+            ("6", (1, 6)), ("7", (1, 7)), ("8", (1, 8)), ("9", (1, 9)), ("…", (1, 10)), (".", (1, 11)),
+            (":", (1, 12)), ("(", (1, 13)), (")", (1, 14)), ("-", (1, 15)), ("'", (1, 16)), ("!", (1, 17)),
+            ("_", (1, 18)), ("+", (1, 19)), ("\\", (1, 20)), ("/", (1, 21)), ("[", (1, 22)), ("]", (1, 23)),
+            ("^", (1, 24)), ("&", (1, 25)), ("%", (1, 26)), (",", (1, 27)), ("=", (1, 28)), ("$", (1, 29)),
+            ("#", (1, 30)), ("Å", (2, 0)), ("Ö", (2, 1)), ("Ä", (2, 2)), ("?", (2, 3)), ("*", (2, 4))
+        ]
+        let lookup = Dictionary(uniqueKeysWithValues: pairs)
+        let normalized = String(character).lowercased().first ?? " "
+        guard let position = lookup[normalized] ?? lookup[character] else { return lookup[" "].map { sprite(.text, CGFloat($0.column * 5), CGFloat($0.row * 6), 5, 6) } }
+        return sprite(.text, CGFloat(position.column * 5), CGFloat(position.row * 6), 5, 6)
+    }
+
+    static func bigNumberSprite(for character: Character, sheet: ClassicSpriteSheet) -> SpriteReference? {
+        guard let digit = character.wholeNumberValue, (0...9).contains(digit) else { return nil }
+        return sprite(sheet, CGFloat(digit * 9), 0, 9, 13)
     }
 }
 
@@ -463,6 +551,20 @@ nonisolated struct ClassicSkinAssetDescriptor: Sendable, Equatable {
     }
 }
 
+nonisolated struct ClassicRGBColor: Sendable, Equatable {
+    let red: UInt8
+    let green: UInt8
+    let blue: UInt8
+}
+
+nonisolated struct ClassicVisualizationPalette: Sendable, Equatable {
+    let background: ClassicRGBColor
+    let backgroundDots: ClassicRGBColor
+    let spectrum: [ClassicRGBColor]
+    let oscillator: [ClassicRGBColor]
+    let peakDots: ClassicRGBColor
+}
+
 nonisolated struct WasabiCompatibilityReport: Sendable, Equatable {
     var objectCounts: [String: Int] = [:]
     var boundMakiPrograms: [String] = []
@@ -580,6 +682,7 @@ final class SkinAssetCatalog {
     let objectTree: WasabiObjectTree
     let classicAssets: ClassicSkinAssetDescriptor?
     let classicPlaylistText: Data?
+    let classicVisualizationPalette: ClassicVisualizationPalette?
     private let renderedMainImage: NSImage?
 
     var mainImage: NSImage? { renderedMainImage }
@@ -636,6 +739,7 @@ final class SkinAssetCatalog {
             objectTree = modern.scene.compatibilityTree
             classicAssets = nil
             classicPlaylistText = nil
+            classicVisualizationPalette = nil
             makiBindings = modern.makiBindings
             makiPrograms = Array(Set(modern.makiBindings.map { $0.path.lowercased() })).sorted().compactMap { path in
                 files[path].flatMap { try? MakiDecoder.decode($0, path: path) }
@@ -682,11 +786,7 @@ final class SkinAssetCatalog {
             })
         } else {
             canvasSize = CGSize(width: 275, height: 116)
-            let classic = ClassicSkinControls.main.map { control -> SkinControlDefinition in
-                let descriptor = ClassicSpriteCatalog.main[control.id]
-                return SkinControlDefinition(id: control.id, frame: control.frame, normalSprite: descriptor?.normal, pressedSprite: descriptor?.pressed, disabledSprite: control.disabledSprite, action: control.action, elementID: control.elementID, initiallyVisible: control.initiallyVisible, drawerRole: control.drawerRole, parameter: control.parameter, orientation: control.orientation)
-            }
-            controls = classic
+            controls = ClassicSpriteCatalog.mainControls
             textRegions = []
             contentRegions = []
             drawers = []
@@ -698,6 +798,7 @@ final class SkinAssetCatalog {
             objectTree = WasabiObjectTree()
             classicAssets = ClassicSkinAssetDescriptor()
             classicPlaylistText = Self.file(named: "pledit.txt", in: files)
+            classicVisualizationPalette = Self.parseVisualizationPalette(Self.file(named: "viscolor.txt", in: files))
             makiPrograms = []
             makiBindings = []
             makiControlImages = [:]
@@ -717,6 +818,24 @@ final class SkinAssetCatalog {
         files.first { key, _ in
             key.caseInsensitiveCompare(name) == .orderedSame || key.lowercased().hasSuffix("/\(name.lowercased())")
         }?.value
+    }
+
+    private static func parseVisualizationPalette(_ data: Data?) -> ClassicVisualizationPalette? {
+        guard let data else { return nil }
+        let entries = String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline).compactMap { line -> ClassicRGBColor? in
+            let content = line.split(separator: "//", maxSplits: 1).first ?? line
+            let values = content.split(separator: ",").compactMap { UInt8($0.trimmingCharacters(in: .whitespaces)) }
+            guard values.count >= 3 else { return nil }
+            return ClassicRGBColor(red: values[0], green: values[1], blue: values[2])
+        }
+        guard entries.count >= 24 else { return nil }
+        return ClassicVisualizationPalette(
+            background: entries[0],
+            backgroundDots: entries[1],
+            spectrum: Array(entries[2...17]),
+            oscillator: Array(entries[18...22]),
+            peakDots: entries[23]
+        )
     }
 
     private static func safeImage(data: Data, applyChromaKey: Bool) -> NSImage? {
@@ -890,21 +1009,7 @@ func applyWinampChromaKey(to image: CGImage) -> CGImage? {
 }
 
 enum ClassicSkinControls {
-    static let main: [SkinControlDefinition] = [
-        .init(id: .previous, frame: CGRect(x: 16, y: 88, width: 23, height: 18), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .previous),
-        .init(id: .play, frame: CGRect(x: 39, y: 88, width: 23, height: 18), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .play),
-        .init(id: .pause, frame: CGRect(x: 62, y: 88, width: 23, height: 18), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .pause),
-        .init(id: .stop, frame: CGRect(x: 85, y: 88, width: 23, height: 18), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .stop),
-        .init(id: .next, frame: CGRect(x: 108, y: 88, width: 22, height: 18), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .next),
-        .init(id: .open, frame: CGRect(x: 136, y: 89, width: 22, height: 16), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .open),
-        .init(id: .seek, frame: CGRect(x: 16, y: 72, width: 248, height: 10), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .seek),
-        .init(id: .volume, frame: CGRect(x: 107, y: 57, width: 68, height: 10), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .setVolume),
-        .init(id: .shuffle, frame: CGRect(x: 164, y: 89, width: 47, height: 15), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .toggleShuffle),
-        .init(id: .repeat, frame: CGRect(x: 210, y: 89, width: 28, height: 15), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .cycleRepeat),
-        .init(id: .equalizer, frame: CGRect(x: 219, y: 58, width: 23, height: 12), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .toggleEqualizer),
-        .init(id: .playlist, frame: CGRect(x: 242, y: 58, width: 23, height: 12), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .togglePlaylist),
-        .init(id: .visualization, frame: CGRect(x: 24, y: 43, width: 72, height: 16), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .toggleVisualization)
-    ]
+    static var main: [SkinControlDefinition] { ClassicSpriteCatalog.mainControls }
 }
 
 @MainActor
