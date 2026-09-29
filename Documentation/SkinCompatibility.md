@@ -20,6 +20,8 @@ Classic skins expose a canonical Main-window sprite catalog cross-checked agains
 
 The skin test suite contains project-owned synthetic Modern and Classic diagnostic fixtures. Their generated atlases use deliberately distinct colors for each sprite state, so source-rectangle mistakes produce observable pixel-hash or state differences without redistributing third-party skins. Tests also record a deterministic scene behavior trace covering nested group movement, hit testing, and active-layout changes. Local archives in the ignored `Skins/` directory remain optional manual corpus fixtures. `Scripts/winamp_skin_corpus.py` scans local WSZ/WAL/ZIP archives without extracting or bundling third-party skins and reports resources plus supported, partial, and unimplemented compatibility areas.
 
+ANI/CUR resources are decoded through bounded RIFF/icon readers into platform-neutral cursor frames, with a macOS animated-cursor adapter. Winamp EQF/Q1-style libraries can be decoded, encoded, range-checked, and applied/exported through the skinned Equalizer Presets action (option-click exports the current preset). Cursor mapping from arbitrary skin XML/config declarations and richer historical preset-library metadata remain explicit follow-up compatibility work.
+
 ## Archive safety
 
 Imports reject absolute/traversal paths, filenames with drive-style colons, encrypted archives, duplicate case-insensitive paths, more than 512 entries, more than 64 MAKI programs, individual assets over 16 MiB, totals over 64 MiB, truncated archives, and unsupported compression. Native executable content is ignored. MAKI remains interpreted data and has no general-purpose OS capability. Invalid skins remain listed with validation errors but do not replace the active skin.

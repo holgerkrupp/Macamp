@@ -839,6 +839,52 @@ struct SkinTests {
         #expect(snapped == CGSize(width: 600, height: 522))
     }
 
+    @Test func winampANIAndEQFResourcesRoundTripWithBounds() throws {
+        let png = try #require(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
+
+        func chunk(_ id: String, _ payload: Data) -> Data {
+            var result = Data(id.utf8)
+            result.appendLE(UInt32(payload.count))
+            result.append(payload)
+            if payload.count % 2 == 1 { result.append(0) }
+            return result
+        }
+
+        var header = Data(repeating: 0, count: 4)
+        header.appendLE(UInt32(2))
+        header.appendLE(UInt32(2))
+        header.append(Data(repeating: 0, count: 16))
+        header.appendLE(UInt32(6))
+        var rates = Data(); rates.appendLE(UInt32(6)); rates.appendLE(UInt32(12))
+        var sequence = Data(); sequence.appendLE(UInt32(0)); sequence.appendLE(UInt32(1))
+        var frames = Data("fram".utf8)
+        frames.append(chunk("icon", png)); frames.append(chunk("icon", png))
+        var body = Data("ACON".utf8)
+        body.append(chunk("anih", header)); body.append(chunk("rate", rates)); body.append(chunk("seq ", sequence)); body.append(chunk("LIST", frames))
+        var ani = Data("RIFF".utf8); ani.appendLE(UInt32(body.count)); ani.append(body)
+
+        let cursor = try ANICursorDecoder.decode(ani)
+        #expect(cursor.frames.count == 2)
+        #expect(cursor.sequence == [0, 1])
+        #expect(cursor.frames[0].duration == .milliseconds(100))
+        #expect(cursor.frames[1].duration == .milliseconds(200))
+
+        var cur = Data([0, 0, 2, 0, 1, 0, 1, 1, 0, 0])
+        cur.appendLE(UInt16(3)); cur.appendLE(UInt16(4)); cur.appendLE(UInt32(png.count)); cur.appendLE(UInt32(22)); cur.append(png)
+        let curFrame = try ANICursorDecoder.decodeFrame(cur)
+        #expect(curFrame.hotSpot == CGPoint(x: 3, y: 4))
+        #expect(curFrame.image.width == 1 && curFrame.image.height == 1)
+
+        let first = try WinampEQPreset(name: "Flat", bands: Array(0..<10), preamp: 31)
+        let second = try WinampEQPreset(name: "Bright", bands: Array(repeating: 64, count: 10), preamp: 0)
+        let encoded = try WinampEQF.encode(WinampEQPresetFile(presets: [first, second]))
+        let decoded = try WinampEQF.decode(encoded)
+        #expect(decoded.presets == [first, second])
+        #expect(WinampEQF.gainDB(fromWinamp: 0) == 12)
+        #expect(WinampEQF.gainDB(fromWinamp: 63) == -12)
+        #expect(throws: WinampEQFError.self) { try WinampEQF.decode(Data("invalid".utf8)) }
+    }
+
     @Test @MainActor func settingsPersistLogicalPlayerFrame() throws {
         let suiteName = "Macamp.WindowHostTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))

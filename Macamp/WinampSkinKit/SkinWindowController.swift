@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class SkinWindowController: NSWindowController {
@@ -517,6 +518,14 @@ private final class ClassicEqualizerSurface: NSView {
             Task { await coordinator.resetEqualizer(); needsDisplay = true }
             return
         }
+        if point.x >= 217, point.x < 261, point.y >= 18, point.y < 31 {
+            if event.modifierFlags.contains(.option) {
+                saveEQPreset()
+            } else {
+                loadEQPreset()
+            }
+            return
+        }
         if point.x >= 21, point.x < 32, point.y >= 38, point.y < 101 {
             let gain = gain(at: point.y)
             Task { await coordinator.setPreampGain(Float(gain)); needsDisplay = true }
@@ -554,6 +563,38 @@ private final class ClassicEqualizerSurface: NSView {
         NSColor(calibratedRed: 0.55, green: 0.9, blue: 0.2, alpha: 1).setStroke()
         path.lineWidth = 1
         path.stroke()
+    }
+
+    private func loadEQPreset() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.data]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url,
+              let data = try? Data(contentsOf: url),
+              let file = try? WinampEQF.decode(data),
+              let preset = file.presets.first else { return }
+        Task {
+            await coordinator.setPreampGain(WinampEQF.gainDB(fromWinamp: preset.preamp))
+            for (index, value) in preset.bands.enumerated() {
+                await coordinator.setEqualizerBand(index: index, gain: WinampEQF.gainDB(fromWinamp: value))
+            }
+            needsDisplay = true
+        }
+    }
+
+    private func saveEQPreset() {
+        let state = coordinator.audioEffectState
+        let bands = EqualizerBand.winamp10.map { value in
+            UInt8(min(63, max(0, Int(((12 - (state.bandGains[value] ?? 0)) / 24 * 63).rounded()))))
+        }
+        let preamp = UInt8(min(63, max(0, Int(((12 - state.preampGain) / 24 * 63).rounded()))))
+        guard let preset = try? WinampEQPreset(name: "Macamp", bands: bands, preamp: preamp),
+              let data = try? WinampEQF.encode(WinampEQPresetFile(presets: [preset])) else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.data]
+        panel.nameFieldStringValue = "macamp.eqf"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? data.write(to: url, options: .atomic)
     }
 
     @discardableResult
