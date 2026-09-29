@@ -845,6 +845,9 @@ struct SkinTests {
               <group id="LeftDrawer" x="20" y="0" />
               <group id="RightDrawer" x="60" y="0" />
             </layout>
+            <layout id="shade" w="60" h="20">
+              <layer id="shade-layer" image="background" x="0" y="0" w="60" h="20" />
+            </layout>
           </container>
         </WinampAbstractionLayer>
         """
@@ -863,8 +866,6 @@ struct SkinTests {
         let skins = SkinLibraryStore(defaults: defaults, root: root)
         await skins.importSkin(from: source)
         #expect(skins.lastError == nil)
-        #expect(skins.activeCatalog.drawers.map(\.role).contains(.left))
-        #expect(skins.activeCatalog.drawers.map(\.role).contains(.right))
 
         let coordinator = PlaybackCoordinator()
         let provider = MockPlaybackProvider()
@@ -899,15 +900,37 @@ struct SkinTests {
         )
         #expect(view.metadataStringsForTesting.first == "Synthetic Artist - Synthetic Song")
         #expect(Array(view.metadataStringsForTesting.suffix(2)) == ["128", "44.1"])
-        #expect(view.drawerProgressForTesting[.left] == 1)
+        let group = try #require(view.liveSceneForTesting.firstHandle(for: "LeftDrawer"))
+        let child = try #require(view.liveSceneForTesting.firstHandle(for: "left-layer"))
+        let originalChild = try #require(view.liveSceneForTesting.worldFrame(of: child))
+        #expect(originalChild.minX == 20)
 
-        view.makiTargetChanged(objectID: "LeftDrawer", x: 20, speed: 0.05)
+        view.makiTargetChanged(objectID: "LeftDrawer", x: 50, speed: 0.05)
         try await Task.sleep(for: .milliseconds(100))
-        #expect(view.drawerProgressForTesting[.left] ?? 1 < 0.01)
+        let movedScene = view.liveSceneForTesting
+        #expect(movedScene.node(group)?.localFrame.minX == 50)
+        #expect(movedScene.node(child)?.localFrame.minX == 0)
+        #expect(movedScene.worldFrame(of: child)?.minX == 50)
+        #expect(movedScene.hitTest(CGPoint(x: 55, y: 10))?.handle == child)
 
-        view.makiTargetChanged(objectID: "LeftDrawer", x: 0, speed: 0.05)
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(view.drawerProgressForTesting[.left] ?? 0 > 0.99)
+        view.makiLayoutSwitched(containerID: "main", layoutID: "shade")
+        let shade = view.liveSceneForTesting
+        let container = try #require(shade.firstHandle(for: "main"))
+        let shadeLayout = try #require(shade.layoutHandle(id: "shade", in: container))
+        #expect(shade.activeLayout(for: container) == shadeLayout)
+        #expect(shade.hitTest(CGPoint(x: 10, y: 10))?.handle == shade.firstHandle(for: "shade-layer"))
+        #expect(shade.hitTest(CGPoint(x: 70, y: 10)) == nil)
+
+        let host = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 100, height: 40), scale: 1)
+        view.windowHost = host
+        view.updateScale(2)
+        #expect(host.scale == 2)
+        view.makiLayoutResized(objectID: "shade", frame: CGRect(x: 0, y: 0, width: 80, height: 30))
+        #expect(host.currentLogicalSize == CGSize(width: 80, height: 30))
+        view.makiRedock(objectID: "main", before: true)
+        #expect(host.dockingState == .preparingToRedock)
+        view.makiRedock(objectID: "main", before: false)
+        #expect(host.dockingState == .docked)
 
         let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: bitmap)
