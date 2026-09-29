@@ -619,7 +619,11 @@ enum ModernSkinParser {
                 alpha: CGFloat(nodeOverrides["alpha"].flatMap(Double.init).map { $0 > 1 ? $0 / 255 : $0 } ?? layer.opacity),
                 ghost: false,
                 zIndex: z,
-                attributes: ["image": nodeOverrides["image"] ?? layer.imageID, "alpha": String(layer.opacity)].merging(nodeOverrides, uniquingKeysWith: { _, new in new })
+                attributes: [
+                    "image": nodeOverrides["image"] ?? layer.imageID,
+                    "alpha": String(layer.opacity),
+                    "sysregion": layer.sysRegion.map(String.init) ?? ""
+                ].merging(nodeOverrides, uniquingKeysWith: { _, new in new })
             )
             z += 1
         }

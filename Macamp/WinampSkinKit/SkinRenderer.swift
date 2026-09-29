@@ -114,6 +114,7 @@ final class SkinRendererView: NSView {
         configureMakiRuntimeIfNeeded()
         NSGraphicsContext.saveGraphicsState()
         if skinStore.activeCatalog.format == .modern {
+            updateModernWindowRegion()
             drawModernScene()
         } else if let image = skinStore.activeCatalog.mainImage {
             NSGraphicsContext.current?.imageInterpolation = .none
@@ -234,6 +235,24 @@ final class SkinRendererView: NSView {
                 break
             }
         }
+    }
+
+    private func updateModernWindowRegion() {
+        guard skinStore.activeCatalog.format == .modern,
+              !skinStore.activeCatalog.modernWindowUsesBitmapAlpha else { return }
+        let path = NSBezierPath()
+        path.windingRule = .nonZero
+        for node in WasabiScenePainter.renderNodes(in: liveScene) {
+            guard let value = Int(node.attributes["sysregion"] ?? ""), value != 0,
+                  let frame = liveScene.worldFrame(of: node.handle), !frame.isEmpty else { continue }
+            let points: [CGPoint] = value > 0
+                ? [CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.maxY), CGPoint(x: frame.minX, y: frame.maxY)]
+                : [CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.minX, y: frame.maxY), CGPoint(x: frame.maxX, y: frame.maxY), CGPoint(x: frame.maxX, y: frame.minY)]
+            path.move(to: points[0])
+            points.dropFirst().forEach { path.line(to: $0) }
+            path.close()
+        }
+        windowHost?.regionPath = path.isEmpty ? skinStore.activeCatalog.regionPath : path
     }
 
     private func drawSceneLayer(_ node: WasabiSceneRenderNode, in frame: CGRect) {
