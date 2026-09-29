@@ -995,6 +995,17 @@ struct SkinTests {
         #expect(group.hosts.count == 2)
     }
 
+    @Test @MainActor func skinWindowHostSnapsToVisibleScreenEdgesInDisplayCoordinates() {
+        let host = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 100, height: 40), scale: 2)
+        host.screenSnapDistance = 8
+        host.snapsToVisibleScreenEdges = true
+        let visible = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1200, height: 800)
+        host.window.setFrame(CGRect(x: visible.minX + 10, y: visible.minY + 10, width: 200, height: 80), display: false)
+        host.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: host.window))
+        #expect(host.window.frame.minX == visible.minX)
+        #expect(host.window.frame.minY == visible.minY)
+    }
+
     @Test func winampANIAndEQFResourcesRoundTripWithBounds() throws {
         let png = try #require(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
 

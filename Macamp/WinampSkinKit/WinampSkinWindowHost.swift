@@ -65,6 +65,8 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
     /// receives a valid logical size.
     var resizeGrid: CGSize?
     var minimumLogicalSize: CGSize?
+    var screenSnapDistance: CGFloat = 10
+    var snapsToVisibleScreenEdges = true
 
     var regionPath: NSBezierPath? {
         didSet { applyRegionMask() }
@@ -189,6 +191,7 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
     }
 
     func windowDidMove(_ notification: Notification) {
+        snapToVisibleScreenEdgesIfNeeded()
         onLogicalFrameChange?(logicalFrame)
         windowMoveObservers.values.forEach { $0() }
     }
@@ -241,6 +244,20 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
         mask.path = regionPath.cgPath.copy(using: &transform)
         mask.frame = bounds
         contentView.layer?.mask = mask
+    }
+
+    private func snapToVisibleScreenEdgesIfNeeded() {
+        guard snapsToVisibleScreenEdges, screenSnapDistance >= 0, !window.isMiniaturized else { return }
+        guard let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(window.frame) }) ?? NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        var frame = window.frame
+        let distance = screenSnapDistance * scale
+        if abs(frame.minX - visible.minX) <= distance { frame.origin.x = visible.minX }
+        if abs(frame.maxX - visible.maxX) <= distance { frame.origin.x = visible.maxX - frame.width }
+        if abs(frame.minY - visible.minY) <= distance { frame.origin.y = visible.minY }
+        if abs(frame.maxY - visible.maxY) <= distance { frame.origin.y = visible.maxY - frame.height }
+        guard frame.origin != window.frame.origin else { return }
+        window.setFrameOrigin(frame.origin)
     }
 
     private static func corrected(_ frame: CGRect) -> CGRect {
