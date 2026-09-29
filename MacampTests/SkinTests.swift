@@ -1044,6 +1044,17 @@ struct SkinTests {
         }
     }
 
+    @Test func declaredCursorResourcesResolveThroughCatalog() throws {
+        let png = try #require(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
+        let xml = "<skin><cursor id=\"pointer\" file=\"cursors/hand.cur\"/></skin>"
+        let catalog = WinampCursorCatalog(files: [
+            "skin.xml": Data(xml.utf8),
+            "cursors/hand.cur": png
+        ])
+        #expect(catalog.declarations["pointer"]?.resourcePath == "cursors/hand.cur")
+        #expect(throws: ANICursorError.self) { try catalog.resource(named: "missing") }
+    }
+
     @Test @MainActor func settingsPersistLogicalPlayerFrame() throws {
         let suiteName = "Macamp.WindowHostTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))

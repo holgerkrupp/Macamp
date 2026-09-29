@@ -3,6 +3,62 @@ import Foundation
 import ImageIO
 import AppKit
 
+struct WinampCursorDeclaration: Equatable {
+    let name: String
+    let resourcePath: String
+}
+
+/// Resolves cursor declarations independently from the UI host. Classic and
+/// Modern skins can name cursor areas differently; the declaration/resource
+/// boundary keeps that vocabulary data-driven rather than filename-special.
+struct WinampCursorCatalog {
+    let declarations: [String: WinampCursorDeclaration]
+    private let files: [String: Data]
+
+    init(files: [String: Data]) {
+        self.files = files
+        var found: [String: WinampCursorDeclaration] = [:]
+        for (path, data) in files where path.lowercased().hasSuffix(".xml") {
+            guard let document = try? XMLDocument(data: data, options: [.nodeLoadExternalEntitiesNever]) else { continue }
+            guard let nodes = try? document.nodes(forXPath: "//*[local-name()='cursor']") else { continue }
+            for case let element as XMLElement in nodes {
+                let rawName = element.attribute(forName: "id")?.stringValue
+                    ?? element.attribute(forName: "name")?.stringValue
+                let rawPath = element.attribute(forName: "file")?.stringValue
+                    ?? element.attribute(forName: "resource")?.stringValue
+                    ?? element.attribute(forName: "path")?.stringValue
+                guard let rawName, let rawPath else { continue }
+                let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let resource = rawPath.replacingOccurrences(of: "\\", with: "/").lowercased()
+                guard !name.isEmpty, !resource.isEmpty else { continue }
+                let resolved = Self.resolve(resource, relativeTo: path, files: files) ?? resource
+                found[name] = WinampCursorDeclaration(name: name, resourcePath: resolved)
+            }
+        }
+        self.declarations = found
+    }
+
+    func resource(named name: String) throws -> WinampCursorResource {
+        let key = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let declaration = declarations[key], let data = files[declaration.resourcePath] else {
+            throw ANICursorError.malformed("Cursor declaration \(name) is not available.")
+        }
+        if declaration.resourcePath.hasSuffix(".ani") {
+            return .animated(try ANICursorDecoder.decode(data))
+        }
+        return .staticCursor(try ANICursorDecoder.decodeFrame(data))
+    }
+
+    private static func resolve(_ path: String, relativeTo xmlPath: String, files: [String: Data]) -> String? {
+        let normalized = path.replacingOccurrences(of: "\\", with: "/")
+        let base = (xmlPath as NSString).deletingLastPathComponent
+        let candidate = (base as NSString).appendingPathComponent(normalized).lowercased()
+        return files.keys.first(where: { $0.lowercased() == candidate })
+            ?? files.keys.first(where: { $0.lowercased() == normalized.lowercased() })
+            ?? files.keys.first(where: { $0.lowercased().hasSuffix("/\(normalized.lowercased())") })
+    }
+}
+
 struct WinampCursorFrame {
     let image: CGImage
     let hotSpot: CGPoint

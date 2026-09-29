@@ -704,6 +704,7 @@ final class SkinAssetCatalog {
     let classicAssets: ClassicSkinAssetDescriptor?
     let classicPlaylistText: Data?
     let classicVisualizationPalette: ClassicVisualizationPalette?
+    let cursorCatalog: WinampCursorCatalog
     private let renderedMainImage: NSImage?
 
     var mainImage: NSImage? { renderedMainImage }
@@ -720,6 +721,7 @@ final class SkinAssetCatalog {
             }
         }
         images = loadedImages
+        cursorCatalog = WinampCursorCatalog(files: files)
         if format == .modern, let modern {
             if modern.layers.isEmpty, let screenshot = modern.screenshotPath, let image = loadedImages[screenshot.lowercased()] {
                 canvasSize = image.size
