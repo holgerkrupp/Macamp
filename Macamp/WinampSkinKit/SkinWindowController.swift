@@ -225,6 +225,7 @@ final class ClassicPlaylistSurface: NSView {
     private var scrollOffset = 0
     private var rowHeight: CGFloat = 13
     private var selectedIndex: Int?
+    private var draggingScrollbar = false
     var isActive = true
 
     override var isFlipped: Bool { true }
@@ -283,11 +284,18 @@ final class ClassicPlaylistSurface: NSView {
             if point.x >= bounds.width - 12 {
                 window?.close()
             } else {
-                windowHost?.setShaded(true)
+                windowHost?.setShaded(windowHost?.isShaded != true)
             }
             return
         }
         let middleBottom = max(20, bounds.height - 38)
+        if windowHost?.isShaded != true, point.x >= bounds.width - 18, point.x < bounds.width - 10,
+           point.y >= 20, point.y < middleBottom {
+            draggingScrollbar = true
+            updateScrollOffset(for: point.y, middleFrame: CGRect(x: 0, y: 20, width: bounds.width, height: max(0, middleBottom - 20)))
+            needsDisplay = true
+            return
+        }
         guard point.y >= 23, point.y < middleBottom, point.x >= 12, point.x < bounds.width - 20 else { return }
         let index = scrollOffset + max(0, Int((point.y - 23) / rowHeight))
         guard coordinator.queue.items.indices.contains(index) else { return }
@@ -297,6 +305,18 @@ final class ClassicPlaylistSurface: NSView {
             Task { await coordinator.play(items: coordinator.queue.items, startingAt: index) }
         }
         needsDisplay = true
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard draggingScrollbar else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        let middleBottom = max(20, bounds.height - 38)
+        updateScrollOffset(for: point.y, middleFrame: CGRect(x: 0, y: 20, width: bounds.width, height: max(0, middleBottom - 20)))
+        needsDisplay = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        draggingScrollbar = false
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -330,6 +350,15 @@ final class ClassicPlaylistSurface: NSView {
         if selectedIndex < scrollOffset { scrollOffset = selectedIndex }
         if selectedIndex >= scrollOffset + visible { scrollOffset = selectedIndex - visible + 1 }
         scrollOffset = min(max(0, coordinator.queue.items.count - visible), max(0, scrollOffset))
+    }
+
+    private func updateScrollOffset(for y: CGFloat, middleFrame: CGRect) {
+        let visible = max(1, Int(max(0, middleFrame.height - 6) / rowHeight))
+        let itemCount = coordinator.queue.items.count
+        let thumbHeight = max(18, middleFrame.height * min(1, CGFloat(visible) / CGFloat(max(1, itemCount))))
+        let available = max(1, middleFrame.height - thumbHeight)
+        let fraction = min(1, max(0, (y - middleFrame.minY - thumbHeight / 2) / available))
+        scrollOffset = Int((fraction * CGFloat(max(0, itemCount - visible))).rounded())
     }
 
     private func drawRows(in frame: CGRect) {
