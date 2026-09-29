@@ -356,7 +356,8 @@ struct SkinTests {
 
         let found = runtime.invoke(receiver: layout, method: "findObject", arguments: [.string("duplicate")])
         #expect(found == .object(first))
-        #expect(runtime.invoke(receiver: layout, method: "findObject", arguments: [.string("missing"])) == .void)
+        let missing = runtime.invoke(receiver: layout, method: "findObject", arguments: [.string("missing")])
+        #expect(missing == MakiValue.void)
         #expect(runtime.invoke(receiver: runtime.registry.systemHandle, method: "getContainer", arguments: [.string("main")]) == .object(container))
         #expect(runtime.invoke(receiver: container, method: "getLayout", arguments: [.string("normal")]) == .object(layout))
         #expect(runtime.invoke(receiver: layout, method: "getContainer", arguments: []) == .object(container))
@@ -1101,6 +1102,9 @@ private final class TestMakiHost: MakiRuntimeHost {
     }
     func makiVisibilityChanged(objectID: String, isVisible: Bool) { }
     func makiTargetChanged(objectID: String, x: Double, speed: Double) { targets.append((objectID, x, speed)) }
+    func makiTargetGeometryChanged(objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double) {
+        if let x { targets.append((objectID, x, speed)) }
+    }
     func makiVolumeChanged(_ value: Double) { }
     func makiEQBandChanged(index: Int, value: Int) { }
     func makiRuntimeNeedsDisplay() { }

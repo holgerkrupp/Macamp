@@ -116,6 +116,8 @@ nonisolated enum MakiClassCatalog {
         ("getposition", .init(arity: 0, implementation: .systemGetPosition)),
         ("stop", .init(arity: 0)),
         ("getxmlparam", .init(arity: 1)),
+        ("getparam", .init(arity: 0)),
+        ("gettoken", .init(arity: 1)),
         ("setxmlparam", .init(arity: 2)),
         ("gettext", .init(arity: 0)),
         ("settext", .init(arity: 1)),

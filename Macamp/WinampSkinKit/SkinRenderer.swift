@@ -335,8 +335,9 @@ final class SkinRendererView: NSView {
         case "frequency": technicalFrequency
         case "channels": technicalChannels
         case "fileExtension": technicalExtension
-        default: return
+        default: ""
         }
+        guard !text.isEmpty else { return }
         let alignment: NSTextAlignment = switch node.attributes["align"] {
         case "center": .center
         case "right": .right
@@ -961,7 +962,7 @@ final class SkinRendererView: NSView {
         let initialProgress = catalog.makiPrograms.isEmpty ? 1.0 : 0.0
         drawerTargets = [.left: initialProgress, .right: initialProgress]
         guard !catalog.makiPrograms.isEmpty else { return }
-        makiRuntime = MakiRuntime(programs: catalog.makiPrograms, bindings: catalog.makiBindings, host: self, limits: .init(), skinID: catalog.name, persistentState: .standard)
+        makiRuntime = MakiRuntime(programs: catalog.makiPrograms, bindings: catalog.makiBindings, host: self, limits: .init(), skinID: catalog.name, persistentState: .standard, scene: catalog.scene)
         makiRuntime?.start()
     }
 

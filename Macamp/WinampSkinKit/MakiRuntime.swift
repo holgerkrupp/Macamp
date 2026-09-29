@@ -17,9 +17,11 @@ final class WasabiObjectRegistry {
     private(set) var objects: [WasabiHandle: Object] = [:]
     private var handlesByID: [String: [WasabiHandle]] = [:]
     private var nextRawHandle: UInt64
+    private let hasSceneObjects: Bool
     let systemHandle: WasabiHandle
 
     init(scene: WasabiScene = WasabiScene()) {
+        hasSceneObjects = !scene.allNodes.isEmpty
         let highestSceneHandle = scene.allNodes.map(\.handle.rawValue).max() ?? 0
         nextRawHandle = max(highestSceneHandle + 1, 1)
         systemHandle = WasabiHandle(rawValue: nextRawHandle)
@@ -71,7 +73,13 @@ final class WasabiObjectRegistry {
     }
 
     func findObject(id: String, within scope: WasabiHandle? = nil) -> WasabiHandle? {
-        handle(forXMLID: id, within: scope)
+        if let handle = handle(forXMLID: id, within: scope) { return handle }
+        // Legacy scripts can run before a declarative scene is available
+        // (for example, a component-only WAL). Preserve real handle identity
+        // through the compatibility registry without making this fallback
+        // authoritative when a live scene exists.
+        guard !hasSceneObjects else { return nil }
+        return compatibilityHandle(for: id)
     }
 
     func container(for handle: WasabiHandle) -> WasabiHandle? {
@@ -91,6 +99,16 @@ final class WasabiObjectRegistry {
             return children.first?.handle
         }
         return object.className.caseInsensitiveCompare("Layout") == .orderedSame ? handle : object.layout
+    }
+
+    func compatibilityContainer(for id: String) -> WasabiHandle? {
+        guard !hasSceneObjects else { return nil }
+        return compatibilityHandle(for: id, className: "Container")
+    }
+
+    func compatibilityLayout(for id: String) -> WasabiHandle? {
+        guard !hasSceneObjects else { return nil }
+        return compatibilityHandle(for: id, className: "Layout")
     }
 
     func instantiate(className: String, id: String? = nil) -> WasabiHandle {
@@ -228,13 +246,29 @@ final class MakiRuntime {
         var variables: [Value]
         var disabledReason: String?
 
-        init(program: MakiProgram, groupID: String, systemHandle: WasabiHandle) {
+        init(program: MakiProgram, groupID: String, registry: WasabiObjectRegistry) {
             self.program = program
             self.groupID = groupID.lowercased()
             variables = program.variables.enumerated().map { index, variable in
-                if index == 0 || variable.isStatic && variable.type >= 0x100 { return .object(systemHandle) }
-                if let string = variable.string { return .string(string) }
+                if index == 0 { return .object(registry.systemHandle) }
+                // Compiled MAKI uses private type IDs above the public value
+                // range for object declarations. Their initial value is
+                // populated by getObject/findObject during script startup;
+                // never turn an uninitialized object into a string.
+                if variable.type >= 0x100 {
+                    if let id = variable.string, !id.isEmpty {
+                        return .object(registry.compatibilityHandle(for: id))
+                    }
+                    return .void
+                }
                 switch MakiValueType(rawValue: variable.type) {
+                case .object, .any:
+                    if let id = variable.string, !id.isEmpty {
+                        return .object(registry.compatibilityHandle(for: id))
+                    }
+                    return .void
+                case .string:
+                    return .string(variable.string ?? "")
                 case .float, .double:
                     return .number(Double(Float(bitPattern: UInt32(truncatingIfNeeded: variable.payload))))
                 case .integer, .boolean, .event:
@@ -274,7 +308,7 @@ final class MakiRuntime {
         let programByPath = Dictionary(programs.map { ($0.path.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
         instances = bindings.compactMap { binding in
             guard let program = programByPath[binding.path.lowercased()] else { return nil }
-            return Instance(program: program, groupID: binding.groupID, systemHandle: registry.systemHandle)
+            return Instance(program: program, groupID: binding.groupID, registry: registry)
         }
     }
 
@@ -552,8 +586,15 @@ final class MakiRuntime {
     }
 
     private func call(_ rawName: String, object: Value, arguments: [Value], instance: Instance) -> Value {
+        let normalizedName = rawName.lowercased()
+        // These are legacy global helpers emitted by older standard-frame
+        // scripts. They do not have a Wasabi object receiver even though the
+        // VM call form still supplies one stack slot.
+        if normalizedName == "getparam" || normalizedName == "gettoken" {
+            return .string(arguments.first?.string ?? "")
+        }
         guard case let .object(receiver) = object else {
-            record("MAKI call (rawName) received a non-object receiver.")
+            record("MAKI call (\(rawName)) received a non-object receiver: \(object)")
             return .integer(0)
         }
         return invoke(method: rawName, receiver: receiver, arguments: arguments, instance: instance)
@@ -585,11 +626,16 @@ final class MakiRuntime {
             guard let id = arguments.first?.string, let handle = registry.findObject(id: id, within: receiver) else { return .void }
             return .object(handle)
         case .systemGetContainer:
-            guard let id = arguments.first?.string, let handle = registry.handle(forXMLID: id) else { return .void }
-            return registry.container(for: handle).map(MakiValue.object) ?? .void
+            guard let id = arguments.first?.string else { return .void }
+            if let handle = registry.findObject(id: id) {
+                if let container = registry.container(for: handle) { return .object(container) }
+                if registry.object(handle)?.className.caseInsensitiveCompare("Container") == .orderedSame { return .object(handle) }
+            }
+            return registry.compatibilityContainer(for: id).map(MakiValue.object) ?? .void
         case .containerGetLayout:
-            guard let id = arguments.first?.string, let handle = registry.layout(for: receiver, id: id) else { return .void }
-            return .object(handle)
+            guard let id = arguments.first?.string else { return .void }
+            if let handle = registry.layout(for: receiver, id: id) { return .object(handle) }
+            return registry.compatibilityLayout(for: id).map(MakiValue.object) ?? .void
         case .layoutGetContainer:
             return registry.container(for: receiver).map(MakiValue.object) ?? .void
         case .systemGetPosition:
@@ -614,8 +660,8 @@ final class MakiRuntime {
             let handle = registry.handle(forXMLID: instance?.groupID ?? "") ?? registry.compatibilityHandle(for: instance?.groupID ?? "")
             return .object(handle)
         case "getobject":
-            guard let id = arguments.first?.string, let handle = registry.findObject(id: id) else { return .void }
-            return .object(handle)
+            guard let id = arguments.first?.string, !id.isEmpty else { return .void }
+            return .object(registry.compatibilityHandle(for: id))
         case "hide":
             visibleObjects[objectID] = false; host?.makiVisibilityChanged(objectID: objectID, isVisible: false); return .void
         case "show":
@@ -623,6 +669,8 @@ final class MakiRuntime {
         case "getxmlparam":
             let key = arguments.first?.string.lowercased() ?? ""
             return .string(xmlParameters[objectID]?[key] ?? host?.makiXMLParameter(objectID: objectID, name: key) ?? "")
+        case "getparam", "gettoken":
+            return .string(arguments.first?.string ?? "")
         case "setxmlparam":
             guard arguments.count >= 2 else { return .void }
             xmlParameters[objectID, default: [:]][arguments[0].string.lowercased()] = arguments[1].string

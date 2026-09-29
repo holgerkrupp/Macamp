@@ -368,9 +368,14 @@ enum ModernSkinParser {
         var nextVisited = visited
         nextVisited.insert(candidateKey)
         var z = 0
+        let controlIDs = Set(candidate.controls.compactMap { $0.elementID?.lowercased() })
 
         for (index, layer) in candidate.layers.enumerated() {
             let id = layer.elementID ?? "layer-\(index)"
+            // A MAKI-only button/slider may also be collected as a visual
+            // layer because it carries an image. Keep one live scene node for
+            // that XML object; the control node owns its input and sprite.
+            if controlIDs.contains(id.lowercased()) { continue }
             let kind: WasabiObjectKind = layer.cropToFirstFrame ? .animatedLayer : .layer
             _ = scene.addNode(
                 id: id,
