@@ -382,6 +382,7 @@ struct SkinTests {
     @Test func syntheticSceneValidationTraceDetectsHierarchyAndLayoutChanges() throws {
         let xml = """
         <WinampAbstractionLayer>
+          <elements><bitmap id="pixel" file="pixel.png" /></elements>
           <container id="main" default_visible="1">
             <groupdef id="controls" w="40" h="24">
               <button id="play" x="4" y="3" w="16" h="12" />
@@ -390,12 +391,12 @@ struct SkinTests {
               <group id="controls" x="12" y="8" />
             </layout>
             <layout id="shade" w="120" h="14">
-              <layer id="shade-background" x="0" y="0" w="120" h="14" />
+              <layer id="shade-background" image="pixel" x="0" y="0" w="120" h="14" />
             </layout>
           </container>
         </WinampAbstractionLayer>
         """
-        var scene = ModernSkinParser.parse(files: ["skin.xml": Data(xml.utf8)]).descriptor.scene
+        var scene = ModernSkinParser.parse(files: ["skin.xml": Data(xml.utf8), "pixel.png": Data([1])]).descriptor.scene
         let container = try #require(scene.firstHandle(for: "main"))
         let normal = try #require(scene.firstHandle(for: "normal"))
         let shade = try #require(scene.firstHandle(for: "shade"))
