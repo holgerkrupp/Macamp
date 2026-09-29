@@ -2,6 +2,162 @@ import CoreGraphics
 import Foundation
 
 @MainActor
+final class WasabiObjectRegistry {
+    struct Object: Sendable, Equatable {
+        let handle: WasabiHandle
+        let className: String
+        let id: String?
+        let sceneHandle: WasabiHandle?
+        let parent: WasabiHandle?
+        let container: WasabiHandle?
+        let layout: WasabiHandle?
+        let dynamic: Bool
+    }
+
+    private(set) var objects: [WasabiHandle: Object] = [:]
+    private var handlesByID: [String: [WasabiHandle]] = [:]
+    private var nextRawHandle: UInt64
+    let systemHandle: WasabiHandle
+
+    init(scene: WasabiScene = WasabiScene()) {
+        let highestSceneHandle = scene.allNodes.map(\.handle.rawValue).max() ?? 0
+        nextRawHandle = max(highestSceneHandle + 1, 1)
+        systemHandle = WasabiHandle(rawValue: nextRawHandle)
+        nextRawHandle += 1
+        objects[systemHandle] = Object(
+            handle: systemHandle,
+            className: "System",
+            id: "system",
+            sceneHandle: nil,
+            parent: nil,
+            container: nil,
+            layout: nil,
+            dynamic: true
+        )
+        handlesByID["system"] = [systemHandle]
+
+        for node in scene.allNodes {
+            let parent = node.parent
+            let container = Self.nearestAncestor(of: node, kind: .container, in: scene)
+            let layout = Self.nearestAncestor(of: node, kind: .layout, in: scene)
+            let object = Object(
+                handle: node.handle,
+                className: Self.className(for: node.kind),
+                id: node.id,
+                sceneHandle: node.handle,
+                parent: parent,
+                container: container,
+                layout: layout,
+                dynamic: false
+            )
+            objects[node.handle] = object
+            handlesByID[node.id.lowercased(), default: []].append(node.handle)
+        }
+    }
+
+    func object(_ handle: WasabiHandle) -> Object? { objects[handle] }
+
+    func require(_ handle: WasabiHandle) throws -> Object {
+        guard let object = objects[handle] else {
+            throw ProviderError(code: .invalidResponse, message: "Unknown Wasabi object handle \(handle.rawValue).")
+        }
+        return object
+    }
+
+    func handle(forXMLID id: String, within scope: WasabiHandle? = nil) -> WasabiHandle? {
+        let candidates = handlesByID[id.lowercased()] ?? []
+        guard let scope else { return candidates.first }
+        return candidates.first { isDescendant($0, of: scope) }
+    }
+
+    func findObject(id: String, within scope: WasabiHandle? = nil) -> WasabiHandle? {
+        handle(forXMLID: id, within: scope)
+    }
+
+    func container(for handle: WasabiHandle) -> WasabiHandle? {
+        guard let object = objects[handle] else { return nil }
+        return object.className.caseInsensitiveCompare("Container") == .orderedSame ? handle : object.container
+    }
+
+    func layout(for handle: WasabiHandle, id: String? = nil) -> WasabiHandle? {
+        guard let object = objects[handle] else { return nil }
+        if let id {
+            let containerHandle = container(for: handle)
+            let children = objects.values.filter { candidate in
+                candidate.className.caseInsensitiveCompare("Layout") == .orderedSame &&
+                candidate.id?.caseInsensitiveCompare(id) == .orderedSame &&
+                (containerHandle == nil || candidate.container == containerHandle)
+            }
+            return children.first?.handle
+        }
+        return object.className.caseInsensitiveCompare("Layout") == .orderedSame ? handle : object.layout
+    }
+
+    func instantiate(className: String, id: String? = nil) -> WasabiHandle {
+        let handle = WasabiHandle(rawValue: nextRawHandle)
+        nextRawHandle += 1
+        let normalizedID = id?.lowercased()
+        objects[handle] = Object(
+            handle: handle,
+            className: className,
+            id: normalizedID,
+            sceneHandle: nil,
+            parent: nil,
+            container: nil,
+            layout: nil,
+            dynamic: true
+        )
+        if let normalizedID { handlesByID[normalizedID, default: []].append(handle) }
+        return handle
+    }
+
+    /// Temporary bridge for callers that still dispatch input by XML ID.  It
+    /// creates a registered runtime object, never a pseudo object value.
+    func compatibilityHandle(for id: String, className: String = "GuiObject") -> WasabiHandle {
+        handle(forXMLID: id) ?? instantiate(className: className, id: id)
+    }
+
+    func destroy(_ handle: WasabiHandle) {
+        guard handle != systemHandle else { return }
+        guard let object = objects.removeValue(forKey: handle), let id = object.id else { return }
+        handlesByID[id, default: []].removeAll { $0 == handle }
+        if handlesByID[id]?.isEmpty == true { handlesByID.removeValue(forKey: id) }
+    }
+
+    private func isDescendant(_ handle: WasabiHandle, of ancestor: WasabiHandle) -> Bool {
+        var current = handle
+        var visited: Set<WasabiHandle> = []
+        while let object = objects[current], let parent = object.parent, visited.insert(parent).inserted {
+            if parent == ancestor { return true }
+            current = parent
+        }
+        return false
+    }
+
+    private static func className(for kind: WasabiObjectKind) -> String {
+        switch kind {
+        case .container: "Container"
+        case .layout: "Layout"
+        case .button: "Button"
+        case .slider: "Slider"
+        case .group: "GuiObject"
+        case .layer, .animatedLayer, .text, .songTicker, .content, .unknown: "GuiObject"
+        }
+    }
+
+    private static func nearestAncestor(of node: WasabiSceneNode, kind: WasabiObjectKind, in scene: WasabiScene) -> WasabiHandle? {
+        var parent = node.parent
+        var visited: Set<WasabiHandle> = []
+        while let handle = parent, visited.insert(handle).inserted {
+            guard let ancestor = scene.node(handle) else { return nil }
+            if ancestor.kind == kind { return handle }
+            parent = ancestor.parent
+        }
+        return nil
+    }
+}
+
+@MainActor
 protocol MakiRuntimeHost: AnyObject {
     func makiPlaybackStatus() -> Int
     func makiXMLParameter(objectID: String, name: String) -> String?
@@ -59,41 +215,7 @@ final class MakiRuntime {
         var maximumNestedEvents = 32
     }
 
-    private enum Value: Equatable {
-        case void
-        case integer(Int32)
-        case number(Double)
-        case string(String)
-        case object(String)
-
-        var integer: Int32 {
-            switch self {
-            case let .integer(value): value
-            case let .number(value): Int32(clamping: Int(value))
-            case let .string(value): Int32(value.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
-            case let .object(value): value.isEmpty ? 0 : 1
-            case .void: 0
-            }
-        }
-
-        var number: Double {
-            switch self {
-            case let .number(value): value
-            default: Double(integer)
-            }
-        }
-
-        var string: String {
-            switch self {
-            case let .string(value), let .object(value): value
-            case let .integer(value): String(value)
-            case let .number(value): String(value)
-            case .void: ""
-            }
-        }
-
-        var truthy: Bool { integer != 0 }
-    }
+    private typealias Value = MakiValue
 
     private struct StackValue {
         var value: Value
@@ -106,11 +228,11 @@ final class MakiRuntime {
         var variables: [Value]
         var disabledReason: String?
 
-        init(program: MakiProgram, groupID: String) {
+        init(program: MakiProgram, groupID: String, systemHandle: WasabiHandle) {
             self.program = program
             self.groupID = groupID.lowercased()
             variables = program.variables.enumerated().map { index, variable in
-                if index == 0 || variable.isStatic && variable.type >= 0x100 { return .object("system") }
+                if index == 0 || variable.isStatic && variable.type >= 0x100 { return .object(systemHandle) }
                 if let string = variable.string { return .string(string) }
                 switch MakiValueType(rawValue: variable.type) {
                 case .float, .double:
@@ -126,6 +248,7 @@ final class MakiRuntime {
 
     private weak var host: (any MakiRuntimeHost)?
     private let limits: Limits
+    let registry: WasabiObjectRegistry
     private var instances: [Instance] = []
     private var xmlParameters: [String: [String: String]] = [:]
     private var targetX: [String: Double] = [:]
@@ -136,20 +259,22 @@ final class MakiRuntime {
     private var privateState: [String: Value] = [:]
     private var configAttributes: [String: Value] = [:]
     private var timers: [String: Task<Void, Never>] = [:]
+    private var playItemHandle: WasabiHandle?
     private let persistentState: UserDefaults
     private let skinID: String
     private var nestedEventDepth = 0
     private(set) var diagnostics: [String] = []
 
-    init(programs: [MakiProgram], bindings: [ModernMakiBinding], host: any MakiRuntimeHost, limits: Limits, skinID: String, persistentState: UserDefaults) {
+    init(programs: [MakiProgram], bindings: [ModernMakiBinding], host: any MakiRuntimeHost, limits: Limits, skinID: String, persistentState: UserDefaults, scene: WasabiScene = WasabiScene()) {
         self.host = host
         self.limits = limits
         self.skinID = skinID
         self.persistentState = persistentState
+        registry = WasabiObjectRegistry(scene: scene)
         let programByPath = Dictionary(programs.map { ($0.path.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
         instances = bindings.compactMap { binding in
             guard let program = programByPath[binding.path.lowercased()] else { return nil }
-            return Instance(program: program, groupID: binding.groupID)
+            return Instance(program: program, groupID: binding.groupID, systemHandle: registry.systemHandle)
         }
     }
 
@@ -158,7 +283,7 @@ final class MakiRuntime {
     }
 
     func start() {
-        dispatch(event: "onScriptLoaded", objectID: "system")
+        dispatch(event: "onScriptLoaded", receiver: registry.systemHandle)
     }
 
     deinit { timers.values.forEach { $0.cancel() } }
@@ -232,7 +357,8 @@ final class MakiRuntime {
         switch value {
         case let .integer(value): persistentState.set(Int(value), forKey: persistentKey(key))
         case let .number(value): persistentState.set(value, forKey: persistentKey(key))
-        case let .string(value), let .object(value): persistentState.set(value, forKey: persistentKey(key))
+        case let .string(value): persistentState.set(value, forKey: persistentKey(key))
+        case let .object(handle): persistentState.set(Int64(handle.rawValue), forKey: persistentKey(key))
         case .void: persistentState.removeObject(forKey: persistentKey(key))
         }
     }
@@ -260,6 +386,12 @@ final class MakiRuntime {
 
     @discardableResult
     private func dispatch(event eventName: String, objectID: String) -> Bool {
+        let receiver = registry.compatibilityHandle(for: objectID)
+        return dispatch(event: eventName, receiver: receiver)
+    }
+
+    @discardableResult
+    private func dispatch(event eventName: String, receiver: WasabiHandle) -> Bool {
         guard nestedEventDepth < limits.maximumNestedEvents else {
             record("Stopped nested MAKI event dispatch at the safety limit.")
             return false
@@ -270,7 +402,7 @@ final class MakiRuntime {
         for instance in instances where instance.disabledReason == nil {
             for event in instance.program.events {
                 guard instance.program.functions[event.functionIndex].name.caseInsensitiveCompare(eventName) == .orderedSame,
-                      instance.variables[event.variableIndex] == .object(objectID) else { continue }
+                      instance.variables[event.variableIndex] == .object(receiver) else { continue }
                 do {
                     try execute(instance, at: event.codeOffset)
                     handled = true
@@ -354,8 +486,8 @@ final class MakiRuntime {
                 } else if pc + 4 <= instance.program.code.count {
                     let marker = UInt32(instance.program.code[pc]) | UInt32(instance.program.code[pc + 1]) << 8 | UInt32(instance.program.code[pc + 2]) << 16 | UInt32(instance.program.code[pc + 3]) << 24
                     if marker & 0xffff_0000 == 0xffff_0000 { argumentCount = Int(marker & 0xffff); pc += 4 }
-                    else { argumentCount = arity(of: instance.program.functions[functionIndex].name) }
-                } else { argumentCount = arity(of: instance.program.functions[functionIndex].name) }
+                    else { argumentCount = checkedArity(of: instance.program.functions[functionIndex].name) }
+                } else { argumentCount = checkedArity(of: instance.program.functions[functionIndex].name) }
                 var arguments: [Value] = []
                 for _ in 0..<argumentCount { arguments.append(try pop().value) }
                 let object = try pop().value
@@ -420,16 +552,70 @@ final class MakiRuntime {
     }
 
     private func call(_ rawName: String, object: Value, arguments: [Value], instance: Instance) -> Value {
+        guard case let .object(receiver) = object else {
+            record("MAKI call (rawName) received a non-object receiver.")
+            return .integer(0)
+        }
+        return invoke(method: rawName, receiver: receiver, arguments: arguments, instance: instance)
+    }
+
+    @discardableResult
+    func invoke(receiver: WasabiHandle, method: String, arguments: [MakiValue]) -> MakiValue {
+        invoke(method: method, receiver: receiver, arguments: arguments, instance: nil)
+    }
+
+    private func invoke(method rawName: String, receiver: WasabiHandle, arguments: [Value], instance: Instance?) -> Value {
+        guard let object = registry.object(receiver) else {
+            record("MAKI call \(rawName) received an unknown Wasabi handle \(receiver.rawValue).")
+            return .integer(0)
+        }
+        guard let signature = MakiClassCatalog.resolve(className: object.className, method: rawName) else {
+            record("Unsupported \(object.className).\(rawName).")
+            return .integer(0)
+        }
+        guard arguments.count == signature.arity else {
+            record("Invalid arity for \(object.className).\(rawName): expected \(signature.arity), received \(arguments.count).")
+            return .integer(0)
+        }
+
         let name = rawName.lowercased()
-        let objectID = object.string.lowercased()
+        let objectID = object.id?.lowercased() ?? "handle:\(receiver.rawValue)"
+        switch signature.implementation {
+        case .findObject:
+            guard let id = arguments.first?.string, let handle = registry.findObject(id: id, within: receiver) else { return .void }
+            return .object(handle)
+        case .systemGetContainer:
+            guard let id = arguments.first?.string, let handle = registry.handle(forXMLID: id) else { return .void }
+            return registry.container(for: handle).map(MakiValue.object) ?? .void
+        case .containerGetLayout:
+            guard let id = arguments.first?.string, let handle = registry.layout(for: receiver, id: id) else { return .void }
+            return .object(handle)
+        case .layoutGetContainer:
+            return registry.container(for: receiver).map(MakiValue.object) ?? .void
+        case .systemGetPosition:
+            return .number(host?.makiElapsed().secondsValue ?? 0)
+        case .sliderGetPosition:
+            return .number(targetStates[objectID]?["position"] ?? 0)
+        case .frameGetPosition:
+            return .number(targetStates[objectID]?["position"] ?? 0)
+        case .timerStop:
+            cancelTimer(objectID: objectID)
+            return .void
+        case .legacy:
+            break
+        }
+
+        let instance = instance
         switch name {
         case "getruntimeversion": return .number(5.666)
         case "getskinname": return .string("Macamp Modern")
         case "gettimeofday", "getstatus": return .integer(Int32(host?.makiPlaybackStatus() ?? 0))
-        case "getscriptgroup": return .object(instance.groupID)
-        case "findobject", "getobject": return .object(arguments.first?.string.lowercased() ?? "")
-        case "getcontainer": return .object("container:\(arguments.first?.string.lowercased() ?? "")")
-        case "getlayout": return .object("layout:\(arguments.first?.string.lowercased() ?? "")")
+        case "getscriptgroup":
+            let handle = registry.handle(forXMLID: instance?.groupID ?? "") ?? registry.compatibilityHandle(for: instance?.groupID ?? "")
+            return .object(handle)
+        case "getobject":
+            guard let id = arguments.first?.string, let handle = registry.findObject(id: id) else { return .void }
+            return .object(handle)
         case "hide":
             visibleObjects[objectID] = false; host?.makiVisibilityChanged(objectID: objectID, isVisible: false); return .void
         case "show":
@@ -448,7 +634,9 @@ final class MakiRuntime {
             scriptedTexts[objectID] = value
             host?.makiSetText(objectID: objectID, text: value)
             return .void
-        case "getplayitem": return .object("playitem")
+        case "getplayitem":
+            if playItemHandle == nil { playItemHandle = registry.instantiate(className: "PlayItem", id: "playitem") }
+            return playItemHandle.map(MakiValue.object) ?? .void
         case "gettitle": return .string(host?.makiPlaybackItem()?.title ?? "")
         case "getartist": return .string(host?.makiPlaybackItem()?.artist ?? "")
         case "getalbum": return .string(host?.makiPlaybackItem()?.albumTitle ?? "")
@@ -472,7 +660,7 @@ final class MakiRuntime {
                 host?.makiTargetGeometryChanged(objectID: objectID, x: targetX[objectID], y: state["y"], width: state["w"], height: state["h"], alpha: state["alpha"], speed: targetSpeed[objectID] ?? 0.25)
             }
             return .void
-        case "leftclick": _ = dispatch(event: "onLeftClick", objectID: objectID); return .void
+        case "leftclick": _ = dispatch(event: "onLeftClick", receiver: receiver); return .void
         case "setvolume": host?.makiVolumeChanged((arguments.first?.number ?? 0) / 255); return .void
         case "seteqband":
             if arguments.count >= 2 { host?.makiEQBandChanged(index: Int(arguments[0].integer), value: Int(arguments[1].integer)) }
@@ -518,26 +706,20 @@ final class MakiRuntime {
         }
     }
 
-    private func arity(of rawName: String) -> Int {
-        switch rawName.lowercased() {
-        case "getprivateint", "getprivatestring", "setxmlparam", "seteqband": 2
-        case "setprivateint", "setprivatestring", "setconfigattribute": 3
-        case "messagebox": 4
-        case "findobject", "getobject", "getcontainer", "getlayout", "getxmlparam", "gettext", "stringtointeger",
-             "settargetx", "settargety", "settargetw", "settargeth", "settargetalpha", "settargetspeed", "setvolume", "setposition", "settext", "settimer", "settimerinterval", "getconfigattribute", "switchtolayout", "geteqband", "seteq", "seteqpreamp": 1
-        case "resize": 4
-        default: 0
-        }
-    }
-
     private func valuesEqual(_ lhs: Value, _ rhs: Value) -> Bool {
         switch (lhs, rhs) {
-        case let (.string(left), .string(right)), let (.object(left), .object(right)):
+        case let (.string(left), .string(right)):
             left.caseInsensitiveCompare(right) == .orderedSame
+        case let (.object(left), .object(right)):
+            left == right
         case (.void, .void): true
         case (.string, _), (_, .string), (.object, _), (_, .object), (.void, _), (_, .void): false
         default: lhs.number == rhs.number
         }
+    }
+
+    private func checkedArity(of method: String) -> Int {
+        MakiClassCatalog.resolve(className: "Object", method: method)?.arity ?? 0
     }
 
     private func record(_ message: String) {

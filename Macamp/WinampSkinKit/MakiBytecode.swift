@@ -25,6 +25,182 @@ nonisolated struct MakiVariable: Sendable, Equatable {
     var string: String?
 }
 
+/// Runtime values that can cross the MAKI VM/Wasabi boundary.
+///
+/// An object is always a handle into the runtime object table.  XML IDs are
+/// names used for lookup, never object identity.
+nonisolated enum MakiValue: Sendable, Equatable {
+    case void
+    case integer(Int32)
+    case number(Double)
+    case string(String)
+    case object(WasabiHandle)
+
+    var integer: Int32 {
+        switch self {
+        case let .integer(value): value
+        case let .number(value): Int32(clamping: Int(value))
+        case let .string(value): Int32(value.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        case let .object(handle): handle.rawValue == 0 ? 0 : 1
+        case .void: 0
+        }
+    }
+
+    var number: Double {
+        switch self {
+        case let .number(value): value
+        default: Double(integer)
+        }
+    }
+
+    /// String conversion is intentionally not an XML-ID conversion.  Callers
+    /// that need an object's ID must resolve the handle through the registry.
+    var string: String {
+        switch self {
+        case let .string(value): value
+        case let .integer(value): String(value)
+        case let .number(value): String(value)
+        case let .object(handle): String(handle.rawValue)
+        case .void: ""
+        }
+    }
+
+    var truthy: Bool { integer != 0 }
+}
+
+nonisolated enum MakiNativeMethod: String, Sendable {
+    case legacy
+    case findObject
+    case systemGetContainer
+    case containerGetLayout
+    case layoutGetContainer
+    case systemGetPosition
+    case sliderGetPosition
+    case frameGetPosition
+    case timerStop
+}
+
+nonisolated struct MakiMethodSignature: Sendable, Equatable {
+    let arity: Int
+    let implementation: MakiNativeMethod
+
+    init(arity: Int, implementation: MakiNativeMethod = .legacy) {
+        self.arity = arity
+        self.implementation = implementation
+    }
+}
+
+nonisolated struct MakiClassDescriptor: Sendable, Equatable {
+    let name: String
+    let superclass: String?
+    let methods: [String: MakiMethodSignature]
+}
+
+/// The checked-in MAKI method surface used by the runtime.  This is kept
+/// deliberately small and explicit while the rest of std.mi is migrated.
+nonisolated enum MakiClassCatalog {
+    private static func signatures(_ entries: [(String, MakiMethodSignature)]) -> [String: MakiMethodSignature] {
+        Dictionary(uniqueKeysWithValues: entries.map { ($0.0.lowercased(), $0.1) })
+    }
+
+    private static let common = signatures([
+        ("getruntimeversion", .init(arity: 0)),
+        ("getskinname", .init(arity: 0)),
+        ("gettimeofday", .init(arity: 0)),
+        ("getstatus", .init(arity: 0)),
+        ("getscriptgroup", .init(arity: 0)),
+        ("getobject", .init(arity: 1)),
+        ("findobject", .init(arity: 1, implementation: .findObject)),
+        ("getcontainer", .init(arity: 1, implementation: .systemGetContainer)),
+        ("getlayout", .init(arity: 1, implementation: .containerGetLayout)),
+        ("getposition", .init(arity: 0, implementation: .systemGetPosition)),
+        ("stop", .init(arity: 0)),
+        ("getxmlparam", .init(arity: 1)),
+        ("setxmlparam", .init(arity: 2)),
+        ("gettext", .init(arity: 0)),
+        ("settext", .init(arity: 1)),
+        ("getplayitem", .init(arity: 0)),
+        ("gettitle", .init(arity: 0)),
+        ("getartist", .init(arity: 0)),
+        ("getalbum", .init(arity: 0)),
+        ("getlength", .init(arity: 0)),
+        ("stringtointeger", .init(arity: 1)),
+        ("settargetx", .init(arity: 1)),
+        ("settargety", .init(arity: 1)),
+        ("settargetw", .init(arity: 1)),
+        ("settargetwidth", .init(arity: 1)),
+        ("settargeth", .init(arity: 1)),
+        ("settargetheight", .init(arity: 1)),
+        ("settargetalpha", .init(arity: 1)),
+        ("settargetspeed", .init(arity: 1)),
+        ("gototarget", .init(arity: 0)),
+        ("leftclick", .init(arity: 0)),
+        ("setvolume", .init(arity: 1)),
+        ("seteqband", .init(arity: 2)),
+        ("geteqband", .init(arity: 1)),
+        ("geteqpreamp", .init(arity: 0)),
+        ("geteq", .init(arity: 0)),
+        ("seteq", .init(arity: 1)),
+        ("seteqpreamp", .init(arity: 1)),
+        ("setposition", .init(arity: 1)),
+        ("setprivateint", .init(arity: 3)),
+        ("setprivatestring", .init(arity: 3)),
+        ("getprivateint", .init(arity: 2)),
+        ("getprivatestring", .init(arity: 2)),
+        ("getconfigattribute", .init(arity: 1)),
+        ("setconfigattribute", .init(arity: 3)),
+        ("settimer", .init(arity: 1)),
+        ("settimerinterval", .init(arity: 1)),
+        ("killtimer", .init(arity: 0)),
+        ("switchtolayout", .init(arity: 1)),
+        ("resize", .init(arity: 4)),
+        ("beforeredock", .init(arity: 0)),
+        ("redock", .init(arity: 0)),
+        ("snapadjust", .init(arity: 0)),
+        ("messagebox", .init(arity: 4)),
+        ("hide", .init(arity: 0)),
+        ("show", .init(arity: 0))
+    ])
+
+    static let descriptors: [String: MakiClassDescriptor] = [
+        "object": .init(name: "Object", superclass: nil, methods: common),
+        "system": .init(name: "System", superclass: "Object", methods: common.merging(signatures([
+            ("getcontainer", .init(arity: 1, implementation: .systemGetContainer)),
+            ("getposition", .init(arity: 0, implementation: .systemGetPosition)),
+            ("stop", .init(arity: 0))
+        ]), uniquingKeysWith: { _, new in new })),
+        "guiobject": .init(name: "GuiObject", superclass: "Object", methods: common.merging(signatures([
+            ("findobject", .init(arity: 1, implementation: .findObject))
+        ]), uniquingKeysWith: { _, new in new })),
+        "container": .init(name: "Container", superclass: "GuiObject", methods: signatures([
+            ("getlayout", .init(arity: 1, implementation: .containerGetLayout))
+        ])),
+        "layout": .init(name: "Layout", superclass: "GuiObject", methods: signatures([
+            ("getcontainer", .init(arity: 0, implementation: .layoutGetContainer))
+        ])),
+        "slider": .init(name: "Slider", superclass: "GuiObject", methods: signatures([
+            ("getposition", .init(arity: 0, implementation: .sliderGetPosition))
+        ])),
+        "frame": .init(name: "Frame", superclass: "GuiObject", methods: signatures([
+            ("getposition", .init(arity: 0, implementation: .frameGetPosition))
+        ])),
+        "timer": .init(name: "Timer", superclass: "Object", methods: signatures([
+            ("stop", .init(arity: 0, implementation: .timerStop))
+        ]))
+    ]
+
+    static func resolve(className: String, method: String) -> MakiMethodSignature? {
+        var current = className.lowercased()
+        let normalizedMethod = method.lowercased()
+        while let descriptor = descriptors[current] {
+            if let signature = descriptor.methods[normalizedMethod] { return signature }
+            guard let superclass = descriptor.superclass else { break }
+            current = superclass.lowercased()
+        }
+        return nil
+    }
+}
+
 nonisolated struct MakiEvent: Sendable, Equatable {
     var variableIndex: Int
     var functionIndex: Int

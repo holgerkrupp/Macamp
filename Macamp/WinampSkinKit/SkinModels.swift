@@ -207,6 +207,10 @@ nonisolated struct WasabiScene: Sendable, Equatable {
     private(set) var activeLayoutByContainer: [WasabiHandle: WasabiHandle] = [:]
     private var nextRawHandle: UInt64 = 1
 
+    var allNodes: [WasabiSceneNode] {
+        nodes.values.sorted { $0.handle.rawValue < $1.handle.rawValue }
+    }
+
     init() {}
 
     @discardableResult
