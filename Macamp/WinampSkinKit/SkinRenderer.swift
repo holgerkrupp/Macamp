@@ -305,6 +305,21 @@ final class SkinRendererView: NSView {
         }
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = alignment
+        if let fontID = node.attributes["font"],
+           !fontID.isEmpty,
+           let resource = skinStore.activeCatalog.modernBitmapFonts[fontID.lowercased()],
+           let path = skinStore.activeCatalog.modernBitmapFiles[resource.imageID.lowercased()] ?? resource.filePath,
+           let image = skinStore.activeCatalog.images[path.lowercased()] {
+            ModernBitmapFontPainter.draw(
+                text,
+                in: frame,
+                image: image,
+                resource: resource,
+                alignment: alignment,
+                alpha: node.alpha
+            )
+            return
+        }
         let fontSize = min(max(Double(node.attributes["fontSize"] ?? "9") ?? 9, 5), 36)
         let red = CGFloat(Double(node.attributes["red"] ?? "1") ?? 1)
         let green = CGFloat(Double(node.attributes["green"] ?? "1") ?? 1)

@@ -65,6 +65,29 @@ final class PlaybackCoordinator {
     func play(items: [PlaybackItem], startingAt index: Int) async {
         await perform(required: .playback) { try await $0.play(items: items, startingAt: index) }
     }
+    func removeQueueItems(at offsets: IndexSet) async {
+        guard let provider = activeProvider as? any QueueEditingPlaybackProvider else {
+            record(.unsupported("queue editing")); return
+        }
+        do {
+            try await provider.removeQueueItems(at: offsets)
+            apply(ProviderSnapshot(authenticationState: provider.authenticationState, state: provider.state, queue: provider.queue))
+        } catch is CancellationError { } catch {
+            record(error as? ProviderError ?? ProviderError(code: .unknown, message: error.localizedDescription))
+        }
+    }
+
+    func clearQueue() async {
+        guard let provider = activeProvider as? any QueueEditingPlaybackProvider else {
+            record(.unsupported("queue editing")); return
+        }
+        do {
+            try await provider.clearQueue()
+            apply(ProviderSnapshot(authenticationState: provider.authenticationState, state: provider.state, queue: provider.queue))
+        } catch is CancellationError { } catch {
+            record(error as? ProviderError ?? ProviderError(code: .unknown, message: error.localizedDescription))
+        }
+    }
     func seek(to position: Duration) async { await perform(required: .seek) { try await $0.seek(to: position) } }
     func next() async { await perform(required: .next) { try await $0.skipToNext() } }
     func previous() async { await perform(required: .previous) { try await $0.skipToPrevious() } }

@@ -4,7 +4,7 @@ import Observation
 
 @MainActor
 @Observable
-final class LocalFilePlaybackProvider: PlaybackProvider, AudioEffectController {
+final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, AudioEffectController {
     let id: PlaybackProviderID = .localMedia
     let displayName = "Local Files"
     let capabilities: PlaybackCapabilities = [
@@ -181,6 +181,36 @@ final class LocalFilePlaybackProvider: PlaybackProvider, AudioEffectController {
         }
         queue = PlaybackQueue(items: items, currentIndex: index)
         try loadCurrentItem(autoplay: true)
+    }
+
+    func removeQueueItems(at offsets: IndexSet) async throws {
+        let removed = offsets.filter { queue.items.indices.contains($0) }
+        guard !removed.isEmpty else { return }
+        let current = queue.currentIndex
+        if current.map(removed.contains) == true { try await stop() }
+        queue.items = queue.items.enumerated().compactMap { removed.contains($0.offset) ? nil : $0.element }
+        if queue.items.isEmpty {
+            queue.currentIndex = nil
+            state.currentItem = nil
+            state.duration = nil
+            state.elapsed = .zero
+        } else if let current {
+            let removedBefore = removed.filter { $0 < current }.count
+            queue.currentIndex = removed.contains(current) ? min(current - removedBefore, queue.items.count - 1) : current - removedBefore
+            if let item = queue.currentItem {
+                state.currentItem = item
+                state.duration = item.duration
+            }
+        }
+        publish()
+    }
+
+    func clearQueue() async throws {
+        try await stop()
+        queue = PlaybackQueue()
+        state.currentItem = nil
+        state.duration = nil
+        publish()
     }
 
     func seek(to position: Duration) async throws {

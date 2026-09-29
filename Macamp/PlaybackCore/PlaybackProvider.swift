@@ -25,6 +25,16 @@ protocol PlaybackProvider: AnyObject {
     func setRepeatMode(_ mode: RepeatMode) async throws
 }
 
+/// Optional Winamp-style queue editing surface. Providers that advertise
+/// `queueEditing` implement these mutations; hosted providers can omit the
+/// protocol and the skin keeps the controls visibly inert instead of routing
+/// them through unrelated native UI.
+@MainActor
+protocol QueueEditingPlaybackProvider: PlaybackProvider {
+    func removeQueueItems(at offsets: IndexSet) async throws
+    func clearQueue() async throws
+}
+
 @MainActor
 protocol MusicDiscoveryProvider: PlaybackProvider {
     func search(_ term: String) async throws -> MusicSearchResults

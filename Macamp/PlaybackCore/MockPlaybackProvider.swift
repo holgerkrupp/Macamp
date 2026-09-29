@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor
-final class MockPlaybackProvider: MusicDiscoveryProvider {
+final class MockPlaybackProvider: MusicDiscoveryProvider, QueueEditingPlaybackProvider {
     let id: PlaybackProviderID = .preview
     let displayName = "Demo Library"
     let capabilities: PlaybackCapabilities = [
@@ -56,6 +56,37 @@ final class MockPlaybackProvider: MusicDiscoveryProvider {
         state.duration = items[index].duration
         state.elapsed = .zero
         try await play()
+    }
+
+    func removeQueueItems(at offsets: IndexSet) async throws {
+        let removed = offsets.filter { queue.items.indices.contains($0) }
+        guard !removed.isEmpty else { return }
+        let current = queue.currentIndex
+        queue.items = queue.items.enumerated().compactMap { removed.contains($0.offset) ? nil : $0.element }
+        if queue.items.isEmpty {
+            queue.currentIndex = nil
+            state.currentItem = nil
+            state.duration = nil
+            state.status = .stopped
+            state.playbackRate = 0
+        } else if let current {
+            let removedBefore = removed.filter { $0 < current }.count
+            queue.currentIndex = removed.contains(current) ? min(current - removedBefore, queue.items.count - 1) : current - removedBefore
+            state.currentItem = queue.currentItem
+            state.duration = state.currentItem?.duration
+        }
+        publish()
+    }
+
+    func clearQueue() async throws {
+        queue = PlaybackQueue()
+        state.currentItem = nil
+        state.duration = nil
+        state.elapsed = .zero
+        state.status = .stopped
+        state.playbackRate = 0
+        stopTicker()
+        publish()
     }
 
     func seek(to position: Duration) async throws {

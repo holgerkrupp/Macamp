@@ -22,6 +22,7 @@ enum ModernSkinParser {
                 let document = try parseDocument(data)
                 try collectMetadata(document: document, xmlPath: path, files: files, descriptor: &descriptor)
                 try collectBitmaps(document: document, xmlPath: path, files: files, descriptor: &descriptor)
+                try collectBitmapFonts(document: document, xmlPath: path, files: files, descriptor: &descriptor)
                 try collectMakiBindings(document: document, xmlPath: path, files: files, descriptor: &descriptor)
                 candidates.append(contentsOf: try collectLayouts(document: document, xmlPath: path, files: files))
             } catch {
@@ -140,6 +141,30 @@ enum ModernSkinParser {
                 descriptor.bitmapSourceRects[id] = source
                 if let stateBase, descriptor.bitmapSourceRects[stateBase] == nil { descriptor.bitmapSourceRects[stateBase] = source }
             }
+        }
+    }
+
+    nonisolated private static func collectBitmapFonts(document: XMLDocument, xmlPath: String, files: [String: Data], descriptor: inout ModernSkinDescriptor) throws {
+        for case let element as XMLElement in try document.nodes(forXPath: "//*[local-name()='bitmapfont']") {
+            guard let id = attribute("id", element)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                  !id.isEmpty,
+                  let file = attribute("file", element)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !file.isEmpty else { continue }
+
+            let normalizedFile = file.replacingOccurrences(of: "\\", with: "/").lowercased()
+            let bitmapID = descriptor.bitmapFiles[normalizedFile] != nil ? normalizedFile : nil
+            let directPath = bitmapID == nil ? resolve(path: file, relativeTo: xmlPath, files: files) : nil
+            guard bitmapID != nil || directPath != nil else { continue }
+            let resource = ModernBitmapFontResource(
+                id: id,
+                imageID: bitmapID ?? normalizedFile,
+                filePath: directPath,
+                charWidth: max(1, Int(number(attribute("charwidth", element)) ?? 0)),
+                charHeight: max(1, Int(number(attribute("charheight", element)) ?? 0)),
+                horizontalSpacing: Int(number(attribute("hspacing", element)) ?? 0),
+                verticalSpacing: Int(number(attribute("vspacing", element)) ?? 0)
+            )
+            descriptor.bitmapFonts[id] = resource
         }
     }
 
@@ -280,6 +305,7 @@ enum ModernSkinParser {
                         frame: frame,
                         elementID: attribute("id", element),
                         initiallyVisible: initiallyVisible,
+                        font: attribute("font", element)?.lowercased(),
                         fontSize: number(attribute("fontsize", element)).map(Double.init) ?? min(14, max(7, Double(frame.height))),
                         red: color.red,
                         green: color.green,
@@ -542,6 +568,7 @@ enum ModernSkinParser {
                 zIndex: z,
                 attributes: [
                     "role": textRoleName(region.role),
+                    "font": region.font ?? "",
                     "fontSize": String(region.fontSize),
                     "red": String(region.red),
                     "green": String(region.green),

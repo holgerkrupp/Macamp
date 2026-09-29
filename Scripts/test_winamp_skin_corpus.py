@@ -55,13 +55,39 @@ class CorpusScannerTests(unittest.TestCase):
         second = scanner.validation_report()
         self.assertTrue(first.passed)
         self.assertEqual(first, second)
+        self.assertEqual(first.schema_version, 2)
 
         encoded = json.dumps(scanner.asdict(first), indent=2, sort_keys=True)
-        self.assertIn('"schema_version": 1', encoded)
-        self.assertIn('classic.equalizer.resource-gate', encoded)
-        self.assertIn('classic.playlist.resource-gate', encoded)
+        self.assertIn('"schema_version": 2', encoded)
+        self.assertIn('classic.equalizer.render-window-gate', encoded)
+        self.assertIn('classic.playlist.render-window-gate', encoded)
+        self.assertIn('classic.cursor.ani-cur-gate', encoded)
+        self.assertIn('classic.eqf.preset-gate', encoded)
+        self.assertIn('modern.render.scene-window-gate', encoded)
         self.assertIn('modern.xui.independent-instance-input', encoded)
         self.assertIn('modern.xui.sendparams-and-scope-markers', encoded)
+
+    def test_findings_match_current_classic_and_modern_capabilities(self):
+        fixtures = scanner.validation_fixture_entries()
+        classic_extension, classic_entries = fixtures["classic-reference.wsz"]
+        modern_extension, modern_entries = fixtures["modern-reference.wal"]
+        classic = scanner.scan_entries("classic-reference.wsz", classic_extension, classic_entries)
+        modern = scanner.scan_entries("modern-reference.wal", modern_extension, modern_entries)
+
+        classic_findings = {finding.name: finding for finding in classic.findings}
+        self.assertEqual(classic_findings["Classic Equalizer window"].status, "supported")
+        self.assertEqual(classic_findings["Classic Playlist Editor composition"].status, "supported")
+        self.assertEqual(classic_findings["Classic ANI/CUR cursors"].status, "supported")
+        self.assertEqual(classic_findings["Classic EQF preset interchange"].status, "supported")
+        self.assertEqual(classic_findings["Classic Q1 preset interchange"].status, "unimplemented")
+
+        modern_findings = {finding.name: finding for finding in modern.findings}
+        self.assertEqual(modern_findings["Modern layout/group hierarchy"].status, "supported")
+        self.assertEqual(modern_findings["Modern XUI custom widgets"].status, "supported")
+        self.assertEqual(modern_findings["Modern sendparams"].status, "supported")
+        self.assertEqual(modern_findings["Modern scoped hideobject"].status, "supported")
+        self.assertEqual(modern_findings["Modern AnimatedLayer playback"].status, "partial")
+        self.assertEqual(modern_findings["Modern bitmap fonts/TrueType declarations"].status, "unimplemented")
 
     def test_validation_cli_emits_machine_readable_report(self):
         # Exercise the same entry point used by local CI/developer checks.
@@ -70,7 +96,7 @@ class CorpusScannerTests(unittest.TestCase):
             exit_code = scanner.main(["--validation-report", "--json"])
         self.assertEqual(exit_code, 0)
         payload = json.loads(output.getvalue())
-        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["schema_version"], 2)
         self.assertEqual({check["status"] for check in payload["checks"]}, {"pass"})
 
 

@@ -80,6 +80,8 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
     var onActivityStateChange: ((WinampSkinWindowActivityState) -> Void)?
     var onShadeStateChange: ((Bool) -> Void)?
 
+    private var windowMoveObservers: [UUID: () -> Void] = [:]
+
     var logicalFrame: CGRect {
         get { WinampSkinWindowGeometry.logicalFrame(for: window.frame, scale: scale) }
         set { setLogicalFrame(newValue, display: false, clampedToVisibleScreens: false) }
@@ -185,6 +187,7 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
 
     func windowDidMove(_ notification: Notification) {
         onLogicalFrameChange?(logicalFrame)
+        windowMoveObservers.values.forEach { $0() }
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -246,5 +249,95 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
             width: frame.width,
             height: frame.height
         )
+    }
+
+    @discardableResult
+    fileprivate func addWindowMoveObserver(_ observer: @escaping () -> Void) -> UUID {
+        let token = UUID()
+        windowMoveObservers[token] = observer
+        return token
+    }
+
+    fileprivate func removeWindowMoveObserver(_ token: UUID) {
+        windowMoveObservers.removeValue(forKey: token)
+    }
+}
+
+/// Keeps a set of independent skin windows moving as one logical Winamp
+/// window group. Membership is relationship-based; no skin or object IDs are
+/// involved. A move originating from any member propagates its logical delta
+/// to every other member, so hosts at different display scales remain aligned
+/// in Winamp coordinates.
+@MainActor
+final class WinampSkinWindowGroup {
+    private struct Member {
+        weak var host: WinampSkinWindowHost?
+        let observerToken: UUID
+        var lastLogicalOrigin: CGPoint
+    }
+
+    private var members: [ObjectIdentifier: Member] = [:]
+    private var isApplyingGroupMove = false
+
+    var hosts: [WinampSkinWindowHost] {
+        members.values.compactMap(\.host)
+    }
+
+    func add(_ host: WinampSkinWindowHost) {
+        let key = ObjectIdentifier(host)
+        guard members[key] == nil else { return }
+
+        let token = host.addWindowMoveObserver { [weak self, weak host] in
+            guard let self, let host else { return }
+            self.hostDidMove(host)
+        }
+        members[key] = Member(host: host, observerToken: token, lastLogicalOrigin: host.logicalFrame.origin)
+    }
+
+    func remove(_ host: WinampSkinWindowHost) {
+        guard let member = members.removeValue(forKey: ObjectIdentifier(host)) else { return }
+        host.removeWindowMoveObserver(member.observerToken)
+    }
+
+    /// Moves the whole group so that the selected member reaches the requested
+    /// logical origin. This is the programmatic counterpart to dragging a
+    /// member window through AppKit.
+    func move(_ host: WinampSkinWindowHost, toLogicalOrigin origin: CGPoint, display: Bool = false) {
+        guard members[ObjectIdentifier(host)] != nil else { return }
+        let delta = CGPoint(x: origin.x - host.logicalFrame.minX, y: origin.y - host.logicalFrame.minY)
+        apply(delta: delta, display: display)
+    }
+
+    private func hostDidMove(_ host: WinampSkinWindowHost) {
+        guard !isApplyingGroupMove, let member = members[ObjectIdentifier(host)] else { return }
+        let currentOrigin = host.logicalFrame.origin
+        let delta = CGPoint(
+            x: currentOrigin.x - member.lastLogicalOrigin.x,
+            y: currentOrigin.y - member.lastLogicalOrigin.y
+        )
+        guard delta.x != 0 || delta.y != 0 else { return }
+        apply(delta: delta, display: false, excluding: host)
+    }
+
+    private func apply(delta: CGPoint, display: Bool, excluding excludedHost: WinampSkinWindowHost? = nil) {
+        guard delta.x != 0 || delta.y != 0 else { return }
+        isApplyingGroupMove = true
+        defer { isApplyingGroupMove = false }
+
+        for key in Array(members.keys) {
+            guard let member = members[key], let host = member.host else {
+                members.removeValue(forKey: key)
+                continue
+            }
+            if let excludedHost, host === excludedHost {
+                members[key]?.lastLogicalOrigin = host.logicalFrame.origin
+                continue
+            }
+            var frame = host.logicalFrame
+            frame.origin.x += delta.x
+            frame.origin.y += delta.y
+            host.setLogicalFrame(frame, display: display)
+            members[key]?.lastLogicalOrigin = frame.origin
+        }
     }
 }

@@ -44,6 +44,17 @@ struct PlaybackCoreTests {
         #expect(provider.queue.currentIndex == 1)
     }
 
+    @Test func queueEditingProviderMutatesQueueWithoutChangingPlaybackContract() async throws {
+        let provider = MockPlaybackProvider()
+        try await provider.play()
+        try await provider.removeQueueItems(at: IndexSet(integer: 0))
+        #expect(provider.queue.items.map(\.title) == ["Neon Buffer", "Transparent Window"])
+        #expect(provider.queue.currentIndex == 0)
+        try await provider.clearQueue()
+        #expect(provider.queue.items.isEmpty)
+        #expect(provider.state.status == .stopped)
+    }
+
     @Test func providerRegistrySeparatesAvailableAndUnavailableDescriptors() {
         let registry = ProviderRegistry()
         registry.register(TestPlaybackProvider(id: .appleMusic, capabilities: [.catalogueSearch]), descriptor: .appleMusic)

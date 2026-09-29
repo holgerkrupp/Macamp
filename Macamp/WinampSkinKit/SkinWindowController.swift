@@ -296,6 +296,10 @@ final class ClassicPlaylistSurface: NSView {
             needsDisplay = true
             return
         }
+        if windowHost?.isShaded != true, point.y >= bounds.height - 38 {
+            handleBottomControl(at: point)
+            return
+        }
         guard point.y >= 23, point.y < middleBottom, point.x >= 12, point.x < bounds.width - 20 else { return }
         let index = scrollOffset + max(0, Int((point.y - 23) / rowHeight))
         guard coordinator.queue.items.indices.contains(index) else { return }
@@ -350,6 +354,27 @@ final class ClassicPlaylistSurface: NSView {
         if selectedIndex < scrollOffset { scrollOffset = selectedIndex }
         if selectedIndex >= scrollOffset + visible { scrollOffset = selectedIndex - visible + 1 }
         scrollOffset = min(max(0, coordinator.queue.items.count - visible), max(0, scrollOffset))
+    }
+
+    private func handleBottomControl(at point: CGPoint) {
+        // PLEDIT's bottom row is a fixed logical toolbar. These hit regions
+        // describe the canonical atlas controls, while the operations remain
+        // provider-neutral through PlaybackCoordinator.
+        let bottomY = max(20, bounds.height - 38)
+        let x = point.x
+        guard point.y >= bottomY else { return }
+        if x < 42 {
+            Task { await coordinator.clearQueue() }
+        } else if x < 84 {
+            if let selectedIndex { Task { await coordinator.removeQueueItems(at: IndexSet(integer: selectedIndex)) } }
+        } else if x < 126 {
+            selectedIndex = coordinator.queue.currentIndex
+            ensureSelectionVisible()
+        } else {
+            // Misc/List are intentionally visual-only until their historical
+            // provider-specific menus have a Macamp equivalent.
+        }
+        needsDisplay = true
     }
 
     private func updateScrollOffset(for y: CGFloat, middleFrame: CGRect) {

@@ -600,6 +600,7 @@ struct ModernSkinTextRegion: Sendable {
     var frame: CGRect
     var elementID: String? = nil
     var initiallyVisible = true
+    var font: String? = nil
     var fontSize: Double
     var red: Double
     var green: Double
@@ -627,6 +628,7 @@ struct ModernSkinDescriptor: Sendable {
     var canvasSize: CGSize = CGSize(width: 275, height: 116)
     var bitmapFiles: [String: String] = [:]
     var bitmapSourceRects: [String: CGRect] = [:]
+    var bitmapFonts: [String: ModernBitmapFontResource] = [:]
     var layers: [ModernSkinLayer] = []
     var controls: [SkinControlDefinition] = []
     var textRegions: [ModernSkinTextRegion] = []
@@ -679,6 +681,7 @@ final class SkinAssetCatalog {
     let modernLayers: [ModernSkinLayer]
     let modernBitmapFiles: [String: String]
     let modernBitmapSourceRects: [String: CGRect]
+    let modernBitmapFonts: [String: ModernBitmapFontResource]
     let modernLayouts: [ModernLayoutDescriptor]
     let scene: WasabiScene
     let objectTree: WasabiObjectTree
@@ -736,6 +739,7 @@ final class SkinAssetCatalog {
             modernLayers = modern.layers
             modernBitmapFiles = modern.bitmapFiles
             modernBitmapSourceRects = modern.bitmapSourceRects
+            modernBitmapFonts = modern.bitmapFonts
             modernLayouts = modern.layouts
             scene = modern.scene
             objectTree = modern.scene.compatibilityTree
@@ -795,6 +799,7 @@ final class SkinAssetCatalog {
             modernLayers = []
             modernBitmapFiles = [:]
             modernBitmapSourceRects = [:]
+            modernBitmapFonts = [:]
             modernLayouts = []
             scene = WasabiScene()
             objectTree = WasabiObjectTree()

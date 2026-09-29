@@ -193,8 +193,37 @@ struct WinampEQPreset: Equatable {
     }
 }
 
+enum WinampEQPresetFileKind: String, Equatable {
+    case eqf
+    case q1
+
+    init?(fileName: String) {
+        switch URL(fileURLWithPath: fileName).pathExtension.lowercased() {
+        case "eqf": self = .eqf
+        case "q1": self = .q1
+        default: return nil
+        }
+    }
+}
+
 struct WinampEQPresetFile: Equatable {
     var presets: [WinampEQPreset]
+    /// The binary payload is shared by .EQF and Winamp.q1. Keep the external
+    /// file kind and the format description alongside the decoded records so a
+    /// Q1 preset library can be imported and exported without losing its
+    /// interchange metadata.
+    var kind: WinampEQPresetFileKind
+    var type: String
+
+    init(
+        presets: [WinampEQPreset],
+        kind: WinampEQPresetFileKind = .eqf,
+        type: String = "Winamp EQ library file v1.1"
+    ) {
+        self.presets = presets
+        self.kind = kind
+        self.type = type
+    }
 }
 
 enum WinampEQFError: Error, Equatable {
@@ -205,11 +234,12 @@ enum WinampEQFError: Error, Equatable {
 }
 
 enum WinampEQF {
-    static let signature = Array("Winamp EQ library file v1.1".utf8)
+    static let fileType = "Winamp EQ library file v1.1"
+    static let signature = Array(fileType.utf8)
     private static let prefix = signature + [26, 45, 45, 45]
     private static let recordSize = 257 + 11
 
-    static func decode(_ data: Data, maximumPresets: Int = 512) throws -> WinampEQPresetFile {
+    static func decode(_ data: Data, maximumPresets: Int = 512, fileName: String? = nil) throws -> WinampEQPresetFile {
         let bytes = Array(data)
         guard bytes.starts(with: prefix) else { throw WinampEQFError.invalidSignature }
         let body = Array(bytes.dropFirst(prefix.count))
@@ -226,18 +256,26 @@ enum WinampEQF {
             guard values.count == 11 else { throw WinampEQFError.truncated }
             presets.append(try WinampEQPreset(name: name, bands: Array(values.prefix(10)), preamp: values[10]))
         }
-        return WinampEQPresetFile(presets: presets)
+        return WinampEQPresetFile(
+            presets: presets,
+            kind: fileName.flatMap(WinampEQPresetFileKind.init(fileName:)) ?? .eqf,
+            type: fileType
+        )
     }
 
     static func encode(_ file: WinampEQPresetFile) throws -> Data {
         guard !file.presets.isEmpty, file.presets.count <= 512 else { throw WinampEQFError.limitExceeded }
+        guard file.type == fileType else { throw WinampEQFError.invalidSignature }
         var data = Data(prefix)
         for preset in file.presets {
             guard preset.bands.count == 10, preset.bands.allSatisfy({ $0 <= 64 }), preset.preamp <= 64 else { throw WinampEQFError.invalidPreset }
             let name = Array(preset.name.utf8)
-            guard name.count <= 257 else { throw WinampEQFError.invalidPreset }
+            // Winamp stores a 256-byte name followed by a NUL inside a fixed
+            // 257-byte field. Do not emit a field without its terminator.
+            guard name.count <= 256 else { throw WinampEQFError.invalidPreset }
             data.append(contentsOf: name)
-            data.append(contentsOf: repeatElement(UInt8(0), count: 257 - name.count))
+            data.append(0)
+            data.append(contentsOf: repeatElement(UInt8(0), count: 256 - name.count))
             data.append(contentsOf: preset.bands.map { 64 - $0 })
             data.append(64 - preset.preamp)
         }

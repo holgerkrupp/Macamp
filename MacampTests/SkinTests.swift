@@ -57,6 +57,49 @@ struct SkinTests {
         #expect(catalog.controls.contains { $0.action == .play })
     }
 
+    @Test func modernBitmapFontDeclarationsReachTheScenePainter() throws {
+        let xml = """
+        <WinampAbstractionLayer>
+          <elements>
+            <bitmap id="display.sheet" file="display.png" />
+            <bitmapfont id="TickerFont" file="display.sheet" charwidth="4" charheight="5" hspacing="1" vspacing="2" />
+          </elements>
+          <container id="main">
+            <layout id="normal" w="80" h="20">
+              <songticker id="title" font="TickerFont" x="2" y="2" w="24" h="7" />
+            </layout>
+          </container>
+        </WinampAbstractionLayer>
+        """
+        let descriptor = ModernSkinParser.parse(files: ["skin.xml": Data(xml.utf8), "display.png": Data([1])]).descriptor
+        let font = try #require(descriptor.bitmapFonts["tickerfont"])
+        #expect(font.imageID == "display.sheet")
+        #expect(font.filePath == nil)
+        #expect(font.charWidth == 4)
+        #expect(font.charHeight == 5)
+        #expect(font.horizontalSpacing == 1)
+        #expect(font.verticalSpacing == 2)
+
+        let ticker = try #require(descriptor.scene.firstHandle(for: "title"))
+        #expect(descriptor.scene.node(ticker)?.attributes["font"] == "tickerfont")
+
+        let placements = ModernBitmapFontPainter.placements(
+            for: "A7",
+            in: CGRect(x: 2, y: 2, width: 24, height: 7),
+            resource: font,
+            imageSize: CGSize(width: 124, height: 15),
+            alignment: .left
+        )
+        #expect(placements.map(\.sourceRect) == [
+            CGRect(x: 0, y: 0, width: 4, height: 5),
+            CGRect(x: 28, y: 5, width: 4, height: 5)
+        ])
+        #expect(placements.map(\.destinationRect) == [
+            CGRect(x: 2, y: 3, width: 4, height: 5),
+            CGRect(x: 7, y: 3, width: 4, height: 5)
+        ])
+    }
+
     @Test func modernZipIsDetectedByManifest() async throws {
         let xml = "<WinampAbstractionLayer><skininfo><screenshot>preview.png</screenshot></skininfo></WinampAbstractionLayer>"
         let png = try #require(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
@@ -839,6 +882,29 @@ struct SkinTests {
         #expect(snapped == CGSize(width: 600, height: 522))
     }
 
+    @Test @MainActor func groupedSkinWindowsMoveTogetherInLogicalCoordinates() throws {
+        let main = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 116), scale: 1)
+        let playlist = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 232), scale: 2)
+        main.setLogicalFrame(CGRect(x: 100, y: 80, width: 275, height: 116))
+        playlist.setLogicalFrame(CGRect(x: 400, y: 80, width: 275, height: 232))
+
+        let group = WinampSkinWindowGroup()
+        group.add(main)
+        group.add(playlist)
+
+        group.move(main, toLogicalOrigin: CGPoint(x: 125, y: 65))
+        #expect(main.logicalFrame.origin == CGPoint(x: 125, y: 65))
+        #expect(playlist.logicalFrame.origin == CGPoint(x: 425, y: 65))
+
+        // A later AppKit move from the second member propagates back to the
+        // first, proving that the relationship is not limited to group APIs.
+        playlist.setLogicalFrame(CGRect(x: 410, y: 75, width: 275, height: 232))
+        playlist.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: playlist.window))
+        #expect(playlist.logicalFrame.origin == CGPoint(x: 410, y: 75))
+        #expect(main.logicalFrame.origin == CGPoint(x: 110, y: 75))
+        #expect(group.hosts.count == 2)
+    }
+
     @Test func winampANIAndEQFResourcesRoundTripWithBounds() throws {
         let png = try #require(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
 
@@ -883,6 +949,24 @@ struct SkinTests {
         #expect(WinampEQF.gainDB(fromWinamp: 0) == 12)
         #expect(WinampEQF.gainDB(fromWinamp: 63) == -12)
         #expect(throws: WinampEQFError.self) { try WinampEQF.decode(Data("invalid".utf8)) }
+
+        let q1 = try WinampEQF.decode(encoded, fileName: "Winamp.q1")
+        #expect(q1.kind == .q1)
+        #expect(q1.type == WinampEQF.fileType)
+        #expect(q1.presets == [first, second])
+        #expect(try WinampEQF.encode(q1) == encoded)
+        #expect(WinampEQPresetFileKind(fileName: "presets/WINAMP.Q1") == .q1)
+
+        let maximumName = String(repeating: "x", count: 256)
+        let maximumNamePreset = try WinampEQPreset(name: maximumName, bands: Array(repeating: 32, count: 10), preamp: 32)
+        let maximumNameData = try WinampEQF.encode(WinampEQPresetFile(presets: [maximumNamePreset], kind: .q1))
+        #expect(maximumNameData.count == 31 + 257 + 11)
+        #expect(try WinampEQF.decode(maximumNameData, fileName: "Winamp.q1").presets.first?.name == maximumName)
+
+        let oversizedName = try WinampEQPreset(name: String(repeating: "x", count: 257), bands: Array(repeating: 32, count: 10), preamp: 32)
+        #expect(throws: WinampEQFError.self) {
+            try WinampEQF.encode(WinampEQPresetFile(presets: [oversizedName]))
+        }
     }
 
     @Test @MainActor func settingsPersistLogicalPlayerFrame() throws {

@@ -70,6 +70,8 @@ MODERN_TAGS = {
     "albumart",
     "component",
     "script",
+    "hideobject",
+    "inherit_group",
     # Known compatibility gaps are included so they are reported as features,
     # not accidentally hidden in the generic unknown-tag list.
     "include",
@@ -177,25 +179,28 @@ def _classic_findings(entries: Mapping[str, bytes]) -> list[Finding]:
         findings.append(
             _finding(
                 "Classic seek/volume/balance composition",
-                "partial",
-                "track/thumb resources are present; full window-path rendering is still a compatibility gate",
+                "supported",
+                "canonical track/thumb resources are composed by the Classic renderer",
             )
         )
 
     gaps = [
-        ("Classic Equalizer window", "unimplemented", "EQMAIN.BMP/EQ_EX.BMP still require the dedicated borderless window path", {"eqmain.bmp", "eq_ex.bmp"}),
-        ("Classic Playlist Editor composition", "unimplemented", "PLEDIT.BMP/PLEDIT.TXT still require tiled frame and row composition", {"pledit.bmp", "pledit.txt"}),
-        ("Classic bitmap text", "unimplemented", "NUMBERS.BMP/TEXT.BMP are inventory-only in this scanner baseline", {"numbers.bmp", "text.bmp", "nums_ex.bmp"}),
-        ("Classic VISCOLOR configuration", "unknown", "VISCOLOR.TXT is detected but its rendering contract is not classified", {"viscolor.txt"}),
-        ("Classic ANI/CUR cursors", "unimplemented", "cursor interchange is not part of the current Classic resource path", {"*.ani", "*.cur"}),
-        ("Classic EQF/Q1 preset interchange", "unimplemented", "preset interchange is outside the current resource path", {"*.eqf", "*.q1"}),
+        ("Classic Equalizer window", "supported", "EQMAIN.BMP/EQ_EX.BMP are composed by the dedicated borderless window path", {"eqmain.bmp", "eq_ex.bmp"}),
+        ("Classic Playlist Editor composition", "supported", "PLEDIT.BMP/PLEDIT.TXT are composed as a tiled borderless window with skinned rows", {"pledit.bmp", "pledit.txt"}),
+        ("Classic bitmap text", "partial", "NUMBERS.BMP/TEXT.BMP and NUMS_EX.BMP provide the implemented title/time glyph paths; full glyph coverage remains a compatibility gap", {"numbers.bmp", "text.bmp", "nums_ex.bmp"}),
+        ("Classic VISCOLOR configuration", "supported", "VISCOLOR.TXT drives the Classic visualization palette", {"viscolor.txt"}),
+        ("Classic ANI/CUR cursors", "supported", "bounded ANI/CUR decoding and the macOS cursor adapter are implemented", {"*.ani", "*.cur"}),
+        ("Classic EQF preset interchange", "supported", "bounded EQF decode/encode is implemented and wired to the skinned Equalizer Presets action", {"*.eqf"}),
+        ("Classic Q1 preset interchange", "unimplemented", "Q1 metadata/library compatibility is not implemented", {"*.q1"}),
     ]
     for name, status, evidence, triggers in gaps:
         matching = sorted(resource for resource in names if resource in triggers)
-        if name.endswith("cursors"):
+        if name == "Classic ANI/CUR cursors":
             matching = sorted(path for path in entries if Path(path).suffix.lower() in {".ani", ".cur"})
-        elif name.endswith("interchange"):
-            matching = sorted(path for path in entries if Path(path).suffix.lower() in {".eqf", ".q1"})
+        elif name == "Classic EQF preset interchange":
+            matching = sorted(path for path in entries if Path(path).suffix.lower() == ".eqf")
+        elif name == "Classic Q1 preset interchange":
+            matching = sorted(path for path in entries if Path(path).suffix.lower() == ".q1")
         if matching:
             evidence = f"{evidence}; observed: {', '.join(matching)}"
         findings.append(_finding(name, status, evidence))
@@ -251,8 +256,8 @@ def _modern_findings(entries: Mapping[str, bytes], xml_data: bytes | None) -> tu
         findings.append(
             _finding(
                 "Modern layout/group hierarchy",
-                "supported" if not groupdef_count else "partial",
-                f"{layout_count} layout(s), {groupdef_count} groupdef(s); static scene expansion is recognized",
+                "supported",
+                f"{layout_count} layout(s), {groupdef_count} groupdef(s); live scene hierarchy is recognized",
             )
         )
     else:
@@ -271,17 +276,18 @@ def _modern_findings(entries: Mapping[str, bytes], xml_data: bytes | None) -> tu
         findings.append(_finding("Modern desktopalpha/sysregion", "partial", f"desktopalpha={attributes['desktopalpha']}, sysregion={attributes['sysregion']} attribute occurrence(s)"))
 
     gap_tags = {
-        "xuitag": ("Modern XUI custom widgets", "unimplemented"),
+        "xuitag": ("Modern XUI custom widgets", "supported"),
         "include": ("Modern include expansion", "unimplemented"),
-        "sendparams": ("Modern sendparams", "unimplemented"),
+        "sendparams": ("Modern sendparams", "supported"),
         "elementalias": ("Modern elementalias", "unimplemented"),
         "embed_xui": ("Modern embed_xui", "unimplemented"),
-        "inherit_group": ("Modern inherit_group scoping", "partial"),
+        "inherit_group": ("Modern inherit_group scoping", "supported"),
+        "hideobject": ("Modern scoped hideobject", "supported"),
     }
     for attribute, (name, status) in gap_tags.items():
         if attributes[attribute]:
             findings.append(_finding(name, status, f"{attributes[attribute]} {attribute} attribute occurrence(s)"))
-    for tag in ("include", "sendparams", "elementalias", "embed_xui"):
+    for tag in ("include", "sendparams", "elementalias", "embed_xui", "hideobject"):
         name, status = gap_tags[tag]
         if tags[tag]:
             findings.append(_finding(name, status, f"{tags[tag]} <{tag}> element(s)"))
@@ -294,7 +300,7 @@ def _modern_findings(entries: Mapping[str, bytes], xml_data: bytes | None) -> tu
     # These are explicit engine-baseline gaps, reported even when a particular
     # archive does not exercise them, so corpus results remain actionable.
     baseline = [
-        ("Modern bitmap fonts/TrueType declarations", "unimplemented", "not classified by the current standalone feature vocabulary"),
+        ("Modern bitmap fonts/TrueType declarations", "unimplemented", "not implemented by the current renderer"),
         ("Modern ANI/CUR cursors", "unimplemented", "not part of the current Modern resource path"),
         ("Modern custom plug-in components", "unknown", "component parameters are inventoried but plug-in behavior is not inferred"),
     ]
@@ -430,10 +436,14 @@ def validation_fixture_entries() -> dict[str, tuple[str, dict[str, bytes]]]:
             "monoster.bmp",
             "text.bmp",
             "region.txt",
+            "viscolor.txt",
             "eqmain.bmp",
             "eq_ex.bmp",
             "pledit.bmp",
             "pledit.txt",
+            "cursors/arrow.ani",
+            "cursors/hand.cur",
+            "presets/default.eqf",
         )
     }
     modern_xml = b"""<WinampAbstractionLayer xmlns:Wasabi='urn:macamp:validation'>
@@ -442,9 +452,10 @@ def validation_fixture_entries() -> dict[str, tuple[str, dict[str, bytes]]]:
     <groupdef id='diagnostic.button' xuitag='Wasabi:DiagnosticButton' w='32' h='16'>
       <button id='click' image='pixel' x='0' y='0' w='16' h='8'/>
     </groupdef>
-    <layout id='normal' w='96' h='32'>
+    <layout id='normal' w='96' h='32' desktopalpha='true'>
       <group id='nested' x='8' y='4' w='80' h='24'>
-        <layer id='scene-background' image='pixel' x='0' y='0' w='80' h='24'/>
+        <layer id='scene-background' image='pixel' x='0' y='0' w='80' h='24' sysregion='1'/>
+        <animatedlayer id='scene-animation' image='pixel' x='0' y='0' w='8' h='8'/>
         <Wasabi:DiagnosticButton id='first' x='4' y='4'/>
         <Wasabi:DiagnosticButton id='second' x='52' y='4'/>
       </group>
@@ -497,6 +508,12 @@ def validation_report() -> ValidationReport:
     classic_eq = _finding_named(classic, "Classic Equalizer window")
     classic_playlist = _finding_named(classic, "Classic Playlist Editor composition")
     classic_inventory = _finding_named(classic, "Classic Main sprite catalog")
+    classic_cursor = _finding_named(classic, "Classic ANI/CUR cursors")
+    classic_eqf = _finding_named(classic, "Classic EQF preset interchange")
+    modern_hierarchy = _finding_named(modern, "Modern layout/group hierarchy")
+    modern_xui = _finding_named(modern, "Modern XUI custom widgets")
+    modern_sendparams = _finding_named(modern, "Modern sendparams")
+    modern_hideobject = _finding_named(modern, "Modern scoped hideobject")
 
     checks = [
         _check(
@@ -518,16 +535,44 @@ def validation_report() -> ValidationReport:
             classic_inventory.evidence if classic_inventory else "finding missing",
         ),
         _check(
-            "classic.equalizer.resource-gate",
+            "classic.main.render-window-gate",
             classic_name,
-            classic_eq is not None and "eqmain.bmp" in classic_eq.evidence and "eq_ex.bmp" in classic_eq.evidence,
+            classic_inventory is not None
+            and classic_inventory.status == "supported"
+            and {"main.bmp", "titlebar.bmp", "region.txt"}.issubset(set(classic.resources)),
+            "canonical Main sprites, title states, and region resource are present",
+        ),
+        _check(
+            "classic.equalizer.render-window-gate",
+            classic_name,
+            classic_eq is not None
+            and classic_eq.status == "supported"
+            and {"eqmain.bmp", "eq_ex.bmp"}.issubset(set(classic.resources)),
             classic_eq.evidence if classic_eq else "finding missing",
         ),
         _check(
-            "classic.playlist.resource-gate",
+            "classic.playlist.render-window-gate",
             classic_name,
-            classic_playlist is not None and "pledit.bmp" in classic_playlist.evidence and "pledit.txt" in classic_playlist.evidence,
+            classic_playlist is not None
+            and classic_playlist.status == "supported"
+            and {"pledit.bmp", "pledit.txt"}.issubset(set(classic.resources)),
             classic_playlist.evidence if classic_playlist else "finding missing",
+        ),
+        _check(
+            "classic.cursor.ani-cur-gate",
+            classic_name,
+            classic_cursor is not None
+            and classic_cursor.status == "supported"
+            and {".ani", ".cur"}.issubset({Path(path).suffix.lower() for path in classic.entries}),
+            classic_cursor.evidence if classic_cursor else "finding missing",
+        ),
+        _check(
+            "classic.eqf.preset-gate",
+            classic_name,
+            classic_eqf is not None
+            and classic_eqf.status == "supported"
+            and any(Path(path).suffix.lower() == ".eqf" for path in classic.entries),
+            classic_eqf.evidence if classic_eqf else "finding missing",
         ),
         _check(
             "modern.archive.classification",
@@ -538,25 +583,40 @@ def validation_report() -> ValidationReport:
         _check(
             "modern.live-scene.vocabulary",
             modern_name,
-            _finding_named(modern, "Modern layout/group hierarchy") is not None
+            modern_hierarchy is not None
+            and modern_hierarchy.status == "supported"
             and len(_find_entries(modern_entries, "skin.xml")) == 1,
-            "skin.xml contains container/layout/groupdef scene structure",
+            "skin.xml contains container/layout/groupdef structure for the live scene",
+        ),
+        _check(
+            "modern.render.scene-window-gate",
+            modern_name,
+            modern_hierarchy is not None
+            and modern_hierarchy.status == "supported"
+            and _finding_named(modern, "Modern desktopalpha/sysregion") is not None,
+            "nested scene content plus desktopalpha/sysregion window metadata are present",
         ),
         _check(
             "modern.xui.independent-instance-input",
             modern_name,
-            modern_entries["skin.xml"].count(b"Wasabi:DiagnosticButton") == 3,
+            modern_xui is not None
+            and modern_xui.status == "supported"
+            and modern_entries["skin.xml"].count(b"Wasabi:DiagnosticButton") == 3,
             "one groupdef xuitag declaration plus two instances",
         ),
         _check(
             "modern.xui.sendparams-and-scope-markers",
             modern_name,
-            modern_entries["skin.xml"].count(b"<sendparams") == 1
+            modern_sendparams is not None
+            and modern_sendparams.status == "supported"
+            and modern_hideobject is not None
+            and modern_hideobject.status == "supported"
+            and modern_entries["skin.xml"].count(b"<sendparams") == 1
             and modern_entries["skin.xml"].count(b"<hideobject") == 1,
-            "sendparams and scoped hideobject are present",
+            "supported sendparams and scoped hideobject are present",
         ),
     ]
-    return ValidationReport(schema_version=1, checks=tuple(checks))
+    return ValidationReport(schema_version=2, checks=tuple(checks))
 
 
 def render_validation_text(report: ValidationReport) -> str:
