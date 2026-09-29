@@ -16,6 +16,10 @@ Modern skins preserve native PNG alpha and do not use the Classic magenta color 
 
 Classic skins also expose a canonical Main-window sprite catalog cross-checked against Webamp and the MIT `wsz` tables: transport, eject, shuffle/repeat, and EQ/Playlist source and destination rectangles are data-driven. Seek/volume/balance composition, bitmap text, borderless EQ/Playlist windows, and tiled Playlist rendering are still pending; the existing SwiftUI utility panels remain the explicit fallback for incomplete asset sets. Both paths read the same playback, queue, and effect state.
 
+## Compatibility validation gates
+
+The skin test suite contains project-owned synthetic Modern and Classic diagnostic fixtures. Their generated atlases use deliberately distinct colors for each sprite state, so source-rectangle mistakes produce observable pixel-hash or state differences without redistributing third-party skins. Tests also record a deterministic scene behavior trace covering nested group movement, hit testing, and active-layout changes. Local archives in the ignored `Skins/` directory remain optional manual corpus fixtures; this repository does not currently include a separate corpus-scanning CLI.
+
 ## Archive safety
 
 Imports reject absolute/traversal paths, filenames with drive-style colons, encrypted archives, duplicate case-insensitive paths, more than 512 entries, more than 64 MAKI programs, individual assets over 16 MiB, totals over 64 MiB, truncated archives, and unsupported compression. Native executable content is ignored. MAKI remains interpreted data and has no general-purpose OS capability. Invalid skins remain listed with validation errors but do not replace the active skin.

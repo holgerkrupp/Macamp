@@ -299,16 +299,22 @@ struct SkinTests {
         let localBefore = try #require(scene.node(button)?.localFrame)
         #expect(scene.worldFrame(of: button) == CGRect(x: 28, y: 18, width: 24, height: 18))
         #expect(scene.hitTest(CGPoint(x: 30, y: 20))?.handle == button)
+        let paintedBefore = try #require(WasabiScenePainter.renderNodes(in: scene).first { $0.handle == button })
+        #expect(paintedBefore.worldFrame == CGRect(x: 28, y: 18, width: 24, height: 18))
 
         scene.setLocalFrame(CGRect(x: 80, y: 30, width: 100, height: 60), for: group)
         #expect(scene.node(button)?.localFrame == localBefore)
         #expect(scene.worldFrame(of: button) == CGRect(x: 88, y: 36, width: 24, height: 18))
         #expect(scene.hitTest(CGPoint(x: 90, y: 38))?.handle == button)
         #expect(scene.hitTest(CGPoint(x: 30, y: 20)) == nil)
+        let paintedAfter = try #require(WasabiScenePainter.renderNodes(in: scene).first { $0.handle == button })
+        #expect(paintedAfter.worldFrame == CGRect(x: 88, y: 36, width: 24, height: 18))
+        #expect(paintedAfter.worldFrame != paintedBefore.worldFrame)
 
         scene.setVisible(false, for: group)
         #expect(scene.effectiveVisible(button) == false)
         #expect(scene.hitTest(CGPoint(x: 90, y: 38)) == nil)
+        #expect(WasabiScenePainter.renderNodes(in: scene).contains { $0.handle == button } == false)
     }
 
     @Test func modernParserRetainsMultipleLayoutsAndNestedOwnership() throws {
@@ -337,6 +343,88 @@ struct SkinTests {
         #expect(scene.node(button)?.localFrame == CGRect(x: 4, y: 5, width: 20, height: 10))
         #expect(scene.worldFrame(of: button) == CGRect(x: 34, y: 25, width: 20, height: 10))
         #expect(scene.firstHandle(for: "shade") != nil)
+    }
+
+    @Test func syntheticSceneValidationTraceDetectsHierarchyAndLayoutChanges() throws {
+        let xml = """
+        <WinampAbstractionLayer>
+          <container id="main" default_visible="1">
+            <groupdef id="controls" w="40" h="24">
+              <button id="play" x="4" y="3" w="16" h="12" />
+            </groupdef>
+            <layout id="normal" w="120" h="48">
+              <group id="controls" x="12" y="8" />
+            </layout>
+            <layout id="shade" w="120" h="14">
+              <layer id="shade-background" x="0" y="0" w="120" h="14" />
+            </layout>
+          </container>
+        </WinampAbstractionLayer>
+        """
+        var scene = ModernSkinParser.parse(files: ["skin.xml": Data(xml.utf8)]).descriptor.scene
+        let container = try #require(scene.firstHandle(for: "main"))
+        let normal = try #require(scene.firstHandle(for: "normal"))
+        let shade = try #require(scene.firstHandle(for: "shade"))
+        let group = try #require(scene.handles(for: "controls").first { scene.node($0)?.parent == normal })
+        let button = try #require(scene.firstHandle(for: "play"))
+
+        var trace = SkinBehaviorTrace()
+        trace.append(.init(phase: "normal", stateHash: scene.validationStateHash(), hitID: scene.hitTest(CGPoint(x: 18, y: 12))?.id))
+
+        scene.setLocalFrame(CGRect(x: 70, y: 20, width: 40, height: 24), for: group)
+        trace.append(.init(phase: "group-moved", stateHash: scene.validationStateHash(), hitID: scene.hitTest(CGPoint(x: 76, y: 25))?.id))
+
+        scene.setActiveLayout(shade, for: container)
+        trace.append(.init(phase: "shade-active", stateHash: scene.validationStateHash(), hitID: scene.hitTest(CGPoint(x: 2, y: 2))?.id))
+
+        #expect(trace.events.map(\.phase) == ["normal", "group-moved", "shade-active"])
+        #expect(trace.events[0].hitID == "play")
+        #expect(trace.events[1].hitID == "play")
+        #expect(trace.events[0].stateHash != trace.events[1].stateHash)
+        #expect(trace.events[2].hitID == "shade-background")
+        #expect(scene.worldFrame(of: button) == CGRect(x: 74, y: 23, width: 16, height: 12))
+        #expect(scene.hitTest(CGPoint(x: 76, y: 25))?.id == "shade-background" || scene.hitTest(CGPoint(x: 76, y: 25)) == nil)
+    }
+
+    @Test @MainActor func syntheticDiagnosticFixturesProduceDifferentialPixelHashes() throws {
+        let modernA = SkinDiagnosticFixtures.modernFiles(accent: .systemBlue)
+        let modernB = SkinDiagnosticFixtures.modernFiles(accent: .systemOrange)
+        let modernCatalogA = SkinAssetCatalog(
+            name: "Synthetic Modern Diagnostic A",
+            files: modernA,
+            report: .init(),
+            format: .modern,
+            modern: ModernSkinParser.parse(files: modernA).descriptor
+        )
+        let modernCatalogB = SkinAssetCatalog(
+            name: "Synthetic Modern Diagnostic B",
+            files: modernB,
+            report: .init(),
+            format: .modern,
+            modern: ModernSkinParser.parse(files: modernB).descriptor
+        )
+
+        let modernHashA = try #require(modernCatalogA.mainImage).validationPixelHash()
+        let modernHashB = try #require(modernCatalogB.mainImage).validationPixelHash()
+        #expect(modernHashA != modernHashB)
+
+        let classicA = SkinAssetCatalog(name: "Synthetic Classic Diagnostic A", files: SkinDiagnosticFixtures.classicFiles(background: .systemBlue), report: .init(), format: .classic)
+        let classicB = SkinAssetCatalog(name: "Synthetic Classic Diagnostic B", files: SkinDiagnosticFixtures.classicFiles(background: .systemOrange), report: .init(), format: .classic)
+        let classicHashA = try #require(classicA.mainImage).validationPixelHash()
+        let classicHashB = try #require(classicB.mainImage).validationPixelHash()
+        #expect(classicHashA != classicHashB)
+    }
+
+    @Test @MainActor func classicDiagnosticAtlasKeepsCanonicalStatesVisiblyDistinct() throws {
+        let files = SkinDiagnosticFixtures.classicFiles(background: .systemBlue)
+        let catalog = SkinAssetCatalog(name: "Synthetic Classic Atlas", files: files, report: .init(), format: .classic)
+        let image = try #require(catalog.images["cbuttons.bmp"])
+        let ids: [SkinControlID] = [.previous, .play, .pause, .stop, .next, .open]
+        let hashes = try ids.map { id -> UInt64 in
+            let descriptor = try #require(ClassicSpriteCatalog.main[id])
+            return try #require(image.validationPixelHash(sourceRect: descriptor.normal.sourceRect))
+        }
+        #expect(Set(hashes).count == hashes.count)
     }
 
     @Test func classicMainSpriteCatalogUsesCanonicalTables() throws {
@@ -488,6 +576,56 @@ struct SkinTests {
         let other = CGRect(x: 150, y: 100, width: 50, height: 40)
         let result = docking.snappedOrigin(for: moving, near: [other], screen: CGRect(x: 0, y: 0, width: 500, height: 500), scale: 1)
         #expect(result.x == 100)
+    }
+
+    @Test @MainActor func winampWindowGeometryScalesLogicalFramesAtBoundary() {
+        let logical = CGRect(x: 40, y: 25, width: 275, height: 116)
+        let screen = WinampSkinWindowGeometry.screenFrame(for: logical, scale: 2)
+
+        #expect(screen == CGRect(x: 80, y: 50, width: 550, height: 232))
+        #expect(WinampSkinWindowGeometry.logicalFrame(for: screen, scale: 2) == logical)
+        #expect(WinampSkinWindowGeometry.screenSize(for: CGSize(width: 100, height: 14), scale: 3) == CGSize(width: 300, height: 42))
+    }
+
+    @Test @MainActor func winampWindowHostTransitionsRegionActivityAndShadeState() {
+        let host = WinampSkinWindowHost(
+            normalLogicalSize: CGSize(width: 100, height: 50),
+            shadeLogicalSize: CGSize(width: 100, height: 14),
+            scale: 2
+        )
+        let content = NSView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
+        host.setContentView(content)
+
+        let region = NSBezierPath(rect: CGRect(x: 0, y: 0, width: 50, height: 50))
+        host.regionPath = region
+        host.clickThroughTransparentPixels = true
+        host.clickThroughTest = { $0.x < 25 }
+
+        #expect(content.layer?.mask != nil)
+        #expect(host.acceptsInput(atLogicalPoint: CGPoint(x: 20, y: 20)))
+        #expect(!host.acceptsInput(atLogicalPoint: CGPoint(x: 30, y: 20)))
+        #expect(!host.acceptsInput(atLogicalPoint: CGPoint(x: 80, y: 20)))
+
+        var activities: [WinampSkinWindowActivityState] = []
+        var shadeStates: [Bool] = []
+        host.onActivityStateChange = { activities.append($0) }
+        host.onShadeStateChange = { shadeStates.append($0) }
+        host.setSkinActive(true)
+        host.setShaded(true)
+
+        #expect(host.activityState == .active)
+        #expect(host.isShaded)
+        #expect(host.currentLogicalSize == CGSize(width: 100, height: 14))
+        #expect(host.window.contentView?.bounds.size == CGSize(width: 200, height: 28))
+        #expect(activities == [.active])
+        #expect(shadeStates == [true])
+
+        host.setShaded(false)
+        host.setSkinActive(false)
+        #expect(!host.isShaded)
+        #expect(host.activityState == .inactive)
+        #expect(shadeStates == [true, false])
+        #expect(activities == [.active, .inactive])
     }
 
     @Test @MainActor func rendererUsesLogicalBoundsAtEveryDisplayScale() throws {
@@ -697,6 +835,206 @@ struct SkinTests {
         let centralOffset = UInt32(archive.count); archive.append(central)
         archive.appendLE(UInt32(0x06054b50)); archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0)); archive.appendLE(UInt16(entries.count)); archive.appendLE(UInt16(entries.count)); archive.appendLE(UInt32(central.count)); archive.appendLE(centralOffset); archive.appendLE(UInt16(0))
         return archive
+    }
+}
+
+private struct SkinBehaviorEvent: Equatable {
+    let phase: String
+    let stateHash: UInt64
+    let hitID: String?
+}
+
+private struct SkinBehaviorTrace {
+    private(set) var events: [SkinBehaviorEvent] = []
+
+    mutating func append(_ event: SkinBehaviorEvent) {
+        events.append(event)
+    }
+}
+
+private struct SkinValidationHasher {
+    private var value: UInt64 = 14_695_981_039_346_656_037
+
+    mutating func append(_ string: String) {
+        for byte in string.utf8 {
+            value ^= UInt64(byte)
+            value &*= 1_099_511_628_211
+        }
+        value ^= 0xff
+        value &*= 1_099_511_628_211
+    }
+
+    mutating func append(_ number: Double) {
+        append(String(format: "%.4f", number))
+    }
+
+    mutating func append(_ number: CGFloat) {
+        append(Double(number))
+    }
+
+    var result: UInt64 { value }
+}
+
+private extension WasabiScene {
+    func validationStateHash() -> UInt64 {
+        var hasher = SkinValidationHasher()
+        for node in nodes.values.sorted(by: { $0.handle.rawValue < $1.handle.rawValue }) {
+            hasher.append(String(node.handle.rawValue))
+            hasher.append(node.id)
+            hasher.append(node.kind.rawValue)
+            hasher.append(node.localFrame.minX)
+            hasher.append(node.localFrame.minY)
+            hasher.append(node.localFrame.width)
+            hasher.append(node.localFrame.height)
+            hasher.append(node.parent.map { String($0.rawValue) } ?? "root")
+            hasher.append(node.visible ? "visible" : "hidden")
+            hasher.append(node.alpha)
+            hasher.append(node.ghost ? "ghost" : "live")
+            hasher.append(String(node.zIndex))
+            for child in node.children { hasher.append(String(child.rawValue)) }
+        }
+        for (container, layout) in activeLayoutByContainer.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
+            hasher.append("active")
+            hasher.append(String(container.rawValue))
+            hasher.append(String(layout.rawValue))
+        }
+        return hasher.result
+    }
+}
+
+@MainActor
+private extension NSImage {
+    func validationPixelHash(sourceRect: CGRect? = nil) -> UInt64? {
+        let image: NSImage
+        if let sourceRect {
+            guard !sourceRect.isEmpty else { return nil }
+            image = NSImage(size: sourceRect.size, flipped: true) { destination in
+                let flippedSource = CGRect(
+                    x: sourceRect.minX,
+                    y: self.size.height - sourceRect.maxY,
+                    width: sourceRect.width,
+                    height: sourceRect.height
+                )
+                self.draw(in: destination, from: flippedSource, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
+                return true
+            }
+        } else {
+            image = self
+        }
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let bytes = bitmap.bitmapData else { return nil }
+        let data = Data(bytes: bytes, count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+        var hasher = SkinValidationHasher()
+        hasher.append("(bitmap.pixelsWide)x(bitmap.pixelsHigh):(bitmap.bitsPerPixel):(bitmap.bytesPerRow)")
+        for byte in data { hasher.append(String(byte)) }
+        return hasher.result
+    }
+}
+
+@MainActor
+private enum SkinDiagnosticFixtures {
+    static func modernFiles(accent: NSColor) -> [String: Data] {
+        let xml = """
+        <WinampAbstractionLayer>
+          <elements>
+            <bitmap id="background" file="background.png" />
+            <bitmap id="marker" file="marker.png" />
+          </elements>
+          <container id="main" default_visible="1">
+            <layout id="normal" w="64" h="32">
+              <layer id="background-layer" image="background" x="0" y="0" w="64" h="32" />
+              <button id="diagnostic-marker" image="marker" x="24" y="12" w="16" h="8" />
+            </layout>
+          </container>
+        </WinampAbstractionLayer>
+        """
+        return [
+            "skin.xml": Data(xml.utf8),
+            "background.png": diagnosticPNG(size: CGSize(width: 64, height: 32), background: .calibratedWhite(0.08), fills: [
+                (CGRect(x: 0, y: 0, width: 64, height: 4), .calibratedWhite(0.18))
+            ]),
+            "marker.png": diagnosticPNG(size: CGSize(width: 16, height: 8), background: accent, fills: [])
+        ]
+    }
+
+    static func classicFiles(background: NSColor) -> [String: Data] {
+        var buttonFills: [(CGRect, NSColor)] = []
+        let colors: [NSColor] = [
+            .calibratedRed(0.95, green: 0.15, blue: 0.15, alpha: 1),
+            .calibratedRed(0.95, green: 0.55, blue: 0.15, alpha: 1),
+            .calibratedRed(0.95, green: 0.85, blue: 0.15, alpha: 1),
+            .calibratedRed(0.25, green: 0.85, blue: 0.2, alpha: 1),
+            .calibratedRed(0.15, green: 0.65, blue: 0.95, alpha: 1),
+            .calibratedRed(0.55, green: 0.25, blue: 0.95, alpha: 1)
+        ]
+        let buttonRects: [CGRect] = [
+            CGRect(x: 0, y: 0, width: 23, height: 18),
+            CGRect(x: 23, y: 0, width: 23, height: 18),
+            CGRect(x: 46, y: 0, width: 23, height: 18),
+            CGRect(x: 69, y: 0, width: 23, height: 18),
+            CGRect(x: 92, y: 0, width: 22, height: 18),
+            CGRect(x: 114, y: 0, width: 22, height: 16)
+        ]
+        for (index, rect) in buttonRects.enumerated() {
+            buttonFills.append((rect, colors[index]))
+            buttonFills.append((rect.offsetBy(dx: 0, dy: index == 5 ? 16 : 18), colors[index].withAlphaComponent(0.5)))
+        }
+
+        return [
+            "main.bmp": diagnosticPNG(size: CGSize(width: 275, height: 116), background: background, fills: [
+                (CGRect(x: 0, y: 0, width: 275, height: 14), .calibratedWhite(0.18)),
+                (CGRect(x: 0, y: 108, width: 275, height: 8), .calibratedWhite(0.04))
+            ]),
+            "cbuttons.bmp": diagnosticPNG(size: CGSize(width: 136, height: 36), background: .black, fills: buttonFills),
+            "shufrep.bmp": diagnosticPNG(size: CGSize(width: 75, height: 85), background: .black, fills: [
+                (CGRect(x: 0, y: 0, width: 28, height: 15), colors[0]),
+                (CGRect(x: 28, y: 0, width: 47, height: 15), colors[1]),
+                (CGRect(x: 0, y: 15, width: 28, height: 15), colors[2]),
+                (CGRect(x: 28, y: 15, width: 47, height: 15), colors[3]),
+                (CGRect(x: 0, y: 30, width: 28, height: 15), colors[4]),
+                (CGRect(x: 28, y: 30, width: 47, height: 15), colors[5]),
+                (CGRect(x: 0, y: 45, width: 28, height: 15), colors[0].withAlphaComponent(0.5)),
+                (CGRect(x: 28, y: 45, width: 47, height: 15), colors[1].withAlphaComponent(0.5)),
+                (CGRect(x: 0, y: 61, width: 23, height: 12), colors[2].withAlphaComponent(0.5)),
+                (CGRect(x: 23, y: 61, width: 23, height: 12), colors[3].withAlphaComponent(0.5)),
+                (CGRect(x: 46, y: 61, width: 23, height: 12), colors[4].withAlphaComponent(0.5)),
+                (CGRect(x: 69, y: 61, width: 6, height: 12), colors[5].withAlphaComponent(0.5)),
+                (CGRect(x: 0, y: 73, width: 23, height: 12), colors[0].withAlphaComponent(0.25)),
+                (CGRect(x: 23, y: 73, width: 23, height: 12), colors[1].withAlphaComponent(0.25)),
+                (CGRect(x: 46, y: 73, width: 23, height: 12), colors[2].withAlphaComponent(0.25))
+            ]),
+            "posbar.bmp": diagnosticPNG(size: CGSize(width: 307, height: 10), background: .calibratedWhite(0.3), fills: []),
+            "volume.bmp": diagnosticPNG(size: CGSize(width: 68, height: 433), background: .calibratedWhite(0.25), fills: [])
+        ]
+    }
+
+    private static func diagnosticPNG(size: CGSize, background: NSColor, fills: [(CGRect, NSColor)]) -> Data {
+        let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width),
+            pixelsHigh: Int(size.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bitmapFormat: [],
+            bytesPerRow: 0,
+            bitsPerPixel: 32
+        )!
+        let context = NSGraphicsContext(bitmapImageRep: bitmap)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        background.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        for (rect, color) in fills {
+            color.setFill()
+            rect.fill()
+        }
+        context.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+        return bitmap.representation(using: .png, properties: [:])!
     }
 }
 
