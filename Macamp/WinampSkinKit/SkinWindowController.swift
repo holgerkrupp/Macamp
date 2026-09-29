@@ -96,9 +96,16 @@ private final class SkinAuxiliaryWindowController: NSObject {
             scale: 1,
             allowsResize: true
         )
+        host.resizeGrid = CGSize(width: 25, height: 29)
+        host.minimumLogicalSize = CGSize(width: 275, height: 116)
         let surface = ClassicPlaylistSurface(coordinator: coordinator, skinStore: skinStore)
         surface.windowHost = host
         host.setContentView(surface)
+        host.onActivityStateChange = { [weak surface] state in
+            surface?.isActive = state == .active
+            surface?.needsDisplay = true
+        }
+        host.onShadeStateChange = { [weak surface] _ in surface?.needsDisplay = true }
         host.window.isReleasedWhenClosed = false
         host.window.minSize = CGSize(width: 275, height: 116)
         host.window.center()
@@ -214,6 +221,8 @@ final class ClassicPlaylistSurface: NSView {
     weak var windowHost: WinampSkinWindowHost?
     private var scrollOffset = 0
     private var rowHeight: CGFloat = 13
+    private var selectedIndex: Int?
+    var isActive = true
 
     override var isFlipped: Bool { true }
 
@@ -229,18 +238,27 @@ final class ClassicPlaylistSurface: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override var acceptsFirstResponder: Bool { true }
+
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         context.interpolationQuality = .none
         let width = bounds.width
         let height = bounds.height
-        guard drawSprite(source: CGRect(x: 0, y: 21, width: 25, height: 20), in: CGRect(x: 0, y: 0, width: 25, height: 20)) else {
+        if windowHost?.isShaded == true {
+            _ = drawSprite(source: CGRect(x: 72, y: isActive ? 42 : 57, width: 25, height: 14), in: CGRect(x: 0, y: 0, width: 25, height: 14))
+            tile(source: CGRect(x: 72, y: isActive ? 57 : 42, width: 25, height: 14), in: CGRect(x: 25, y: 0, width: max(0, width - 75), height: 14))
+            _ = drawSprite(source: CGRect(x: 99, y: isActive ? 42 : 57, width: 50, height: 14), in: CGRect(x: max(25, width - 50), y: 0, width: 50, height: 14))
+            return
+        }
+        let topSourceY: CGFloat = isActive ? 0 : 21
+        guard drawSprite(source: CGRect(x: 0, y: topSourceY, width: 25, height: 20), in: CGRect(x: 0, y: 0, width: 25, height: 20)) else {
             NSColor(calibratedWhite: 0.06, alpha: 1).setFill(); bounds.fill(); return
         }
-        tile(source: CGRect(x: 127, y: 21, width: 25, height: 20), in: CGRect(x: 25, y: 0, width: max(0, width - 50), height: 20))
+        tile(source: CGRect(x: 127, y: topSourceY, width: 25, height: 20), in: CGRect(x: 25, y: 0, width: max(0, width - 50), height: 20))
         let titleWidth: CGFloat = 100
-        _ = drawSprite(source: CGRect(x: 26, y: 21, width: 100, height: 20), in: CGRect(x: (width - titleWidth) / 2, y: 0, width: titleWidth, height: 20))
-        _ = drawSprite(source: CGRect(x: 153, y: 21, width: 25, height: 20), in: CGRect(x: max(0, width - 25), y: 0, width: 25, height: 20))
+        _ = drawSprite(source: CGRect(x: 26, y: topSourceY, width: 100, height: 20), in: CGRect(x: (width - titleWidth) / 2, y: 0, width: titleWidth, height: 20))
+        _ = drawSprite(source: CGRect(x: 153, y: topSourceY, width: 25, height: 20), in: CGRect(x: max(0, width - 25), y: 0, width: 25, height: 20))
 
         let bottomHeight: CGFloat = 38
         let middleFrame = CGRect(x: 0, y: 20, width: width, height: max(0, height - 20 - bottomHeight))
@@ -262,8 +280,45 @@ final class ClassicPlaylistSurface: NSView {
         guard point.y >= 23, point.y < middleBottom, point.x >= 12, point.x < bounds.width - 20 else { return }
         let index = scrollOffset + max(0, Int((point.y - 23) / rowHeight))
         guard coordinator.queue.items.indices.contains(index) else { return }
-        Task { await coordinator.play(items: coordinator.queue.items, startingAt: index) }
+        selectedIndex = index
+        window?.makeFirstResponder(self)
+        if event.clickCount > 1 {
+            Task { await coordinator.play(items: coordinator.queue.items, startingAt: index) }
+        }
         needsDisplay = true
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        let visible = max(1, Int(max(0, bounds.height - 58) / rowHeight))
+        let maximum = max(0, coordinator.queue.items.count - visible)
+        scrollOffset = min(maximum, max(0, scrollOffset + (event.scrollingDeltaY > 0 ? 3 : -3)))
+        needsDisplay = true
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let items = coordinator.queue.items
+        guard !items.isEmpty else { return }
+        let current = selectedIndex ?? coordinator.queue.currentIndex ?? 0
+        switch event.keyCode {
+        case 125: selectedIndex = min(items.count - 1, current + 1)
+        case 126: selectedIndex = max(0, current - 1)
+        case 36, 76:
+            selectedIndex = min(items.count - 1, max(0, current))
+            if let selectedIndex { Task { await coordinator.play(items: items, startingAt: selectedIndex) } }
+        default:
+            super.keyDown(with: event)
+            return
+        }
+        ensureSelectionVisible()
+        needsDisplay = true
+    }
+
+    private func ensureSelectionVisible() {
+        guard let selectedIndex else { return }
+        let visible = max(1, Int(max(0, bounds.height - 58) / rowHeight))
+        if selectedIndex < scrollOffset { scrollOffset = selectedIndex }
+        if selectedIndex >= scrollOffset + visible { scrollOffset = selectedIndex - visible + 1 }
+        scrollOffset = min(max(0, coordinator.queue.items.count - visible), max(0, scrollOffset))
     }
 
     private func drawRows(in frame: CGRect) {
@@ -273,7 +328,7 @@ final class ClassicPlaylistSurface: NSView {
         for index in 0..<min(visibleCount, max(0, items.count - scrollOffset)) {
             let itemIndex = index + scrollOffset
             let row = CGRect(x: frame.minX, y: frame.minY + CGFloat(index) * rowHeight, width: frame.width, height: rowHeight)
-            if itemIndex == coordinator.queue.currentIndex {
+            if itemIndex == selectedIndex || itemIndex == coordinator.queue.currentIndex {
                 NSColor(calibratedRed: 0.16, green: 0.24, blue: 0.45, alpha: 1).setFill(); row.fill()
             }
             let duration = items[itemIndex].duration.map { String(format: "%d:%02d", Int($0.secondsValue) / 60, Int($0.secondsValue) % 60) } ?? ""

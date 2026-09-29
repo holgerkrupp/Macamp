@@ -60,6 +60,12 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
 
     private(set) var scale: CGFloat
 
+    /// Optional logical resize grid used by Classic tiled windows. The host
+    /// applies it at the AppKit delegate boundary so the skin surface always
+    /// receives a valid logical size.
+    var resizeGrid: CGSize?
+    var minimumLogicalSize: CGSize?
+
     var regionPath: NSBezierPath? {
         didSet { applyRegionMask() }
     }
@@ -184,6 +190,16 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
     func windowDidResize(_ notification: Notification) {
         onLogicalFrameChange?(logicalFrame)
         applyRegionMask()
+    }
+
+    func windowWillResize(_ sender: NSWindow, toFrameSize frameSize: NSSize) -> NSSize {
+        guard !isShaded, let resizeGrid, resizeGrid.width > 0, resizeGrid.height > 0 else { return frameSize }
+        let logicalWidth = frameSize.width / scale
+        let logicalHeight = frameSize.height / scale
+        let minimum = minimumLogicalSize ?? .zero
+        let snappedWidth = max(minimum.width, floor(logicalWidth / resizeGrid.width) * resizeGrid.width)
+        let snappedHeight = max(minimum.height, floor(logicalHeight / resizeGrid.height) * resizeGrid.height)
+        return WinampSkinWindowGeometry.screenSize(for: CGSize(width: snappedWidth, height: snappedHeight), scale: scale)
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
