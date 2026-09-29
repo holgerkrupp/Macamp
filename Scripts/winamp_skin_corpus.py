@@ -300,7 +300,7 @@ def _modern_findings(entries: Mapping[str, bytes], xml_data: bytes | None) -> tu
     # These are explicit engine-baseline gaps, reported even when a particular
     # archive does not exercise them, so corpus results remain actionable.
     baseline = [
-        ("Modern bitmap fonts/TrueType declarations", "unimplemented", "not implemented by the current renderer"),
+        ("Modern bitmap fonts/TrueType declarations", "partial", "bitmapfont and TrueType/gamma declarations are retained; platform font registration and full gamma transforms remain partial"),
         ("Modern ANI/CUR cursors", "unimplemented", "not part of the current Modern resource path"),
         ("Modern custom plug-in components", "unknown", "component parameters are inventoried but plug-in behavior is not inferred"),
     ]

@@ -100,6 +100,21 @@ struct SkinTests {
         ])
     }
 
+    @Test func modernFontAndGammaDeclarationsAreRetainedAsResources() throws {
+        let xml = """
+        <WinampAbstractionLayer>
+          <truetypefont id="Body" file="fonts/body.ttf" face="Body Sans" size="11" />
+          <gammaset id="Night" gamma0="0.8" gamma1="1.1"><gamma value="0.9" /></gammaset>
+          <container id="main"><layout id="normal" w="32" h="16" /></container>
+        </WinampAbstractionLayer>
+        """
+        let descriptor = ModernSkinParser.parse(files: [
+            "skin.xml": Data(xml.utf8), "fonts/body.ttf": Data([1])
+        ]).descriptor
+        #expect(descriptor.fonts["body"] == ModernFontResource(id: "body", filePath: "fonts/body.ttf", faceName: "Body Sans", pointSize: 11))
+        #expect(descriptor.gammaSets["night"]?.values == [0.8, 1.1, 0.9])
+    }
+
     @Test func modernZipIsDetectedByManifest() async throws {
         let xml = "<WinampAbstractionLayer><skininfo><screenshot>preview.png</screenshot></skininfo></WinampAbstractionLayer>"
         let png = try #require(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))

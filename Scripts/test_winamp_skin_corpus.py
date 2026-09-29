@@ -87,7 +87,7 @@ class CorpusScannerTests(unittest.TestCase):
         self.assertEqual(modern_findings["Modern sendparams"].status, "supported")
         self.assertEqual(modern_findings["Modern scoped hideobject"].status, "supported")
         self.assertEqual(modern_findings["Modern AnimatedLayer playback"].status, "partial")
-        self.assertEqual(modern_findings["Modern bitmap fonts/TrueType declarations"].status, "unimplemented")
+        self.assertEqual(modern_findings["Modern bitmap fonts/TrueType declarations"].status, "partial")
 
     def test_validation_cli_emits_machine_readable_report(self):
         # Exercise the same entry point used by local CI/developer checks.

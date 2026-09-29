@@ -31,6 +31,7 @@ enum ModernSkinParser {
                 try collectMetadata(document: document, xmlPath: path, files: files, descriptor: &descriptor)
                 try collectBitmaps(document: document, xmlPath: path, files: files, descriptor: &descriptor)
                 try collectBitmapFonts(document: document, xmlPath: path, files: files, descriptor: &descriptor)
+                try collectFontAndGammaResources(document: document, xmlPath: path, files: files, descriptor: &descriptor)
                 try collectMakiBindings(document: document, xmlPath: path, files: files, descriptor: &descriptor)
                 collectElementAliases(document: document, into: &elementAliases)
                 candidates.append(contentsOf: try collectLayouts(document: document, xmlPath: path, files: files))
@@ -219,6 +220,31 @@ enum ModernSkinParser {
                 verticalSpacing: Int(number(attribute("vspacing", element)) ?? 0)
             )
             descriptor.bitmapFonts[id] = resource
+        }
+    }
+
+    nonisolated private static func collectFontAndGammaResources(document: XMLDocument, xmlPath: String, files: [String: Data], descriptor: inout ModernSkinDescriptor) throws {
+        for case let element as XMLElement in try document.nodes(forXPath: "//*[local-name()='truetypefont' or local-name()='font']") {
+            guard let id = attribute("id", element)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !id.isEmpty else { continue }
+            let rawFile = attribute("file", element) ?? attribute("src", element)
+            let filePath = rawFile.flatMap { resolve(path: $0, relativeTo: xmlPath, files: files) }
+            descriptor.fonts[id] = ModernFontResource(
+                id: id,
+                filePath: filePath,
+                faceName: attribute("face", element) ?? attribute("font", element) ?? attribute("name", element),
+                pointSize: number(attribute("size", element)).map(Double.init)
+            )
+        }
+        for case let element as XMLElement in try document.nodes(forXPath: "//*[local-name()='gammagroup' or local-name()='gammaset']") {
+            guard let id = attribute("id", element)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !id.isEmpty else { continue }
+            let values = (element.attributes ?? []).compactMap { attribute in
+                guard let name = attribute.name?.lowercased(), name.hasPrefix("gamma"), let value = Double(attribute.stringValue ?? "") else { return nil }
+                return value
+            } + (try element.nodes(forXPath: ".//*[local-name()='gamma']")).compactMap { node -> Double? in
+                guard let child = node as? XMLElement else { return nil }
+                return Double(attribute("value", child) ?? child.stringValue ?? "")
+            }
+            descriptor.gammaSets[id] = ModernGammaSetResource(id: id, values: values)
         }
     }
 

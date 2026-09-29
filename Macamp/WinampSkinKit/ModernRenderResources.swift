@@ -1,5 +1,17 @@
 import AppKit
 
+struct ModernFontResource: Sendable, Equatable {
+    var id: String
+    var filePath: String?
+    var faceName: String?
+    var pointSize: Double?
+}
+
+struct ModernGammaSetResource: Sendable, Equatable {
+    var id: String
+    var values: [Double]
+}
+
 /// A Wasabi bitmap font is a glyph table, not a native font face. The table
 /// uses three rows: letters, punctuation/digits, and extended/fallback glyphs.
 struct ModernBitmapFontResource: Sendable, Equatable {
