@@ -107,7 +107,10 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.collectionBehavior = [.managed, .participatesInCycle]
-        window.isMovableByWindowBackground = true
+        // Skin views decide whether a point is draggable, interactive, or
+        // transparent. Letting AppKit move every background pixel would make
+        // transparent holes and skinned controls steal pointer gestures.
+        window.isMovableByWindowBackground = false
         window.acceptsMouseMovedEvents = true
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true

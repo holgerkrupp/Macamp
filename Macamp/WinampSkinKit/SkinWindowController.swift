@@ -34,6 +34,7 @@ final class SkinWindowController: NSWindowController {
         host = WinampSkinWindowHost(normalLogicalSize: canvas, shadeLogicalSize: shadeSize, scale: CGFloat(scale))
         renderer.windowHost = host
         host.setContentView(renderer)
+        auxiliaryWindows.attachMainHost(host)
         host.onShadeStateChange = { [weak renderer] _ in renderer?.needsDisplay = true }
         host.regionPath = renderer.regionPath
         host.window.hasShadow = settings.playerShadow
@@ -76,10 +77,17 @@ private final class SkinAuxiliaryWindowController: NSObject {
     private var playlistHost: WinampSkinWindowHost?
     private var equalizerHost: WinampSkinWindowHost?
     private let docking = WindowDockingController()
+    private let windowGroup = WinampSkinWindowGroup()
 
     init(coordinator: PlaybackCoordinator, skinStore: SkinLibraryStore) {
         self.coordinator = coordinator
         self.skinStore = skinStore
+    }
+
+    func attachMainHost(_ host: WinampSkinWindowHost) {
+        windowGroup.add(host)
+        if let playlistHost { windowGroup.add(playlistHost) }
+        if let equalizerHost { windowGroup.add(equalizerHost) }
     }
 
     func togglePlaylist() {
@@ -89,6 +97,7 @@ private final class SkinAuxiliaryWindowController: NSObject {
         }
         let host = playlistHost ?? makePlaylistHost()
         playlistHost = host
+        windowGroup.add(host)
         present(host)
     }
 
@@ -122,6 +131,7 @@ private final class SkinAuxiliaryWindowController: NSObject {
         }
         let host = equalizerHost ?? makeEqualizerHost()
         equalizerHost = host
+        windowGroup.add(host)
         present(host)
     }
 
@@ -286,6 +296,10 @@ final class ClassicPlaylistSurface: NSView {
             } else {
                 windowHost?.setShaded(windowHost?.isShaded != true)
             }
+            return
+        }
+        if point.y < 20 {
+            window?.performDrag(with: event)
             return
         }
         let middleBottom = max(20, bounds.height - 38)
@@ -572,6 +586,10 @@ private final class ClassicEqualizerSurface: NSView {
         if point.y < 14, point.x >= 264 { window?.close(); return }
         if point.y < 14, point.x >= 254 {
             windowHost?.setShaded(true)
+            return
+        }
+        if point.y < 14 {
+            window?.performDrag(with: event)
             return
         }
         if point.x >= 14, point.x < 40, point.y >= 18, point.y < 30 {
