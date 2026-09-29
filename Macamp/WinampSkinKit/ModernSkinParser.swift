@@ -23,14 +23,18 @@ enum ModernSkinParser {
                 try collectMetadata(document: document, xmlPath: path, files: files, descriptor: &descriptor)
                 try collectBitmaps(document: document, xmlPath: path, files: files, descriptor: &descriptor)
                 try collectMakiBindings(document: document, xmlPath: path, files: files, descriptor: &descriptor)
-                candidates.append(contentsOf: try collectLayouts(document: document))
+                candidates.append(contentsOf: try collectLayouts(document: document, xmlPath: path, files: files))
             } catch {
                 warnings.append("Could not parse \(path): \(error.localizedDescription)")
             }
         }
 
-        let definitions = Dictionary(candidates.map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
-        let expandedCandidates = candidates.map { expand($0, definitions: definitions, visited: []) }
+        let definitions: [String: LayoutCandidate] = Dictionary(candidates.map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+        let xuiDefinitions: [String: LayoutCandidate] = Dictionary(candidates.compactMap { candidate in
+            guard let xuiTag = candidate.xuiTag else { return nil }
+            return (normalizeXUITag(xuiTag), candidate)
+        }, uniquingKeysWith: { first, _ in first })
+        let expandedCandidates = candidates.map { expand($0, definitions: definitions, xuiDefinitions: xuiDefinitions, visited: []) }
         if let selected = expandedCandidates.max(by: { score($0) < score($1) }) {
             let clamped = CGSize(width: min(max(selected.canvasSize.width, 16), 2_048), height: min(max(selected.canvasSize.height, 16), 2_048))
             if clamped != selected.canvasSize { warnings.append("The selected Modern layout canvas was clamped to safe dimensions.") }
@@ -50,7 +54,12 @@ enum ModernSkinParser {
                         initiallyVisible: $0.containerIsDefaultVisible
                     )
                 }
-            descriptor.scene = makeScene(candidates: candidates, activeCandidate: selected)
+            descriptor.scene = makeScene(
+                candidates: candidates,
+                activeCandidate: selected,
+                xuiDefinitions: xuiDefinitions,
+                makiBindings: &descriptor.makiBindings
+            )
             descriptor.objectTree = descriptor.scene.compatibilityTree
             if !selected.regionShapes.isEmpty || selected.desktopAlpha {
                 descriptor.windowRegion = ModernWindowRegionDescriptor(
@@ -77,12 +86,39 @@ enum ModernSkinParser {
         var regionShapes: [ModernWindowRegionShape]
         var desktopAlpha: Bool
         var inheritedGroupID: String?
+        var xuiTag: String?
         var containerID: String?
         var containerIsDefaultVisible: Bool
         var drawerTargetX: CGFloat?
+        var scripts: [ScriptReference]
+        var sendParams: [SendParam]
+        var hiddenIDs: Set<String>
+        var hiddenObjects: [HideObject]
     }
 
-    private struct GroupReference { var id: String; var origin: CGPoint }
+    private struct GroupReference {
+        var definitionID: String
+        var instanceID: String
+        var tag: String
+        var origin: CGPoint
+        var attributes: [String: String]
+    }
+
+    private struct ScriptReference {
+        var path: String
+        var parameter: String?
+    }
+
+    private struct SendParam {
+        var group: String?
+        var targetIDs: [String]
+        var attributes: [String: String]
+    }
+
+    private struct HideObject {
+        var group: String?
+        var targetIDs: [String]
+    }
 
     nonisolated private static func collectMetadata(document: XMLDocument, xmlPath: String, files: [String: Data], descriptor: inout ModernSkinDescriptor) throws {
         if descriptor.name == nil { descriptor.name = try firstText(document, xpath: "//*[local-name()='skininfo']/*[local-name()='name']") }
@@ -119,7 +155,7 @@ enum ModernSkinParser {
         }
     }
 
-    nonisolated private static func collectLayouts(document: XMLDocument) throws -> [LayoutCandidate] {
+    nonisolated private static func collectLayouts(document: XMLDocument, xmlPath: String, files: [String: Data]) throws -> [LayoutCandidate] {
         var result: [LayoutCandidate] = []
         let xpath = "//*[local-name()='layout' or local-name()='groupdef']"
         for case let root as XMLElement in try document.nodes(forXPath: xpath) {
@@ -132,6 +168,10 @@ enum ModernSkinParser {
             var groups: [GroupReference] = []
             var regionShapes: [ModernWindowRegionShape] = []
             var drawerTargetX: CGFloat?
+            var scripts: [ScriptReference] = []
+            var sendParams: [SendParam] = []
+            var hiddenIDs: Set<String> = []
+            var hiddenObjects: [HideObject] = []
             let declaredWidth = number(attribute("w", root)) ?? number(attribute("default_w", root)) ?? 0
             let declaredHeight = number(attribute("h", root)) ?? number(attribute("default_h", root)) ?? 0
             let rootSize = CGSize(width: declaredWidth, height: declaredHeight)
@@ -219,8 +259,19 @@ enum ModernSkinParser {
                         orientation: orientation
                     ))
                 }
-                if tag == "group", let groupID = attribute("id", element) {
-                    groups.append(GroupReference(id: groupID, origin: origin))
+                if tag == "group" || element.name?.contains(":") == true {
+                    let definitionID = attribute("id", element) ?? element.name ?? ""
+                    guard !definitionID.isEmpty else { continue }
+                    let rawInstanceID = attribute("instanceid", element) ?? attribute("id", element) ?? definitionID
+                    groups.append(GroupReference(
+                        definitionID: definitionID,
+                        instanceID: rawInstanceID,
+                        tag: element.name ?? tag,
+                        origin: origin,
+                        attributes: (element.attributes ?? []).reduce(into: [String: String]()) { result, attribute in
+                            if let name = attribute.name, let value = attribute.stringValue { result[name.lowercased()] = value }
+                        }
+                    ))
                 }
                 if let role = textRole(tag: tag, element: element), frame.width > 0, frame.height > 0 {
                     let color = textColor(attribute("color", element))
@@ -245,6 +296,45 @@ enum ModernSkinParser {
                     ))
                 }
             }
+            for case let script as XMLElement in try root.nodes(forXPath: ".//*[local-name()='script']") {
+                guard nearestStructuralRoot(of: script) === root,
+                      let file = attribute("file", script),
+                      let path = resolve(path: file, relativeTo: xmlPath, files: files),
+                      path.pathExtension.lowercased() == "maki" else { continue }
+                scripts.append(ScriptReference(path: path, parameter: attribute("param", script)))
+            }
+            for case let sendparams as XMLElement in try root.nodes(forXPath: ".//*[local-name()='sendparams']") {
+                guard nearestStructuralRoot(of: sendparams) === root,
+                      let target = attribute("target", sendparams) else { continue }
+                let attributes = (sendparams.attributes ?? []).reduce(into: [String: String]()) { result, attribute in
+                    guard let name = attribute.name else { return }
+                    let key = name.lowercased()
+                    guard key != "group", key != "target", let value = attribute.stringValue else { return }
+                    result[key] = value
+                }
+                sendParams.append(SendParam(
+                    group: attribute("group", sendparams),
+                    targetIDs: target.split(separator: ";").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                    attributes: attributes
+                ))
+            }
+            for case let hideobject as XMLElement in try root.nodes(forXPath: ".//*[local-name()='hideobject']") {
+                guard nearestStructuralRoot(of: hideobject) === root,
+                      let target = attribute("target", hideobject) else { continue }
+                let targetIDs = target.split(separator: ";").map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty }
+                if let group = attribute("group", hideobject)?.lowercased(), !group.isEmpty {
+                    hiddenObjects.append(HideObject(group: group, targetIDs: targetIDs))
+                } else {
+                    for targetID in targetIDs {
+                        let components = targetID.split(separator: ".", maxSplits: 1).map(String.init)
+                        if components.count == 2 {
+                            hiddenObjects.append(HideObject(group: components[0], targetIDs: [components[1]]))
+                        } else {
+                            hiddenIDs.insert(targetID)
+                        }
+                    }
+                }
+            }
             let contentBounds = layers.map(\.frame).reduce(CGRect.null) { $0.union($1) }
             let width = declaredWidth > 0 ? declaredWidth : max(1, contentBounds.maxX.isFinite ? contentBounds.maxX : 275)
             let height = declaredHeight > 0 ? declaredHeight : max(1, contentBounds.maxY.isFinite ? contentBounds.maxY : 116)
@@ -266,9 +356,14 @@ enum ModernSkinParser {
                     regionShapes: regionShapes,
                     desktopAlpha: desktopAlpha,
                     inheritedGroupID: attribute("inherit_group", root),
+                    xuiTag: attribute("xuitag", root),
                     containerID: container.flatMap { attribute("id", $0)?.lowercased() },
                     containerIsDefaultVisible: container.flatMap { attribute("default_visible", $0) }.map { $0 != "0" } ?? false,
-                    drawerTargetX: drawerTargetX
+                    drawerTargetX: drawerTargetX,
+                    scripts: scripts,
+                    sendParams: sendParams,
+                    hiddenIDs: hiddenIDs,
+                    hiddenObjects: hiddenObjects
                 ))
             }
         }
@@ -282,7 +377,7 @@ enum ModernSkinParser {
         tree.insert(WasabiObjectNode(id: containerID, kind: .container, frame: CGRect(origin: .zero, size: candidate.canvasSize), parentID: nil, initiallyVisible: candidate.containerIsDefaultVisible, zIndex: 0))
         tree.insert(WasabiObjectNode(id: candidate.id, kind: .layout, frame: CGRect(origin: .zero, size: candidate.canvasSize), parentID: containerID, zIndex: 1))
         for (index, group) in candidate.groups.enumerated() {
-            tree.insert(WasabiObjectNode(id: group.id, kind: .group, frame: CGRect(origin: group.origin, size: .zero), parentID: candidate.id, zIndex: index + 2))
+            tree.insert(WasabiObjectNode(id: group.instanceID, kind: .group, frame: CGRect(origin: group.origin, size: .zero), parentID: candidate.id, zIndex: index + 2))
         }
         var z = candidate.groups.count + 2
         for (index, layer) in candidate.layers.enumerated() {
@@ -306,7 +401,12 @@ enum ModernSkinParser {
     /// definitions. The older arrays remain as a temporary compatibility
     /// projection for the renderer migration, but they are no longer used to
     /// decide parent ownership or world geometry.
-    nonisolated private static func makeScene(candidates: [LayoutCandidate], activeCandidate: LayoutCandidate) -> WasabiScene {
+    nonisolated private static func makeScene(
+        candidates: [LayoutCandidate],
+        activeCandidate: LayoutCandidate,
+        xuiDefinitions: [String: LayoutCandidate],
+        makiBindings: inout [ModernMakiBinding]
+    ) -> WasabiScene {
         var scene = WasabiScene()
         let definitions = Dictionary(candidates.map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
         let layouts = candidates.filter(\.isLayout)
@@ -345,7 +445,19 @@ enum ModernSkinParser {
         }
 
         for item in layoutHandles {
-            addDirectChildren(of: item.candidate, parent: item.handle, definitions: definitions, scene: &scene, visited: [])
+            addDirectChildren(
+                of: item.candidate,
+                parent: item.handle,
+                definitions: definitions,
+                xuiDefinitions: xuiDefinitions,
+                scene: &scene,
+                visited: [],
+                scopeID: nil,
+                overrides: scopedOverrides(for: item.candidate.id, definition: item.candidate, enclosing: item.candidate.sendParams, inherited: [:]),
+                hiddenIDs: item.candidate.hiddenIDs,
+                hiddenObjects: item.candidate.hiddenObjects,
+                makiBindings: &makiBindings
+            )
         }
 
         for container in containers.values where scene.activeLayoutByContainer[container] == nil {
@@ -360,8 +472,14 @@ enum ModernSkinParser {
         of candidate: LayoutCandidate,
         parent: WasabiHandle,
         definitions: [String: LayoutCandidate],
+        xuiDefinitions: [String: LayoutCandidate],
         scene: inout WasabiScene,
-        visited: Set<String>
+        visited: Set<String>,
+        scopeID: String?,
+        overrides: [String: [String: String]],
+        hiddenIDs: Set<String>,
+        hiddenObjects: [HideObject],
+        makiBindings: inout [ModernMakiBinding]
     ) {
         let candidateKey = candidate.id.lowercased()
         guard !visited.contains(candidateKey) else { return }
@@ -376,47 +494,51 @@ enum ModernSkinParser {
             // layer because it carries an image. Keep one live scene node for
             // that XML object; the control node owns its input and sprite.
             if controlIDs.contains(id.lowercased()) { continue }
+            let nodeOverrides = overrides[id.lowercased()] ?? [:]
+            let frame = frameByApplyingOverrides(layer.frame, nodeOverrides)
             let kind: WasabiObjectKind = layer.cropToFirstFrame ? .animatedLayer : .layer
             _ = scene.addNode(
                 id: id,
                 kind: kind,
-                localFrame: layer.frame,
+                localFrame: frame,
                 parent: parent,
-                visible: layer.initiallyVisible,
-                alpha: CGFloat(layer.opacity),
+                visible: layer.initiallyVisible && !hiddenIDs.contains(id.lowercased()) && bool(nodeOverrides["visible"] ?? "1"),
+                alpha: CGFloat(nodeOverrides["alpha"].flatMap(Double.init).map { $0 > 1 ? $0 / 255 : $0 } ?? layer.opacity),
                 ghost: false,
                 zIndex: z,
-                attributes: ["image": layer.imageID, "alpha": String(layer.opacity)]
+                attributes: ["image": nodeOverrides["image"] ?? layer.imageID, "alpha": String(layer.opacity)].merging(nodeOverrides, uniquingKeysWith: { _, new in new })
             )
             z += 1
         }
 
         for (index, control) in candidate.controls.enumerated() {
             let id = control.elementID ?? "control-\(index)"
+            let nodeOverrides = overrides[id.lowercased()] ?? [:]
             let kind: WasabiObjectKind = control.orientation == nil ? .button : .slider
             _ = scene.addNode(
                 id: id,
                 kind: kind,
-                localFrame: control.frame,
+                localFrame: frameByApplyingOverrides(control.frame, nodeOverrides),
                 parent: parent,
-                visible: control.initiallyVisible,
+                visible: control.initiallyVisible && !hiddenIDs.contains(id.lowercased()) && bool(nodeOverrides["visible"] ?? "1"),
                 zIndex: z,
                 attributes: [
                     "action": control.action.rawValue,
                     "orientation": control.orientation.map { $0 == .vertical ? "vertical" : "horizontal" } ?? ""
-                ]
+                ].merging(nodeOverrides, uniquingKeysWith: { _, new in new })
             )
             z += 1
         }
 
         for (index, region) in candidate.textRegions.enumerated() {
             let id = region.elementID ?? "text-\(index)"
+            let nodeOverrides = overrides[id.lowercased()] ?? [:]
             _ = scene.addNode(
                 id: id,
                 kind: .text,
-                localFrame: region.frame,
+                localFrame: frameByApplyingOverrides(region.frame, nodeOverrides),
                 parent: parent,
-                visible: region.initiallyVisible,
+                visible: region.initiallyVisible && !hiddenIDs.contains(id.lowercased()) && bool(nodeOverrides["visible"] ?? "1"),
                 zIndex: z,
                 attributes: [
                     "role": textRoleName(region.role),
@@ -425,38 +547,67 @@ enum ModernSkinParser {
                     "green": String(region.green),
                     "blue": String(region.blue),
                     "align": region.alignment
-                ]
+                ].merging(nodeOverrides, uniquingKeysWith: { _, new in new })
             )
             z += 1
         }
 
         for (index, region) in candidate.contentRegions.enumerated() {
             let id = region.elementID ?? "content-\(index)"
+            let nodeOverrides = overrides[id.lowercased()] ?? [:]
             _ = scene.addNode(
                 id: id,
                 kind: .content,
-                localFrame: region.frame,
+                localFrame: frameByApplyingOverrides(region.frame, nodeOverrides),
                 parent: parent,
-                visible: region.initiallyVisible,
+                visible: region.initiallyVisible && !hiddenIDs.contains(id.lowercased()) && bool(nodeOverrides["visible"] ?? "1"),
                 zIndex: z,
-                attributes: ["role": contentRoleName(region.role)]
+                attributes: ["role": contentRoleName(region.role)].merging(nodeOverrides, uniquingKeysWith: { _, new in new })
             )
             z += 1
         }
 
         for reference in candidate.groups {
-            let key = reference.id.lowercased()
-            guard let definition = definitions[key] else { continue }
+            guard let definition = resolveDefinition(reference, definitions: definitions, xuiDefinitions: xuiDefinitions) else { continue }
+            let instanceID = reference.instanceID.isEmpty ? "\(definition.id)-instance-\(z)" : reference.instanceID
+            let instanceOverrides = scopedOverrides(
+                for: instanceID,
+                definition: definition,
+                enclosing: candidate.sendParams,
+                inherited: overrides
+            )
+            let instanceHiddenIDs = hiddenIDs.union(definition.hiddenIDs)
+                .union(hiddenTargets(in: hiddenObjects, group: instanceID))
+            let groupFrame = CGRect(
+                origin: reference.origin,
+                size: CGSize(
+                    width: CGFloat(Double(reference.attributes["w"] ?? "") ?? Double(definition.canvasSize.width)),
+                    height: CGFloat(Double(reference.attributes["h"] ?? "") ?? Double(definition.canvasSize.height))
+                )
+            )
             let group = scene.addNode(
-                id: reference.id,
+                id: instanceID,
                 kind: .group,
-                localFrame: CGRect(origin: reference.origin, size: definition.canvasSize),
+                localFrame: groupFrame,
                 parent: parent,
+                visible: !hiddenIDs.contains(instanceID.lowercased()) && bool(reference.attributes["visible"] ?? "1"),
                 zIndex: z,
-                attributes: ["definition": definition.id]
+                attributes: ["definition": definition.id, "tag": reference.tag].merging(reference.attributes, uniquingKeysWith: { _, new in new })
             )
             z += 1
-            addDefinitionChildren(definition, parent: group, definitions: definitions, scene: &scene, visited: nextVisited)
+            addDefinitionChildren(
+                definition,
+                parent: group,
+                definitions: definitions,
+                xuiDefinitions: xuiDefinitions,
+                scene: &scene,
+                visited: nextVisited,
+                scopeID: instanceID,
+                overrides: instanceOverrides,
+                hiddenIDs: instanceHiddenIDs,
+                hiddenObjects: definition.hiddenObjects,
+                makiBindings: &makiBindings
+            )
         }
     }
 
@@ -464,13 +615,74 @@ enum ModernSkinParser {
         _ definition: LayoutCandidate,
         parent: WasabiHandle,
         definitions: [String: LayoutCandidate],
+        xuiDefinitions: [String: LayoutCandidate],
         scene: inout WasabiScene,
-        visited: Set<String>
+        visited: Set<String>,
+        scopeID: String?,
+        overrides: [String: [String: String]],
+        hiddenIDs: Set<String>,
+        hiddenObjects: [HideObject],
+        makiBindings: inout [ModernMakiBinding]
     ) {
-        if let inheritedID = definition.inheritedGroupID?.lowercased(), let inherited = definitions[inheritedID] {
-            addDefinitionChildren(inherited, parent: parent, definitions: definitions, scene: &scene, visited: visited)
+        if let scopeID {
+            for script in definition.scripts {
+                let binding = ModernMakiBinding(path: script.path, groupID: scopeID, parameter: script.parameter)
+                if !makiBindings.contains(binding) { makiBindings.append(binding) }
+            }
         }
-        addDirectChildren(of: definition, parent: parent, definitions: definitions, scene: &scene, visited: visited)
+        if let inheritedID = definition.inheritedGroupID?.lowercased(), let inherited = definitions[inheritedID] {
+            addDefinitionChildren(inherited, parent: parent, definitions: definitions, xuiDefinitions: xuiDefinitions, scene: &scene, visited: visited, scopeID: scopeID, overrides: overrides, hiddenIDs: hiddenIDs, hiddenObjects: inherited.hiddenObjects, makiBindings: &makiBindings)
+        }
+        addDirectChildren(of: definition, parent: parent, definitions: definitions, xuiDefinitions: xuiDefinitions, scene: &scene, visited: visited, scopeID: scopeID, overrides: overrides, hiddenIDs: hiddenIDs, hiddenObjects: hiddenObjects, makiBindings: &makiBindings)
+    }
+
+    nonisolated private static func resolveDefinition(
+        _ reference: GroupReference,
+        definitions: [String: LayoutCandidate],
+        xuiDefinitions: [String: LayoutCandidate]
+    ) -> LayoutCandidate? {
+        if reference.tag.lowercased() == "group" {
+            return definitions[reference.definitionID.lowercased()]
+        }
+        return xuiDefinitions[normalizeXUITag(reference.tag)]
+            ?? definitions[reference.definitionID.lowercased()]
+    }
+
+    nonisolated private static func hiddenTargets(in values: [HideObject], group: String) -> Set<String> {
+        values.filter { $0.group == nil || $0.group == group.lowercased() }
+            .flatMap(\.targetIDs)
+            .reduce(into: Set<String>()) { $0.insert($1.lowercased()) }
+    }
+
+    nonisolated private static func normalizeXUITag(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: ":", with: "_")
+    }
+
+    nonisolated private static func scopedOverrides(
+        for scopeID: String,
+        definition: LayoutCandidate,
+        enclosing: [SendParam],
+        inherited: [String: [String: String]]
+    ) -> [String: [String: String]] {
+        var result = inherited
+        let scopeKeys = Set([scopeID.lowercased(), definition.id.lowercased()])
+        for sendParam in enclosing + definition.sendParams {
+            let group = sendParam.group?.lowercased()
+            guard group == nil || scopeKeys.contains(group ?? "") else { continue }
+            for targetID in sendParam.targetIDs {
+                result[targetID.lowercased(), default: [:]].merge(sendParam.attributes, uniquingKeysWith: { _, new in new })
+            }
+        }
+        return result
+    }
+
+    nonisolated private static func frameByApplyingOverrides(_ frame: CGRect, _ overrides: [String: String]) -> CGRect {
+        var result = frame
+        if let value = Double(overrides["x"] ?? "") { result.origin.x = CGFloat(value) }
+        if let value = Double(overrides["y"] ?? "") { result.origin.y = CGFloat(value) }
+        if let value = Double(overrides["w"] ?? "") { result.size.width = max(0, CGFloat(value)) }
+        if let value = Double(overrides["h"] ?? "") { result.size.height = max(0, CGFloat(value)) }
+        return result
     }
 
     nonisolated private static func score(_ candidate: LayoutCandidate) -> Int {
@@ -488,14 +700,19 @@ enum ModernSkinParser {
         return value
     }
 
-    nonisolated private static func expand(_ candidate: LayoutCandidate, definitions: [String: LayoutCandidate], visited: Set<String>) -> LayoutCandidate {
+    nonisolated private static func expand(
+        _ candidate: LayoutCandidate,
+        definitions: [String: LayoutCandidate],
+        xuiDefinitions: [String: LayoutCandidate],
+        visited: Set<String>
+    ) -> LayoutCandidate {
         let key = candidate.id.lowercased()
         guard !visited.contains(key) else { return candidate }
         var result = candidate
         var nextVisited = visited; nextVisited.insert(key)
         if let inheritedID = candidate.inheritedGroupID?.lowercased(),
            let inherited = definitions[inheritedID], !nextVisited.contains(inheritedID) {
-            let parent = expand(inherited, definitions: definitions, visited: nextVisited)
+            let parent = expand(inherited, definitions: definitions, xuiDefinitions: xuiDefinitions, visited: nextVisited)
             result.layers.insert(contentsOf: parent.layers, at: 0)
             result.controls.insert(contentsOf: parent.controls, at: 0)
             result.textRegions.insert(contentsOf: parent.textRegions, at: 0)
@@ -505,12 +722,12 @@ enum ModernSkinParser {
             result.desktopAlpha = result.desktopAlpha || parent.desktopAlpha
         }
         for reference in candidate.groups {
-            let referenceID = reference.id.lowercased()
+            let referenceID = reference.definitionID.lowercased()
             if referenceID.contains("modeequalizer") || referenceID.contains("modeconfigure") || referenceID.contains("transition") { continue }
-            guard let definition = definitions[referenceID] else { continue }
-            let child = expand(definition, definitions: definitions, visited: nextVisited)
+            guard let definition = resolveDefinition(reference, definitions: definitions, xuiDefinitions: xuiDefinitions) else { continue }
+            let child = expand(definition, definitions: definitions, xuiDefinitions: xuiDefinitions, visited: nextVisited)
             let origin = expandedOrigin(for: reference, child: child, canvasSize: candidate.canvasSize)
-            let drawerRole = drawerRole(for: reference.id)
+            let drawerRole = drawerRole(for: reference.definitionID)
             result.layers.append(contentsOf: child.layers.map { layer in
                 var translated = layer
                 translated.frame.origin.x += origin.x
@@ -589,7 +806,7 @@ enum ModernSkinParser {
         child: LayoutCandidate,
         canvasSize: CGSize
     ) -> CGPoint {
-        let id = reference.id.lowercased()
+        let id = reference.definitionID.lowercased()
         var origin = reference.origin
         // Drawer positions in many Modern skins are initialized by MAKI. The safe
         // static representation opens explicitly named edge drawers instead of

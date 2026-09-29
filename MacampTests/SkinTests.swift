@@ -288,6 +288,41 @@ struct SkinTests {
         #expect(descriptor.controls.contains { $0.elementID == "scriptSlider" && $0.orientation == .horizontal })
     }
 
+    @Test @MainActor func xuiGroupDefinitionsCreateIndependentSceneInstancesAndScopedOverrides() throws {
+        let xml = """
+        <WinampAbstractionLayer xmlns:My="urn:macamp:test">
+          <elements><bitmap id="pixel" file="pixel.png" /></elements>
+          <container id="main" default_visible="1">
+            <groupdef id="tab.button" xuitag="My:TabButton" w="40" h="20">
+              <button id="click" image="pixel" x="0" y="0" w="20" h="10" />
+              <script file="scripts/tab.maki" />
+            </groupdef>
+            <layout id="normal" w="120" h="40">
+              <My:TabButton id="first" x="10" y="5" />
+              <My:TabButton id="second" x="70" y="5" />
+              <sendparams group="first" target="click" x="4" w="24" />
+              <hideobject target="second.click" />
+            </layout>
+          </container>
+        </WinampAbstractionLayer>
+        """
+        let descriptor = ModernSkinParser.parse(files: [
+            "skin.xml": Data(xml.utf8), "pixel.png": Data([1]), "scripts/tab.maki": Data([0x46, 0x47])
+        ]).descriptor
+        let scene = descriptor.scene
+        let groups = scene.handles(for: "first") + scene.handles(for: "second")
+        #expect(groups.count == 2)
+        #expect(scene.handles(for: "click").count == 2)
+        let firstClick = try #require(scene.handles(for: "click").first)
+        let secondClick = try #require(scene.handles(for: "click").last)
+        #expect(scene.worldFrame(of: firstClick) == CGRect(x: 14, y: 5, width: 24, height: 10))
+        #expect(scene.worldFrame(of: secondClick) == CGRect(x: 70, y: 5, width: 20, height: 10))
+        #expect(scene.effectiveVisible(firstClick))
+        #expect(!scene.effectiveVisible(secondClick))
+        let scriptOwners = Set(descriptor.makiBindings.filter { $0.path == "scripts/tab.maki" }.map(\.groupID))
+        #expect(scriptOwners.isSuperset(of: ["first", "second"]))
+    }
+
     @Test func wasabiSceneKeepsLocalFramesWhenAGroupMoves() throws {
         var scene = WasabiScene()
         let container = scene.addNode(id: "main", kind: .container, localFrame: CGRect(x: 0, y: 0, width: 240, height: 120))
@@ -794,6 +829,14 @@ struct SkinTests {
         #expect(screen == CGRect(x: 80, y: 50, width: 550, height: 232))
         #expect(WinampSkinWindowGeometry.logicalFrame(for: screen, scale: 2) == logical)
         #expect(WinampSkinWindowGeometry.screenSize(for: CGSize(width: 100, height: 14), scale: 3) == CGSize(width: 300, height: 42))
+    }
+
+    @Test @MainActor func classicPlaylistResizeSnapsAtLogicalWindowBoundary() {
+        let host = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 232), scale: 2, allowsResize: true)
+        host.resizeGrid = CGSize(width: 25, height: 29)
+        host.minimumLogicalSize = CGSize(width: 275, height: 116)
+        let snapped = host.windowWillResize(host.window, toFrameSize: CGSize(width: 641, height: 527))
+        #expect(snapped == CGSize(width: 600, height: 522))
     }
 
     @Test @MainActor func settingsPersistLogicalPlayerFrame() throws {

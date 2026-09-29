@@ -262,12 +262,14 @@ final class MakiRuntime {
     private final class Instance {
         let program: MakiProgram
         let groupID: String
+        let owner: WasabiHandle
         var variables: [Value]
         var disabledReason: String?
 
         init(program: MakiProgram, groupID: String, registry: WasabiObjectRegistry) {
             self.program = program
             self.groupID = groupID.lowercased()
+            self.owner = registry.handle(forXMLID: groupID) ?? registry.compatibilityHandle(for: groupID)
             variables = program.variables.enumerated().map { index, variable in
                 if index == 0 { return .object(registry.systemHandle) }
                 // Compiled MAKI uses private type IDs above the public value
@@ -478,6 +480,11 @@ final class MakiRuntime {
     }
 
     var targetAnimationObjectIDs: [String] { targetStates.keys.sorted() }
+
+    /// Owners are the instantiated Wasabi handles, not the groupdef ID. This
+    /// makes repeated XUI instances observable and keeps script scope aligned
+    /// with the live scene hierarchy.
+    var scriptOwnerHandles: [WasabiHandle] { instances.map(\.owner) }
 
     func recordExternalDiagnostic(_ message: String) { record(message) }
 
@@ -805,8 +812,7 @@ final class MakiRuntime {
         case "getskinname": return .string("Macamp Modern")
         case "gettimeofday", "getstatus": return .integer(Int32(host?.makiPlaybackStatus() ?? 0))
         case "getscriptgroup":
-            let handle = registry.handle(forXMLID: instance?.groupID ?? "") ?? registry.compatibilityHandle(for: instance?.groupID ?? "")
-            return .object(handle)
+            return .object(instance?.owner ?? registry.compatibilityHandle(for: instance?.groupID ?? ""))
         case "getobject":
             guard let id = arguments.first?.string, !id.isEmpty else { return .void }
             if object.className.caseInsensitiveCompare("Group") == .orderedSame {
