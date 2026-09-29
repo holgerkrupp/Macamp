@@ -68,6 +68,41 @@ nonisolated enum MakiValue: Sendable, Equatable {
     var truthy: Bool { integer != 0 }
 }
 
+/// A semantic event delivered from the host into a MAKI object.
+///
+/// Keeping the receiver as a Wasabi handle is important here: an XML ID is
+/// only a lookup key and can be duplicated by XUI/group instances.
+nonisolated struct MakiEventArguments: Sendable, Equatable {
+    let values: [MakiValue]
+
+    init(_ values: [MakiValue] = []) {
+        self.values = values
+    }
+}
+
+nonisolated enum MakiRuntimeTraceKind: String, Sendable, Equatable {
+    case event
+    case buttonPressedChanged
+    case declarativeButtonAction
+}
+
+/// Observable input/runtime activity used by hosts and deterministic tests.
+/// The trace deliberately contains the original receiver handle and values;
+/// converting back to an XML ID here would lose object identity.
+nonisolated struct MakiRuntimeTraceEntry: Sendable, Equatable {
+    let kind: MakiRuntimeTraceKind
+    let receiver: WasabiHandle
+    let name: String
+    let arguments: [MakiValue]
+
+    init(kind: MakiRuntimeTraceKind, receiver: WasabiHandle, name: String, arguments: [MakiValue] = []) {
+        self.kind = kind
+        self.receiver = receiver
+        self.name = name
+        self.arguments = arguments
+    }
+}
+
 nonisolated enum MakiNativeMethod: String, Sendable {
     case legacy
     case findObject

@@ -380,6 +380,100 @@ struct SkinTests {
         #expect(runtime.diagnostics.contains { $0.contains("Invalid arity for Slider.getPosition") })
     }
 
+    @Test @MainActor func makiInputLifecyclePreservesArgumentsAndButtonOrdering() throws {
+        var scene = WasabiScene()
+        let container = scene.addNode(id: "main", kind: .container, localFrame: CGRect(x: 0, y: 0, width: 160, height: 80))
+        let layout = scene.addNode(id: "normal", kind: .layout, localFrame: .zero, parent: container)
+        let button = scene.addNode(id: "play", kind: .button, localFrame: CGRect(x: 10, y: 10, width: 40, height: 20), parent: layout)
+        scene.addNode(id: "stop", kind: .button, localFrame: CGRect(x: 70, y: 10, width: 40, height: 20), parent: layout)
+        scene.setActiveLayout(layout, for: container)
+
+        let program = MakiProgram(
+            path: "scripts/input.maki",
+            version: 0x17,
+            classGUIDs: [],
+            functions: [MakiFunction(baseType: 0, name: "onLeftButtonDown")],
+            variables: [
+                MakiVariable(type: 0x101, payload: 0, isTransient: false, isStatic: true, string: nil),
+                MakiVariable(type: 0x101, payload: 0, isTransient: false, isStatic: false, string: "play")
+            ],
+            events: [MakiEvent(variableIndex: 1, functionIndex: 0, codeOffset: 0)],
+            // Pop both event parameters. Without event argument propagation
+            // this handler would underflow and disable the script.
+            code: Data([0x02, 0x02, 0x28])
+        )
+        let host = TestMakiHost()
+        let runtime = MakiRuntime(
+            programs: [program],
+            bindings: [ModernMakiBinding(path: program.path, groupID: "main", parameter: nil)],
+            host: host,
+            limits: .init(),
+            skinID: "input-lifecycle",
+            persistentState: .standard,
+            scene: scene
+        )
+
+        _ = runtime.dispatchMouseDown(objectID: "play", x: 24, y: 16)
+        #expect(runtime.isPressed(button))
+        #expect(host.actions.isEmpty)
+        #expect(runtime.trace.map(\.kind) == [.buttonPressedChanged, .event])
+        #expect(runtime.trace[1].receiver == button)
+        #expect(runtime.trace[1].name == "onLeftButtonDown")
+        #expect(runtime.trace[1].arguments == [.integer(24), .integer(16)])
+        #expect(runtime.diagnostics.isEmpty)
+
+        _ = runtime.dispatchMouseUp(objectID: "play", x: 25, y: 17)
+        #expect(!runtime.isPressed(button))
+        #expect(host.actions == [button])
+        #expect(runtime.trace.map(\.name) == ["pressed", "onLeftButtonDown", "onLeftButtonUp", "pressed", "declarativeAction", "onLeftClick"])
+        #expect(runtime.trace[2].receiver == button)
+        #expect(runtime.trace[2].arguments == [.integer(25), .integer(17)])
+        #expect(runtime.trace[5].receiver == button)
+        #expect(runtime.trace[5].arguments.isEmpty)
+
+        runtime.clearTrace()
+        host.actions.removeAll()
+        _ = runtime.dispatchMouseDown(objectID: "play", x: 24, y: 16)
+        _ = runtime.dispatchMouseUp(objectID: "stop", x: 75, y: 16)
+        #expect(host.actions.isEmpty)
+        #expect(runtime.trace.map(\.name) == ["pressed", "onLeftButtonDown", "onLeftButtonUp", "pressed"])
+        #expect(runtime.trace[2].receiver == button)
+        #expect(runtime.trace[3].receiver == button)
+    }
+
+    @Test @MainActor func makiAreaAndSliderEventsUseCanonicalNamesAndValues() throws {
+        var scene = WasabiScene()
+        let container = scene.addNode(id: "main", kind: .container, localFrame: .zero)
+        let layout = scene.addNode(id: "normal", kind: .layout, localFrame: .zero, parent: container)
+        let button = scene.addNode(id: "button", kind: .button, localFrame: CGRect(x: 0, y: 0, width: 20, height: 20), parent: layout)
+        let slider = scene.addNode(id: "slider", kind: .slider, localFrame: CGRect(x: 0, y: 30, width: 80, height: 16), parent: layout)
+        scene.setActiveLayout(layout, for: container)
+
+        let host = TestMakiHost()
+        let runtime = MakiRuntime(
+            programs: [],
+            bindings: [],
+            host: host,
+            limits: .init(),
+            skinID: "area-slider",
+            persistentState: .standard,
+            scene: scene
+        )
+        _ = runtime.dispatchMouseEnter(objectID: "button")
+        _ = runtime.dispatchMouseLeave(objectID: "button")
+        _ = runtime.dispatchSliderPosition(receiver: slider, value: 42)
+        _ = runtime.dispatchSliderPosition(receiver: slider, value: 43, posted: true)
+        _ = runtime.dispatchSliderPosition(receiver: slider, value: 44, final: true)
+
+        #expect(runtime.trace.map { $0.name } == ["onEnterArea", "onLeaveArea", "onSetPosition", "onPostedPosition", "onSetFinalPosition"])
+        #expect(runtime.trace.map { $0.receiver } == [button, button, slider, slider, slider])
+        let expectedSliderArguments: [[MakiValue]] = [[.integer(42)], [.integer(43)], [.integer(44)]]
+        #expect(runtime.trace.dropFirst(2).map { $0.arguments } == expectedSliderArguments)
+        #expect(host.eventNames == ["onEnterArea", "onLeaveArea", "onSetPosition", "onPostedPosition", "onSetFinalPosition"])
+        #expect(host.eventReceivers == [button, button, slider, slider, slider])
+        #expect(host.eventArguments.dropFirst(2) == [[.integer(42)], [.integer(43)], [.integer(44)]])
+    }
+
     @Test func syntheticSceneValidationTraceDetectsHierarchyAndLayoutChanges() throws {
         let xml = """
         <WinampAbstractionLayer>
@@ -483,6 +577,25 @@ struct SkinTests {
         #expect(volume.normal.sourceRect == CGRect(x: 0, y: 0, width: 68, height: 420))
         #expect(volume.pressed?.sourceRect == CGRect(x: 15, y: 422, width: 14, height: 11))
         #expect(volume.active?.sourceRect == CGRect(x: 0, y: 422, width: 14, height: 11))
+    }
+
+    @Test func classicMainSliderPlacementsCropCanonicalTrackFrames() throws {
+        let seekStart = try #require(ClassicSpriteCatalog.seekPlacement(progress: 0, pressed: false))
+        let seekEnd = try #require(ClassicSpriteCatalog.seekPlacement(progress: 1, pressed: true))
+        #expect(seekStart.track.sourceRect == CGRect(x: 0, y: 0, width: 248, height: 10))
+        #expect(seekStart.thumbFrame == CGRect(x: 16, y: 72, width: 29, height: 10))
+        #expect(seekEnd.thumb.sourceRect == CGRect(x: 278, y: 0, width: 29, height: 10))
+        #expect(seekEnd.thumbFrame == CGRect(x: 235, y: 72, width: 29, height: 10))
+
+        let volumeStart = try #require(ClassicSpriteCatalog.volumePlacement(value: 0, pressed: false))
+        let volumeMid = try #require(ClassicSpriteCatalog.volumePlacement(value: 0.5, pressed: false))
+        let volumeEnd = try #require(ClassicSpriteCatalog.volumePlacement(value: 1, pressed: true))
+        #expect(volumeStart.track.sourceRect == CGRect(x: 0, y: 0, width: 68, height: 10))
+        #expect(volumeMid.track.sourceRect == CGRect(x: 0, y: 195, width: 68, height: 10))
+        #expect(volumeEnd.track.sourceRect == CGRect(x: 0, y: 405, width: 68, height: 10))
+        #expect(volumeStart.thumbFrame == CGRect(x: 107, y: 57, width: 14, height: 11))
+        #expect(volumeEnd.thumb.sourceRect == CGRect(x: 15, y: 422, width: 14, height: 11))
+        #expect(volumeEnd.thumbFrame == CGRect(x: 161, y: 57, width: 14, height: 11))
     }
 
     @Test @MainActor func classicCatalogExposesStandardWindowAssets() {
@@ -1089,6 +1202,10 @@ private enum SkinDiagnosticFixtures {
 @MainActor
 private final class TestMakiHost: MakiRuntimeHost {
     var targets: [(objectID: String, x: Double, speed: Double)] = []
+    var eventNames: [String] = []
+    var eventReceivers: [WasabiHandle] = []
+    var eventArguments: [[MakiValue]] = []
+    var actions: [WasabiHandle] = []
     func makiPlaybackStatus() -> Int { 0 }
     func makiXMLParameter(objectID: String, name: String) -> String? {
         guard name == "x" else { return nil }
@@ -1108,6 +1225,13 @@ private final class TestMakiHost: MakiRuntimeHost {
     func makiVolumeChanged(_ value: Double) { }
     func makiEQBandChanged(index: Int, value: Int) { }
     func makiRuntimeNeedsDisplay() { }
+    func makiEventDispatched(receiver: WasabiHandle, name: String, arguments: MakiEventArguments) {
+        eventNames.append(name)
+        eventReceivers.append(receiver)
+        eventArguments.append(arguments.values)
+    }
+    func makiButtonPressedChanged(receiver: WasabiHandle, isPressed: Bool) { }
+    func makiDeclarativeButtonAction(receiver: WasabiHandle) { actions.append(receiver) }
 }
 
 private extension Data {

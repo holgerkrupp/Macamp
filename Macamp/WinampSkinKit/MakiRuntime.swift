@@ -199,6 +199,9 @@ protocol MakiRuntimeHost: AnyObject {
     func makiDuration() -> Duration?
     func makiText(objectID: String) -> String?
     func makiSetText(objectID: String, text: String)
+    func makiEventDispatched(receiver: WasabiHandle, name: String, arguments: MakiEventArguments)
+    func makiButtonPressedChanged(receiver: WasabiHandle, isPressed: Bool)
+    func makiDeclarativeButtonAction(receiver: WasabiHandle)
 }
 
 @MainActor
@@ -222,6 +225,9 @@ extension MakiRuntimeHost {
     func makiDuration() -> Duration? { nil }
     func makiText(objectID: String) -> String? { nil }
     func makiSetText(objectID: String, text: String) {}
+    func makiEventDispatched(receiver: WasabiHandle, name: String, arguments: MakiEventArguments) {}
+    func makiButtonPressedChanged(receiver: WasabiHandle, isPressed: Bool) {}
+    func makiDeclarativeButtonAction(receiver: WasabiHandle) {}
 }
 
 @MainActor
@@ -297,7 +303,10 @@ final class MakiRuntime {
     private let persistentState: UserDefaults
     private let skinID: String
     private var nestedEventDepth = 0
+    private var pressedButton: WasabiHandle?
+    private(set) var pressedButtons: Set<WasabiHandle> = []
     private(set) var diagnostics: [String] = []
+    private(set) var trace: [MakiRuntimeTraceEntry] = []
 
     init(programs: [MakiProgram], bindings: [ModernMakiBinding], host: any MakiRuntimeHost, limits: Limits, skinID: String, persistentState: UserDefaults, scene: WasabiScene = WasabiScene()) {
         self.host = host
@@ -323,31 +332,87 @@ final class MakiRuntime {
     deinit { timers.values.forEach { $0.cancel() } }
 
     @discardableResult
-    func dispatchMouseDown(objectID: String) -> Bool {
-        dispatch(event: "onLeftButtonDown", objectID: objectID.lowercased())
+    func dispatchMouseDown(objectID: String, x: Int = 0, y: Int = 0) -> Bool {
+        let receiver = registry.compatibilityHandle(for: objectID)
+        return dispatchMouseDown(receiver: receiver, x: x, y: y)
     }
 
     @discardableResult
-    func dispatchMouseUp(objectID: String) -> Bool {
-        dispatch(event: "onLeftButtonUp", objectID: objectID.lowercased())
+    func dispatchMouseDown(receiver: WasabiHandle, x: Int, y: Int) -> Bool {
+        if let pressedButton { setButtonPressed(pressedButton, isPressed: false) }
+        pressedButton = nil
+
+        if isButton(receiver) {
+            pressedButton = receiver
+            setButtonPressed(receiver, isPressed: true)
+        }
+        return dispatch(event: "onLeftButtonDown", receiver: receiver, arguments: [
+            .integer(Int32(clamping: x)), .integer(Int32(clamping: y))
+        ])
+    }
+
+    @discardableResult
+    func dispatchMouseUp(objectID: String, x: Int = 0, y: Int = 0) -> Bool {
+        let receiver = registry.compatibilityHandle(for: objectID)
+        return dispatchMouseUp(receiver: receiver, x: x, y: y)
+    }
+
+    @discardableResult
+    func dispatchMouseUp(receiver: WasabiHandle, x: Int, y: Int) -> Bool {
+        // Winamp keeps the pressed Button as the mouse-capture receiver. The
+        // release coordinates are still those of the pointer at mouse-up.
+        let eventReceiver = pressedButton ?? receiver
+        var handled = dispatch(event: "onLeftButtonUp", receiver: eventReceiver, arguments: [
+            .integer(Int32(clamping: x)), .integer(Int32(clamping: y))
+        ])
+
+        if let button = pressedButton {
+            setButtonPressed(button, isPressed: false)
+            if button == receiver {
+                emitTrace(.init(kind: .declarativeButtonAction, receiver: button, name: "declarativeAction"))
+                host?.makiDeclarativeButtonAction(receiver: button)
+                handled = dispatch(event: "onLeftClick", receiver: button) || handled
+            }
+        }
+        pressedButton = nil
+        return handled
     }
 
     @discardableResult
     func dispatchMouseEnter(objectID: String) -> Bool {
-        dispatch(event: "onEnter", objectID: objectID.lowercased())
+        dispatch(event: "onEnterArea", objectID: objectID.lowercased())
     }
 
     @discardableResult
     func dispatchMouseLeave(objectID: String) -> Bool {
-        dispatch(event: "onLeave", objectID: objectID.lowercased())
+        dispatch(event: "onLeaveArea", objectID: objectID.lowercased())
     }
 
     @discardableResult
     func dispatchSliderPosition(objectID: String, value: Int, final: Bool = false, posted: Bool = false) -> Bool {
-        let event = final ? "onSetFinalPosition" : posted ? "onPostedPosition" : "onSetPosition"
-        targetStates[objectID.lowercased(), default: [:]]["position"] = Double(value)
-        return dispatch(event: event, objectID: objectID.lowercased())
+        let receiver = registry.compatibilityHandle(for: objectID)
+        return dispatchSliderPosition(receiver: receiver, value: value, final: final, posted: posted)
     }
+
+    @discardableResult
+    func dispatchSliderPosition(receiver: WasabiHandle, value: Int, final: Bool = false, posted: Bool = false) -> Bool {
+        let event = final ? "onSetFinalPosition" : posted ? "onPostedPosition" : "onSetPosition"
+        let key = stateKey(for: receiver)
+        targetStates[key, default: [:]]["position"] = Double(value)
+        return dispatch(event: event, receiver: receiver, arguments: [.integer(Int32(clamping: value))])
+    }
+
+    /// Dispatch a typed event from a host integration. This is also the
+    /// escape hatch for events that are not yet represented by convenience
+    /// input methods above.
+    @discardableResult
+    func dispatchEvent(_ name: String, receiver: WasabiHandle, arguments: [MakiValue] = []) -> Bool {
+        dispatch(event: name, receiver: receiver, arguments: arguments)
+    }
+
+    func isPressed(_ receiver: WasabiHandle) -> Bool { pressedButtons.contains(receiver) }
+
+    func clearTrace() { trace.removeAll(keepingCapacity: true) }
 
     func scheduleTimer(objectID: String, interval: Duration, event: String = "onTimer") {
         let key = objectID.lowercased()
@@ -425,11 +490,13 @@ final class MakiRuntime {
     }
 
     @discardableResult
-    private func dispatch(event eventName: String, receiver: WasabiHandle) -> Bool {
+    private func dispatch(event eventName: String, receiver: WasabiHandle, arguments: [Value] = []) -> Bool {
         guard nestedEventDepth < limits.maximumNestedEvents else {
             record("Stopped nested MAKI event dispatch at the safety limit.")
             return false
         }
+        emitTrace(.init(kind: .event, receiver: receiver, name: eventName, arguments: arguments))
+        host?.makiEventDispatched(receiver: receiver, name: eventName, arguments: .init(arguments))
         nestedEventDepth += 1
         defer { nestedEventDepth -= 1 }
         var handled = false
@@ -438,7 +505,7 @@ final class MakiRuntime {
                 guard instance.program.functions[event.functionIndex].name.caseInsensitiveCompare(eventName) == .orderedSame,
                       instance.variables[event.variableIndex] == .object(receiver) else { continue }
                 do {
-                    try execute(instance, at: event.codeOffset)
+                    try execute(instance, at: event.codeOffset, arguments: arguments)
                     handled = true
                 }
                 catch {
@@ -451,9 +518,39 @@ final class MakiRuntime {
         return handled
     }
 
-    private func execute(_ instance: Instance, at entryPoint: Int) throws {
+    private func isButton(_ receiver: WasabiHandle) -> Bool {
+        registry.object(receiver)?.className.caseInsensitiveCompare("Button") == .orderedSame
+    }
+
+    private func setButtonPressed(_ receiver: WasabiHandle, isPressed: Bool) {
+        if isPressed {
+            pressedButtons.insert(receiver)
+        } else {
+            pressedButtons.remove(receiver)
+        }
+        emitTrace(.init(
+            kind: .buttonPressedChanged,
+            receiver: receiver,
+            name: "pressed",
+            arguments: [.integer(isPressed ? 1 : 0)]
+        ))
+        host?.makiButtonPressedChanged(receiver: receiver, isPressed: isPressed)
+    }
+
+    private func stateKey(for receiver: WasabiHandle) -> String {
+        registry.object(receiver)?.id?.lowercased() ?? "handle:\(receiver.rawValue)"
+    }
+
+    private func emitTrace(_ entry: MakiRuntimeTraceEntry) {
+        trace.append(entry)
+        if trace.count > 512 { trace.removeFirst(trace.count - 512) }
+    }
+
+    private func execute(_ instance: Instance, at entryPoint: Int, arguments: [Value] = []) throws {
         var pc = entryPoint
-        var stack: [StackValue] = []
+        // MAKI's event arguments are pushed in reverse order so the first
+        // source-level parameter is at the top of the VM stack.
+        var stack: [StackValue] = arguments.reversed().map { StackValue(value: $0, variableIndex: nil) }
         var callStack: [Int] = []
         var instructions = 0
         var complete = false
