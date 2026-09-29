@@ -593,13 +593,17 @@ final class SkinRendererView: NSView {
             let size = text.size(withAttributes: attributes)
             text.draw(at: CGPoint(x: control.frame.midX - size.width / 2, y: control.frame.midY - size.height / 2), withAttributes: attributes)
         }
-        NSColor(calibratedWhite: 0.08, alpha: 0.9).setFill()
-        CGRect(x: 16, y: 72, width: 248, height: 10).fill(); CGRect(x: 107, y: 57, width: 68, height: 10).fill()
-        NSColor.systemGreen.setFill()
+
         let progress = coordinator.state.duration.map { max(0, min(1, coordinator.state.elapsed.secondsValue / max(0.001, $0.secondsValue))) } ?? 0
-        CGRect(x: 16, y: 72, width: 248 * progress, height: 10).fill()
         let volume = coordinator.capabilities.contains(.applicationVolume) ? coordinator.state.volume : 0
-        CGRect(x: 107, y: 57, width: 68 * volume, height: 10).fill()
+        if let seek = ClassicSpriteCatalog.seekPlacement(progress: progress, pressed: pressedControl == .seek) {
+            _ = drawClassicSprite(seek.track, in: ClassicSpriteCatalog.main[.seek]?.frame ?? .zero)
+            _ = drawClassicSprite(seek.thumb, in: seek.thumbFrame)
+        }
+        if let volume = ClassicSpriteCatalog.volumePlacement(value: volume, pressed: pressedControl == .volume) {
+            _ = drawClassicSprite(volume.track, in: ClassicSpriteCatalog.main[.volume]?.frame ?? .zero)
+            _ = drawClassicSprite(volume.thumb, in: volume.thumbFrame)
+        }
     }
 
     private func drawClassicSprite(_ sprite: SpriteReference, in frame: CGRect) -> Bool {

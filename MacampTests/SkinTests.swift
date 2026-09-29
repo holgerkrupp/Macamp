@@ -596,6 +596,13 @@ struct SkinTests {
         #expect(volumeStart.thumbFrame == CGRect(x: 107, y: 57, width: 14, height: 11))
         #expect(volumeEnd.thumb.sourceRect == CGRect(x: 15, y: 422, width: 14, height: 11))
         #expect(volumeEnd.thumbFrame == CGRect(x: 161, y: 57, width: 14, height: 11))
+
+        let catalog = SkinAssetCatalog(name: "Synthetic Classic Slider Atlas", files: SkinDiagnosticFixtures.classicFiles(background: .systemBlue), report: .init(), format: .classic)
+        let volumeImage = try #require(catalog.images[ClassicSpriteSheet.volume.rawValue])
+        let trackHashes = try [volumeStart, volumeMid, volumeEnd].map { placement in
+            try #require(volumeImage.validationPixelHash(sourceRect: placement.track.sourceRect))
+        }
+        #expect(Set(trackHashes).count == 3)
     }
 
     @Test @MainActor func classicCatalogExposesStandardWindowAssets() {
@@ -1141,6 +1148,16 @@ private enum SkinDiagnosticFixtures {
             buttonFills.append((rect, colors[index]))
             buttonFills.append((rect.offsetBy(dx: 0, dy: index == 5 ? 16 : 18), colors[index].withAlphaComponent(0.5)))
         }
+        let volumeFills: [(CGRect, NSColor)] = (0..<ClassicSpriteCatalog.volumeTrackFrameCount).map { index in
+            let progress = CGFloat(index) / CGFloat(ClassicSpriteCatalog.volumeTrackFrameCount - 1)
+            return (
+                CGRect(x: 0, y: CGFloat(index) * ClassicSpriteCatalog.volumeTrackStride, width: 68, height: ClassicSpriteCatalog.volumeTrackHeight),
+                NSColor(calibratedRed: progress, green: 1 - progress, blue: 0.35 + progress * 0.5, alpha: 1)
+            )
+        } + [
+            (CGRect(x: 15, y: 422, width: 14, height: 11), NSColor.white),
+            (CGRect(x: 0, y: 422, width: 14, height: 11), NSColor.black)
+        ]
 
         return [
             "main.bmp": diagnosticPNG(size: CGSize(width: 275, height: 116), background: background, fills: [
@@ -1166,7 +1183,7 @@ private enum SkinDiagnosticFixtures {
                 (CGRect(x: 46, y: 73, width: 23, height: 12), colors[2].withAlphaComponent(0.25))
             ]),
             "posbar.bmp": diagnosticPNG(size: CGSize(width: 307, height: 10), background: NSColor(calibratedWhite: 0.3, alpha: 1), fills: []),
-            "volume.bmp": diagnosticPNG(size: CGSize(width: 68, height: 433), background: NSColor(calibratedWhite: 0.25, alpha: 1), fills: [])
+            "volume.bmp": diagnosticPNG(size: CGSize(width: 68, height: 433), background: NSColor(calibratedWhite: 0.25, alpha: 1), fills: volumeFills)
         ]
     }
 

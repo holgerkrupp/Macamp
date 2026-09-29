@@ -68,6 +68,15 @@ struct ClassicElementDescriptor: Sendable, Equatable {
     let action: SkinAction
 }
 
+/// A resolved Classic slider state.  The track and thumb remain sprite
+/// references so the renderer can crop the skin's atlas without scaling or
+/// synthesizing replacement pixels.
+struct ClassicSliderPlacement: Equatable, Sendable {
+    let track: SpriteReference
+    let thumb: SpriteReference
+    let thumbFrame: CGRect
+}
+
 enum ClassicSpriteCatalog {
     private static func sprite(_ sheet: ClassicSpriteSheet, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat) -> SpriteReference {
         SpriteReference(assetName: sheet.rawValue, sourceRect: CGRect(x: x, y: y, width: width, height: height))
@@ -87,6 +96,46 @@ enum ClassicSpriteCatalog {
         .seek: .init(id: .seek, frame: CGRect(x: 16, y: 72, width: 248, height: 10), normal: sprite(.posbar, 0, 0, 248, 10), pressed: sprite(.posbar, 278, 0, 29, 10), active: sprite(.posbar, 248, 0, 29, 10), activePressed: nil, action: .seek),
         .volume: .init(id: .volume, frame: CGRect(x: 107, y: 57, width: 68, height: 10), normal: sprite(.volume, 0, 0, 68, 420), pressed: sprite(.volume, 15, 422, 14, 11), active: sprite(.volume, 0, 422, 14, 11), activePressed: nil, action: .setVolume)
     ]
+
+    /// Winamp's VOLUME.BMP contains 28 68x10 track frames on a 15-pixel
+    /// stride, followed by the two 14x11 thumbs.  The track frame is selected
+    /// independently of the thumb state; this is the same atlas contract used
+    /// by the Classic player and avoids stretching the complete 68x420 strip.
+    static let volumeTrackFrameCount = 28
+    static let volumeTrackStride: CGFloat = 15
+    static let volumeTrackHeight: CGFloat = 10
+
+    static func seekPlacement(progress: Double, pressed: Bool) -> ClassicSliderPlacement? {
+        guard let descriptor = main[.seek],
+              let thumb = (pressed ? descriptor.pressed : descriptor.active) ?? descriptor.pressed else { return nil }
+        let normalized = min(max(progress, 0), 1)
+        let thumbSize = thumb.sourceRect.size
+        let x = descriptor.frame.minX + normalized * max(0, descriptor.frame.width - thumbSize.width)
+        let thumbFrame = CGRect(x: x, y: descriptor.frame.minY, width: thumbSize.width, height: thumbSize.height)
+        return ClassicSliderPlacement(track: descriptor.normal, thumb: thumb, thumbFrame: thumbFrame)
+    }
+
+    static func volumePlacement(value: Double, pressed: Bool) -> ClassicSliderPlacement? {
+        guard let descriptor = main[.volume],
+              let thumb = (pressed ? descriptor.pressed : descriptor.active) ?? descriptor.pressed else { return nil }
+        let normalized = min(max(value, 0), 1)
+        // The first visible frame is the quietest frame.  Winamp's original
+        // CSS/skin tables address the 28 frames as round(value * 28) - 1;
+        // clamping makes the zero endpoint deterministic as well.
+        let frameIndex = min(
+            volumeTrackFrameCount - 1,
+            max(0, Int((normalized * Double(volumeTrackFrameCount)).rounded()) - 1)
+        )
+        let trackSource = descriptor.normal.sourceRect.offsetBy(dx: 0, dy: CGFloat(frameIndex) * volumeTrackStride)
+        let thumbSize = thumb.sourceRect.size
+        let x = descriptor.frame.minX + normalized * max(0, descriptor.frame.width - thumbSize.width)
+        let thumbFrame = CGRect(x: x, y: descriptor.frame.minY, width: thumbSize.width, height: thumbSize.height)
+        return ClassicSliderPlacement(
+            track: SpriteReference(assetName: descriptor.normal.assetName, sourceRect: CGRect(x: trackSource.minX, y: trackSource.minY, width: trackSource.width, height: volumeTrackHeight)),
+            thumb: thumb,
+            thumbFrame: thumbFrame
+        )
+    }
 }
 
 struct SkinValidationReport: Equatable, Sendable {
