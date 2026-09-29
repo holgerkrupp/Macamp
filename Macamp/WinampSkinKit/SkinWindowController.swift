@@ -30,9 +30,11 @@ final class SkinWindowController: NSWindowController {
             equalizerToggle: { [weak auxiliaryWindows] in auxiliaryWindows?.toggleEqualizer() },
             visualizationToggle: visualizationToggle
         )
-        host = WinampSkinWindowHost(normalLogicalSize: canvas, scale: CGFloat(scale))
+        let shadeSize = skinStore.activeCatalog.format == .classic ? CGSize(width: canvas.width, height: 14) : nil
+        host = WinampSkinWindowHost(normalLogicalSize: canvas, shadeLogicalSize: shadeSize, scale: CGFloat(scale))
         renderer.windowHost = host
         host.setContentView(renderer)
+        host.onShadeStateChange = { [weak renderer] _ in renderer?.needsDisplay = true }
         host.regionPath = renderer.regionPath
         host.window.hasShadow = settings.playerShadow
         host.window.level = settings.playerFloating ? .floating : .normal
@@ -277,6 +279,14 @@ final class ClassicPlaylistSurface: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if point.y < 20, point.x >= bounds.width - 50 {
+            if point.x >= bounds.width - 12 {
+                window?.close()
+            } else {
+                windowHost?.setShaded(true)
+            }
+            return
+        }
         let middleBottom = max(20, bounds.height - 38)
         guard point.y >= 23, point.y < middleBottom, point.x >= 12, point.x < bounds.width - 20 else { return }
         let index = scrollOffset + max(0, Int((point.y - 23) / rowHeight))

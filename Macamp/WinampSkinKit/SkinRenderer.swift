@@ -139,6 +139,13 @@ final class SkinRendererView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = logical(convert(event.locationInWindow, from: nil))
+        if skinStore.activeCatalog.format == .classic, point.y < 14 {
+            if point.x >= 264 { window?.close(); return }
+            if point.x >= 254 {
+                windowHost?.setShaded(true)
+                return
+            }
+        }
         let candidates = skinStore.activeCatalog.controls.filter { control in
             if let elementID = control.elementID {
                 guard let handle = liveScene.firstHandle(for: elementID) else { return false }
@@ -504,7 +511,12 @@ final class SkinRendererView: NSView {
     }
 
     private func drawClassicChrome() {
-        let titleBar = (window?.isKeyWindow ?? true) ? ClassicSpriteCatalog.activeTitleBar : ClassicSpriteCatalog.inactiveTitleBar
+        let titleBar: SpriteReference
+        if windowHost?.isShaded == true {
+            titleBar = (window?.isKeyWindow ?? true) ? ClassicSpriteCatalog.activeShadeTitleBar : ClassicSpriteCatalog.inactiveShadeTitleBar
+        } else {
+            titleBar = (window?.isKeyWindow ?? true) ? ClassicSpriteCatalog.activeTitleBar : ClassicSpriteCatalog.inactiveTitleBar
+        }
         _ = drawClassicSprite(titleBar, in: CGRect(x: 0, y: 0, width: 275, height: 14))
     }
 

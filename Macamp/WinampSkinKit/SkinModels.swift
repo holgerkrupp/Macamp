@@ -85,6 +85,8 @@ enum ClassicSpriteCatalog {
 
     static let activeTitleBar = sprite(.titlebar, 27, 0, 275, 14)
     static let inactiveTitleBar = sprite(.titlebar, 27, 15, 275, 14)
+    static let activeShadeTitleBar = sprite(.titlebar, 27, 29, 275, 14)
+    static let inactiveShadeTitleBar = sprite(.titlebar, 27, 42, 275, 14)
     static let playStatus = sprite(.playPause, 0, 0, 9, 9)
     static let pauseStatus = sprite(.playPause, 9, 0, 9, 9)
     static let stoppedStatus = sprite(.playPause, 18, 0, 9, 9)
