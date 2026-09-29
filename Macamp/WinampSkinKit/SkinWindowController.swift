@@ -84,14 +84,25 @@ private final class SkinAuxiliaryWindowController: NSObject {
             playlistHost.window.orderOut(nil)
             return
         }
-        let host = playlistHost ?? makeHost(
-            title: "Macamp Playlist",
-            size: skinStore.classicPanelSize(kind: .playlist, fallback: CGSize(width: 430, height: 360)),
-            rootView: AnyView(SkinPlaylistView(coordinator: coordinator)),
-            background: skinStore.classicPanelImage(kind: .playlist)
-        )
+        let host = playlistHost ?? makePlaylistHost()
         playlistHost = host
         present(host)
+    }
+
+    private func makePlaylistHost() -> WinampSkinWindowHost {
+        let host = WinampSkinWindowHost(
+            normalLogicalSize: ClassicPlaylistSurface.defaultSize,
+            shadeLogicalSize: CGSize(width: ClassicPlaylistSurface.defaultSize.width, height: 14),
+            scale: 1,
+            allowsResize: true
+        )
+        let surface = ClassicPlaylistSurface(coordinator: coordinator, skinStore: skinStore)
+        surface.windowHost = host
+        host.setContentView(surface)
+        host.window.isReleasedWhenClosed = false
+        host.window.minSize = CGSize(width: 275, height: 116)
+        host.window.center()
+        return host
     }
 
     func toggleEqualizer() {
@@ -191,6 +202,130 @@ private final class ClassicSkinPanelView: NSView {
         super.draw(dirtyRect)
         guard let background else { return }
         background.draw(in: bounds, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+    }
+}
+
+@MainActor
+final class ClassicPlaylistSurface: NSView {
+    static let defaultSize = CGSize(width: 275, height: 232)
+
+    private let coordinator: PlaybackCoordinator
+    private let skinStore: SkinLibraryStore
+    weak var windowHost: WinampSkinWindowHost?
+    private var scrollOffset = 0
+    private var rowHeight: CGFloat = 13
+
+    override var isFlipped: Bool { true }
+
+    init(coordinator: PlaybackCoordinator, skinStore: SkinLibraryStore) {
+        self.coordinator = coordinator
+        self.skinStore = skinStore
+        super.init(frame: CGRect(origin: .zero, size: Self.defaultSize))
+        wantsLayer = true
+        autoresizingMask = [.width, .height]
+        setAccessibilityRole(.list)
+        setAccessibilityLabel("Winamp Playlist")
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.interpolationQuality = .none
+        let width = bounds.width
+        let height = bounds.height
+        guard drawSprite(source: CGRect(x: 0, y: 21, width: 25, height: 20), in: CGRect(x: 0, y: 0, width: 25, height: 20)) else {
+            NSColor(calibratedWhite: 0.06, alpha: 1).setFill(); bounds.fill(); return
+        }
+        tile(source: CGRect(x: 127, y: 21, width: 25, height: 20), in: CGRect(x: 25, y: 0, width: max(0, width - 50), height: 20))
+        let titleWidth: CGFloat = 100
+        _ = drawSprite(source: CGRect(x: 26, y: 21, width: 100, height: 20), in: CGRect(x: (width - titleWidth) / 2, y: 0, width: titleWidth, height: 20))
+        _ = drawSprite(source: CGRect(x: 153, y: 21, width: 25, height: 20), in: CGRect(x: max(0, width - 25), y: 0, width: 25, height: 20))
+
+        let bottomHeight: CGFloat = 38
+        let middleFrame = CGRect(x: 0, y: 20, width: width, height: max(0, height - 20 - bottomHeight))
+        tile(source: CGRect(x: 0, y: 42, width: 12, height: 29), in: CGRect(x: 0, y: middleFrame.minY, width: 12, height: middleFrame.height))
+        tile(source: CGRect(x: 31, y: 42, width: 20, height: 29), in: CGRect(x: max(12, width - 20), y: middleFrame.minY, width: 20, height: middleFrame.height))
+        drawRows(in: CGRect(x: 12, y: 23, width: max(0, width - 32), height: max(0, middleFrame.height - 6)))
+
+        let bottomY = max(20, height - bottomHeight)
+        _ = drawSprite(source: CGRect(x: 0, y: 72, width: 125, height: 38), in: CGRect(x: 0, y: bottomY, width: min(125, width), height: bottomHeight))
+        tile(source: CGRect(x: 179, y: 0, width: 25, height: 38), in: CGRect(x: 125, y: bottomY, width: max(0, width - 275), height: bottomHeight))
+        _ = drawSprite(source: CGRect(x: 126, y: 72, width: 150, height: 38), in: CGRect(x: max(0, width - 150), y: bottomY, width: min(150, width), height: bottomHeight))
+        if width >= 225 { _ = drawSprite(source: CGRect(x: 205, y: 0, width: 75, height: 38), in: CGRect(x: width - 225, y: bottomY, width: 75, height: bottomHeight)) }
+        drawScrollbar(in: middleFrame)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let middleBottom = max(20, bounds.height - 38)
+        guard point.y >= 23, point.y < middleBottom, point.x >= 12, point.x < bounds.width - 20 else { return }
+        let index = scrollOffset + max(0, Int((point.y - 23) / rowHeight))
+        guard coordinator.queue.items.indices.contains(index) else { return }
+        Task { await coordinator.play(items: coordinator.queue.items, startingAt: index) }
+        needsDisplay = true
+    }
+
+    private func drawRows(in frame: CGRect) {
+        let items = coordinator.queue.items
+        let visibleCount = max(0, Int(frame.height / rowHeight))
+        let textColor = playlistTextColor()
+        for index in 0..<min(visibleCount, max(0, items.count - scrollOffset)) {
+            let itemIndex = index + scrollOffset
+            let row = CGRect(x: frame.minX, y: frame.minY + CGFloat(index) * rowHeight, width: frame.width, height: rowHeight)
+            if itemIndex == coordinator.queue.currentIndex {
+                NSColor(calibratedRed: 0.16, green: 0.24, blue: 0.45, alpha: 1).setFill(); row.fill()
+            }
+            let duration = items[itemIndex].duration.map { String(format: "%d:%02d", Int($0.secondsValue) / 60, Int($0.secondsValue) % 60) } ?? ""
+            let title = "\(itemIndex + 1). \(items[itemIndex].title)"
+            let text = duration.isEmpty ? title : "\(title)  \(duration)"
+            text.draw(in: row.insetBy(dx: 2, dy: 0), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 9), .foregroundColor: textColor
+            ])
+        }
+    }
+
+    private func drawScrollbar(in frame: CGRect) {
+        guard frame.height > 0 else { return }
+        let track = CGRect(x: bounds.width - 18, y: frame.minY, width: 8, height: frame.height)
+        let itemCount = max(1, coordinator.queue.items.count)
+        let visible = max(1, Int(frame.height / rowHeight))
+        let thumbHeight = max(18, frame.height * min(1, CGFloat(visible) / CGFloat(itemCount)))
+        let available = max(0, frame.height - thumbHeight)
+        let ratio = itemCount <= visible ? 0 : CGFloat(scrollOffset) / CGFloat(max(1, itemCount - visible))
+        let thumb = CGRect(x: track.minX, y: track.minY + available * ratio, width: 8, height: thumbHeight)
+        _ = drawSprite(source: CGRect(x: 52, y: 53, width: 8, height: 18), in: thumb)
+    }
+
+    private func playlistTextColor() -> NSColor {
+        guard let data = skinStore.activeCatalog.classicPlaylistText,
+              let text = String(data: data, encoding: .ascii) else { return .white }
+        for line in text.split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
+            guard parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces).lowercased().contains("text") else { continue }
+            let values = parts[1].split { !$0.isNumber }.compactMap { Double($0) }
+            if values.count >= 3 { return NSColor(calibratedRed: CGFloat(values[0] / 255), green: CGFloat(values[1] / 255), blue: CGFloat(values[2] / 255), alpha: 1) }
+        }
+        return .white
+    }
+
+    private func tile(source: CGRect, in destination: CGRect) {
+        guard destination.width > 0, destination.height > 0 else { return }
+        var x = destination.minX
+        while x < destination.maxX {
+            let width = min(source.width, destination.maxX - x)
+            _ = drawSprite(source: CGRect(x: source.minX, y: source.minY, width: width, height: source.height), in: CGRect(x: x, y: destination.minY, width: width, height: destination.height))
+            x += source.width
+        }
+    }
+
+    @discardableResult
+    private func drawSprite(source: CGRect, in destination: CGRect) -> Bool {
+        guard let image = skinStore.activeCatalog.images["pledit.bmp"] ?? skinStore.activeCatalog.images.first(where: { $0.key.hasSuffix("/pledit.bmp") })?.value,
+              source.minX >= 0, source.minY >= 0, source.maxX <= image.size.width, source.maxY <= image.size.height else { return false }
+        let flipped = CGRect(x: source.minX, y: image.size.height - source.maxY, width: source.width, height: source.height)
+        image.draw(in: destination, from: flipped, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
+        return true
     }
 }
 

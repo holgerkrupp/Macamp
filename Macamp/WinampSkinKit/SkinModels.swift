@@ -579,6 +579,7 @@ final class SkinAssetCatalog {
     let scene: WasabiScene
     let objectTree: WasabiObjectTree
     let classicAssets: ClassicSkinAssetDescriptor?
+    let classicPlaylistText: Data?
     private let renderedMainImage: NSImage?
 
     var mainImage: NSImage? { renderedMainImage }
@@ -634,6 +635,7 @@ final class SkinAssetCatalog {
             scene = modern.scene
             objectTree = modern.scene.compatibilityTree
             classicAssets = nil
+            classicPlaylistText = nil
             makiBindings = modern.makiBindings
             makiPrograms = Array(Set(modern.makiBindings.map { $0.path.lowercased() })).sorted().compactMap { path in
                 files[path].flatMap { try? MakiDecoder.decode($0, path: path) }
@@ -695,6 +697,7 @@ final class SkinAssetCatalog {
             scene = WasabiScene()
             objectTree = WasabiObjectTree()
             classicAssets = ClassicSkinAssetDescriptor()
+            classicPlaylistText = Self.file(named: "pledit.txt", in: files)
             makiPrograms = []
             makiBindings = []
             makiControlImages = [:]

@@ -618,6 +618,12 @@ struct SkinTests {
         #expect(volume.active?.sourceRect == CGRect(x: 0, y: 422, width: 14, height: 11))
     }
 
+    @Test @MainActor func classicPlaylistUsesLogicalTiledWindowGeometry() {
+        #expect(ClassicPlaylistSurface.defaultSize == CGSize(width: 275, height: 232))
+        #expect(ClassicPlaylistSurface.defaultSize.width >= 275)
+        #expect(ClassicPlaylistSurface.defaultSize.height >= 116)
+    }
+
     @Test func classicMainSliderPlacementsCropCanonicalTrackFrames() throws {
         let seekStart = try #require(ClassicSpriteCatalog.seekPlacement(progress: 0, pressed: false))
         let seekEnd = try #require(ClassicSpriteCatalog.seekPlacement(progress: 1, pressed: true))
