@@ -267,7 +267,7 @@ def _modern_findings(entries: Mapping[str, bytes], xml_data: bytes | None) -> tu
     if standard_controls:
         findings.append(_finding("Modern standard controls", "supported", f"{standard_controls} button/slider element(s)"))
     if tags["animatedlayer"]:
-        findings.append(_finding("Modern AnimatedLayer playback", "partial", f"{tags['animatedlayer']} animatedlayer element(s); first-frame support is the current baseline"))
+        findings.append(_finding("Modern AnimatedLayer playback", "partial", f"{tags['animatedlayer']} animatedlayer element(s); generic frame selection is implemented, timer-driven playback remains partial"))
     if tags["script"] or any(Path(path).suffix.lower() == ".maki" for path in entries):
         maki_count = sum(Path(path).suffix.lower() == ".maki" for path in entries)
         findings.append(_finding("Modern MAKI bindings", "partial", f"{tags['script']} XML binding(s), {maki_count} .maki file(s); app loader validates bytecode"))
@@ -277,10 +277,10 @@ def _modern_findings(entries: Mapping[str, bytes], xml_data: bytes | None) -> tu
 
     gap_tags = {
         "xuitag": ("Modern XUI custom widgets", "supported"),
-        "include": ("Modern include expansion", "unimplemented"),
+        "include": ("Modern include expansion", "supported"),
         "sendparams": ("Modern sendparams", "supported"),
-        "elementalias": ("Modern elementalias", "unimplemented"),
-        "embed_xui": ("Modern embed_xui", "unimplemented"),
+        "elementalias": ("Modern elementalias", "supported"),
+        "embed_xui": ("Modern embed_xui", "partial"),
         "inherit_group": ("Modern inherit_group scoping", "supported"),
         "hideobject": ("Modern scoped hideobject", "supported"),
     }

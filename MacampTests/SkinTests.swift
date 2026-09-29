@@ -241,9 +241,10 @@ struct SkinTests {
           <container id="main" default_visible="1">
             <groupdef id="LeftDrawer" w="266" h="169">
               <layer id="left-bg" image="left" />
+              <layer x="0" />
               <component param="guid:pl" x="12" y="10" w="172" h="140" />
             </groupdef>
-            <groupdef id="RightDrawer" w="271" h="170"><layer id="right-bg" image="right" /></groupdef>
+            <groupdef id="RightDrawer" w="271" h="170"><layer id="right-bg" image="right" /><layer x="489" /></groupdef>
             <groupdef id="Player" w="348" h="394">
               <layer id="body-bg" image="body" />
               <animatedlayer id="meter" image="frames" x="80" y="60" w="190" h="130" />
@@ -287,11 +288,11 @@ struct SkinTests {
           <elements><bitmap id="button" file="button.png" w="12" h="12" /></elements>
           <container id="main" default_visible="1">
             <layout id="normal" w="100" h="40">
-              <button id="plToggle" image="button" x="2" y="2" />
-              <button id="EqShowHide" image="button" x="18" y="2" />
+              <button id="plToggle" tooltip="Open playlist" image="button" x="2" y="2" />
+              <button id="EqShowHide" tooltip="Open graphic equalizer controls" image="button" x="18" y="2" />
               <button id="playlist-by-param" action="TOGGLE" param="guid:pl" image="button" x="34" y="2" />
-              <button id="LeftDrawerClose" image="button" x="50" y="2" />
-              <button id="RightDrawerOpen" image="button" x="66" y="2" />
+              <button id="LeftDrawerClose" tooltip="Close graphic equalizer controls" image="button" x="50" y="2" />
+              <button id="RightDrawerOpen" tooltip="Close playlist" image="button" x="66" y="2" />
               <button id="playerminimize" action="MINIMIZE" image="button" x="2" y="20" />
               <button id="playerclose" action="CLOSE" image="button" x="18" y="20" />
             </layout>
@@ -366,6 +367,52 @@ struct SkinTests {
         #expect(scriptOwners.isSuperset(of: ["first", "second"]))
     }
 
+    @Test func includedXMLExpandsXUIInstancesAndElementAliases() throws {
+        let xml = """
+        <WinampAbstractionLayer xmlns:My="urn:macamp:test">
+          <elements>
+            <bitmap id="actual" file="pixel.png" x="1" y="2" w="3" h="4" />
+          </elements>
+          <include file="widgets.inc" />
+          <elementalias id="first.alias" target="second.alias" />
+          <elementalias id="second.alias" target="actual" />
+          <container id="main" default_visible="1">
+            <layout id="normal" w="120" h="40">
+              <My:Embedded id="one" x="10" y="5" />
+              <My:Embedded id="two" x="70" y="5" />
+            </layout>
+          </container>
+        </WinampAbstractionLayer>
+        """
+        let included = """
+        <groupdef id="embedded.widget" xuitag="My:Embedded" embed_xui="inner" w="30" h="12">
+          <button id="inner" image="first.alias" x="0" y="0" w="20" h="10" />
+          <script file="scripts/embedded.maki" />
+        </groupdef>
+        """
+        let descriptor = ModernSkinParser.parse(files: [
+            "skin.xml": Data(xml.utf8),
+            "widgets.inc": Data(included.utf8),
+            "pixel.png": Data([1]),
+            "scripts/embedded.maki": Data([0x46, 0x47])
+        ]).descriptor
+
+        #expect(descriptor.bitmapFiles["first.alias"] == "pixel.png")
+        #expect(descriptor.bitmapFiles["second.alias"] == "pixel.png")
+        #expect(descriptor.bitmapSourceRects["first.alias"] == CGRect(x: 1, y: 2, width: 3, height: 4))
+
+        let one = try #require(descriptor.scene.firstHandle(for: "one"))
+        let two = try #require(descriptor.scene.firstHandle(for: "two"))
+        #expect(descriptor.scene.node(one)?.attributes["embed_xui"] == "inner")
+        #expect(descriptor.scene.node(two)?.attributes["embed_xui"] == "inner")
+        #expect(descriptor.scene.handles(for: "inner").count == 2)
+        #expect(descriptor.scene.worldFrame(of: try #require(descriptor.scene.handles(for: "inner").first)) == CGRect(x: 10, y: 5, width: 20, height: 10))
+        #expect(descriptor.scene.worldFrame(of: try #require(descriptor.scene.handles(for: "inner").last)) == CGRect(x: 70, y: 5, width: 20, height: 10))
+
+        let owners = Set(descriptor.makiBindings.filter { $0.path == "scripts/embedded.maki" }.map(\.groupID))
+        #expect(owners.isSuperset(of: ["one", "two"]))
+    }
+
     @Test func wasabiSceneKeepsLocalFramesWhenAGroupMoves() throws {
         var scene = WasabiScene()
         let container = scene.addNode(id: "main", kind: .container, localFrame: CGRect(x: 0, y: 0, width: 240, height: 120))
@@ -387,6 +434,34 @@ struct SkinTests {
         scene.setVisible(false, for: group)
         #expect(scene.effectiveVisible(button) == false)
         #expect(scene.hitTest(CGPoint(x: 90, y: 38)) == nil)
+    }
+
+    @Test func animatedLayerSelectsDeterministicSpriteSheetFrames() throws {
+        var scene = WasabiScene()
+        let animation = scene.addNode(
+            id: "meter",
+            kind: .animatedLayer,
+            localFrame: CGRect(x: 12, y: 8, width: 8, height: 4),
+            attributes: ["image": "meter", "frameindex": "1"]
+        )
+
+        let rendered = try #require(WasabiScenePainter.renderNodes(in: scene).first)
+        let second = try #require(WasabiAnimatedLayer.selection(
+            for: rendered,
+            imageSize: CGSize(width: 8, height: 8)
+        ))
+        #expect(second.index == 1)
+        #expect(second.count == 2)
+        #expect(second.sourceRect == CGRect(x: 0, y: 4, width: 8, height: 4))
+
+        scene.setAnimatedLayerFrame(0, for: animation)
+        let firstRendered = try #require(WasabiScenePainter.renderNodes(in: scene).first)
+        let first = try #require(WasabiAnimatedLayer.selection(
+            for: firstRendered,
+            imageSize: CGSize(width: 8, height: 8)
+        ))
+        #expect(scene.animatedLayerFrame(for: animation) == 0)
+        #expect(first.sourceRect == CGRect(x: 0, y: 0, width: 8, height: 4))
     }
 
     @Test func modernParserRetainsMultipleLayoutsAndNestedOwnership() throws {

@@ -442,6 +442,22 @@ nonisolated struct WasabiScene: Sendable, Equatable {
         nodes[handle] = node
     }
 
+    /// Stores AnimatedLayer selection in the live node rather than in a
+    /// renderer-side table. The painter and every scene query therefore see
+    /// the same selected frame.
+    mutating func setAnimatedLayerFrame(_ index: Int, for handle: WasabiHandle) {
+        guard var node = nodes[handle], node.kind == .animatedLayer else { return }
+        node.attributes["frameindex"] = String(max(0, index))
+        nodes[handle] = node
+    }
+
+    func animatedLayerFrame(for handle: WasabiHandle) -> Int? {
+        guard let node = nodes[handle], node.kind == .animatedLayer,
+              let value = node.attributes["frameindex"],
+              let index = Int(value) else { return nil }
+        return max(0, index)
+    }
+
     mutating func setActiveLayout(_ layout: WasabiHandle, for container: WasabiHandle) {
         guard nodes[layout]?.kind == .layout, nodes[container]?.kind == .container else { return }
         guard nodes[layout]?.parent == container else { return }

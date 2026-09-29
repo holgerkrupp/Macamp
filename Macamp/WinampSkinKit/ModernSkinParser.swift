@@ -11,9 +11,17 @@ enum ModernSkinParser {
         var descriptor = ModernSkinDescriptor()
         var warnings: [String] = []
         var candidates: [LayoutCandidate] = []
+        var elementAliases: [String: String] = [:]
         let xmlFiles = files.filter { $0.key.pathExtension.lowercased() == "xml" }.sorted { $0.key < $1.key }
+        var pendingFiles = xmlFiles.map { ($0.key, $0.value) }
+        var pendingIndex = 0
+        var parsedPaths = Set<String>()
 
-        for (path, data) in xmlFiles {
+        while pendingIndex < pendingFiles.count {
+            let (path, data) = pendingFiles[pendingIndex]
+            pendingIndex += 1
+            let normalizedPath = path.lowercased()
+            guard parsedPaths.insert(normalizedPath).inserted else { continue }
             guard !containsDoctype(data) else {
                 warnings.append("Ignored \(path) because document type declarations are not allowed.")
                 continue
@@ -24,11 +32,21 @@ enum ModernSkinParser {
                 try collectBitmaps(document: document, xmlPath: path, files: files, descriptor: &descriptor)
                 try collectBitmapFonts(document: document, xmlPath: path, files: files, descriptor: &descriptor)
                 try collectMakiBindings(document: document, xmlPath: path, files: files, descriptor: &descriptor)
+                collectElementAliases(document: document, into: &elementAliases)
                 candidates.append(contentsOf: try collectLayouts(document: document, xmlPath: path, files: files))
+
+                for includePath in try includedPaths(document: document, xmlPath: path, files: files) {
+                    let key = includePath.lowercased()
+                    guard !parsedPaths.contains(key), !pendingFiles.contains(where: { $0.0.lowercased() == key }),
+                          let includeData = files[includePath] else { continue }
+                    pendingFiles.append((includePath, includeData))
+                }
             } catch {
                 warnings.append("Could not parse \(path): \(error.localizedDescription)")
             }
         }
+
+        applyElementAliases(elementAliases, to: &descriptor)
 
         let definitions: [String: LayoutCandidate] = Dictionary(candidates.map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
         let xuiDefinitions: [String: LayoutCandidate] = Dictionary(candidates.compactMap { candidate in
@@ -88,6 +106,7 @@ enum ModernSkinParser {
         var desktopAlpha: Bool
         var inheritedGroupID: String?
         var xuiTag: String?
+        var embedXUITarget: String?
         var containerID: String?
         var containerIsDefaultVisible: Bool
         var drawerTargetX: CGFloat?
@@ -126,6 +145,41 @@ enum ModernSkinParser {
         if descriptor.author == nil { descriptor.author = try firstText(document, xpath: "//*[local-name()='skininfo']/*[local-name()='author']") }
         if descriptor.screenshotPath == nil, let screenshot = try firstText(document, xpath: "//*[local-name()='skininfo']/*[local-name()='screenshot']") {
             descriptor.screenshotPath = resolve(path: screenshot, relativeTo: xmlPath, files: files) ?? screenshot
+        }
+    }
+
+    nonisolated private static func includedPaths(document: XMLDocument, xmlPath: String, files: [String: Data]) throws -> [String] {
+        try document.nodes(forXPath: "//*[local-name()='include']").compactMap { node in
+            guard let include = node as? XMLElement,
+                  let file = attribute("file", include),
+                  let resolved = resolve(path: file, relativeTo: xmlPath, files: files) else { return nil }
+            return resolved
+        }
+    }
+
+    nonisolated private static func collectElementAliases(document: XMLDocument, into aliases: inout [String: String]) {
+        guard let elements = try? document.nodes(forXPath: "//*[local-name()='elementalias']") else { return }
+        for case let element as XMLElement in elements {
+            guard let id = attribute("id", element)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                  let target = attribute("target", element)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                  !id.isEmpty, !target.isEmpty else { continue }
+            aliases[id] = target
+        }
+    }
+
+    nonisolated private static func applyElementAliases(_ aliases: [String: String], to descriptor: inout ModernSkinDescriptor) {
+        for alias in aliases.keys.sorted() {
+            var target = aliases[alias]
+            var visited = Set<String>([alias])
+            while let next = target, let replacement = aliases[next], visited.insert(next).inserted {
+                target = replacement
+            }
+            guard let target, !visited.contains(target),
+                  let bitmap = descriptor.bitmapFiles[target] else { continue }
+            descriptor.bitmapFiles[alias] = bitmap
+            if let sourceRect = descriptor.bitmapSourceRects[target] {
+                descriptor.bitmapSourceRects[alias] = sourceRect
+            }
         }
     }
 
@@ -207,8 +261,13 @@ enum ModernSkinParser {
             for case let element as XMLElement in try root.nodes(forXPath: ".//*") {
                 guard nearestStructuralRoot(of: element) === root else { continue }
                 let tag = element.name?.lowercased() ?? ""
-                if let elementID = attribute("id", element)?.lowercased(),
-                   elementID.contains("drawercoords"),
+                // Wasabi drawer definitions commonly expose their target
+                // position as a zero-sized layer. Treat that geometry as a
+                // generic layout hint; object IDs are not runtime semantics.
+                if drawerTargetX == nil, tag == "layer",
+                   attribute("image", element) == nil,
+                   (number(attribute("w", element)) ?? 0) <= 0,
+                   (number(attribute("h", element)) ?? 0) <= 0,
                    let targetX = number(attribute("x", element)) {
                     drawerTargetX = targetX
                 }
@@ -221,6 +280,7 @@ enum ModernSkinParser {
                         attribute("action", element),
                         id: attribute("id", element),
                         parameter: attribute("param", element),
+                        label: attribute("tooltip", element),
                         tag: tag
                     )
                     : nil
@@ -383,6 +443,7 @@ enum ModernSkinParser {
                     desktopAlpha: desktopAlpha,
                     inheritedGroupID: attribute("inherit_group", root),
                     xuiTag: attribute("xuitag", root),
+                    embedXUITarget: attribute("embed_xui", root),
                     containerID: container.flatMap { attribute("id", $0)?.lowercased() },
                     containerIsDefaultVisible: container.flatMap { attribute("default_visible", $0) }.map { $0 != "0" } ?? false,
                     drawerTargetX: drawerTargetX,
@@ -612,6 +673,11 @@ enum ModernSkinParser {
                     height: CGFloat(Double(reference.attributes["h"] ?? "") ?? Double(definition.canvasSize.height))
                 )
             )
+            var groupAttributes = ["definition": definition.id, "tag": reference.tag]
+            if let embedXUITarget = definition.embedXUITarget?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !embedXUITarget.isEmpty {
+                groupAttributes["embed_xui"] = embedXUITarget
+            }
             let group = scene.addNode(
                 id: instanceID,
                 kind: .group,
@@ -619,7 +685,7 @@ enum ModernSkinParser {
                 parent: parent,
                 visible: !hiddenIDs.contains(instanceID.lowercased()) && bool(reference.attributes["visible"] ?? "1"),
                 zIndex: z,
-                attributes: ["definition": definition.id, "tag": reference.tag].merging(reference.attributes, uniquingKeysWith: { _, new in new })
+                attributes: groupAttributes.merging(reference.attributes, uniquingKeysWith: { _, new in new })
             )
             z += 1
             addDefinitionChildren(
@@ -754,7 +820,11 @@ enum ModernSkinParser {
             guard let definition = resolveDefinition(reference, definitions: definitions, xuiDefinitions: xuiDefinitions) else { continue }
             let child = expand(definition, definitions: definitions, xuiDefinitions: xuiDefinitions, visited: nextVisited)
             let origin = expandedOrigin(for: reference, child: child, canvasSize: candidate.canvasSize)
-            let drawerRole = drawerRole(for: reference.definitionID)
+            // Infer edge-drawer semantics from the definition's requested
+            // target geometry, never from a skin author's identifier. A
+            // group whose target reaches the left/right canvas edge is an
+            // edge drawer regardless of its name or XUI tag.
+            let drawerRole = drawerRole(for: child, canvasSize: candidate.canvasSize)
             result.layers.append(contentsOf: child.layers.map { layer in
                 var translated = layer
                 translated.frame.origin.x += origin.x
@@ -821,31 +891,23 @@ enum ModernSkinParser {
         return result
     }
 
-    nonisolated private static func drawerRole(for id: String) -> ModernDrawerRole? {
-        let value = id.lowercased()
-        if value.contains("leftdrawer") { return .left }
-        if value.contains("rightdrawer") { return .right }
-        return nil
-    }
-
     nonisolated private static func expandedOrigin(
         for reference: GroupReference,
         child: LayoutCandidate,
         canvasSize: CGSize
     ) -> CGPoint {
-        let id = reference.definitionID.lowercased()
         var origin = reference.origin
-        // Drawer positions in many Modern skins are initialized by MAKI. The safe
-        // static representation opens explicitly named edge drawers instead of
-        // leaving them stacked underneath the main player body.
         if let targetX = child.drawerTargetX {
             origin.x = targetX
-        } else if id.contains("leftdrawer"), canvasSize.width > child.canvasSize.width {
-            origin.x = 0
-        } else if id.contains("rightdrawer"), canvasSize.width > child.canvasSize.width {
-            origin.x = canvasSize.width - child.canvasSize.width
         }
         return origin
+    }
+
+    nonisolated private static func drawerRole(for child: LayoutCandidate, canvasSize: CGSize) -> ModernDrawerRole? {
+        guard let targetX = child.drawerTargetX, canvasSize.width > 0, child.canvasSize.width > 0 else { return nil }
+        if targetX <= 0 { return .left }
+        if targetX + child.canvasSize.width >= canvasSize.width - 1 { return .right }
+        return nil
     }
 
     nonisolated private static func resolvedFrame(
@@ -995,9 +1057,13 @@ enum ModernSkinParser {
         _ rawAction: String?,
         id rawID: String?,
         parameter: String?,
+        label: String?,
         tag: String
     ) -> (id: SkinControlID, action: SkinAction)? {
-        let value = "\(rawAction ?? "") \(rawID ?? "") \(parameter ?? "")".lowercased()
+        // Runtime behavior comes from declared action/parameter/tooltip
+        // semantics. XML IDs remain diagnostic identity, not a behavior
+        // switch, so a skin can freely rename its controls.
+        let value = "\(rawAction ?? "") \(parameter ?? "") \(label ?? "")".lowercased()
         if value.contains("eq_band") || value.contains("eqband") {
             return (.equalizer, .setEqualizerBand)
         }
@@ -1011,10 +1077,10 @@ enum ModernSkinParser {
         if value.contains("reseteq") || value.contains("eqreset") || value.contains("reset eq") {
             return (.equalizer, .resetEqualizer)
         }
-        if value.contains("playlist") || value.contains("pltoggle") || value.contains("rightdrawer") || value.contains("guid:pl") {
+        if value.contains("playlist") || value.contains("guid:pl") {
             return (.playlist, .togglePlaylist)
         }
-        if value.contains("equalizer") || value.contains("eqtoggle") || value.contains("eqshowhide") || value.contains("eq_toggle") || value.contains("leftdrawer") {
+        if value.contains("equalizer") || value.contains("eq_toggle") {
             return (.equalizer, .toggleEqualizer)
         }
         // System actions must win over IDs such as "playerclose" and

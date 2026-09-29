@@ -13,6 +13,91 @@ struct WasabiSceneRenderNode: Sendable, Equatable {
     let attributes: [String: String]
 }
 
+/// A selected cell from an AnimatedLayer sprite sheet. `sourceRect` uses the
+/// same top-left image coordinate system as Modern XML bitmap declarations;
+/// the AppKit adapter converts it when it draws the image.
+struct WasabiAnimatedLayerFrame: Sendable, Equatable {
+    let index: Int
+    let count: Int
+    let sourceRect: CGRect
+}
+
+/// Resolves generic AnimatedLayer state from the live scene node. Wasabi
+/// resources conventionally use vertically stacked cells, while the explicit
+/// `frameaxis="horizontal"` attribute covers horizontal sheets without
+/// introducing skin-specific behavior.
+enum WasabiAnimatedLayer {
+    static func selection(
+        for node: WasabiSceneRenderNode,
+        imageSize: CGSize
+    ) -> WasabiAnimatedLayerFrame? {
+        selection(
+            kind: node.kind,
+            frame: node.localFrame,
+            attributes: node.attributes,
+            imageSize: imageSize
+        )
+    }
+
+    static func selection(
+        kind: WasabiObjectKind,
+        frame: CGRect,
+        attributes: [String: String],
+        imageSize: CGSize
+    ) -> WasabiAnimatedLayerFrame? {
+        guard kind == .animatedLayer,
+              frame.width > 0,
+              frame.height > 0,
+              imageSize.width > 0,
+              imageSize.height > 0 else { return nil }
+
+        let axis = attributes["frameaxis"]?.lowercased() == "horizontal" ? "horizontal" : "vertical"
+        let cellWidth = positiveNumber(
+            attributes["framewidth"] ?? attributes["framew"]
+        ) ?? frame.width
+        let cellHeight = positiveNumber(
+            attributes["frameheight"] ?? attributes["frameh"]
+        ) ?? frame.height
+        guard cellWidth > 0, cellHeight > 0 else { return nil }
+
+        let available = axis == "horizontal"
+            ? Int(floor(imageSize.width / cellWidth))
+            : Int(floor(imageSize.height / cellHeight))
+        guard available > 0 else { return nil }
+
+        let requestedCount = nonNegativeInteger(
+            attributes["framecount"] ?? attributes["frames"] ?? attributes["numframes"]
+        )
+        let count = max(1, min(requestedCount ?? available, available))
+        let requestedIndex = nonNegativeInteger(
+            attributes["frameindex"] ?? attributes["currentframe"] ?? attributes["frame"]
+        ) ?? 0
+        let index = min(requestedIndex, count - 1)
+
+        // Frame zero preserves the existing Modern behavior: the first cell
+        // is the top-most cell in a vertically stacked bitmap. Subsequent
+        // frames walk toward the bottom of the source image.
+        let x = axis == "horizontal" ? CGFloat(index) * cellWidth : 0
+        let topY = axis == "vertical"
+            ? CGFloat(index) * cellHeight
+            : 0
+        let source = CGRect(x: x, y: topY, width: cellWidth, height: cellHeight)
+        guard CGRect(origin: .zero, size: imageSize).contains(source) else { return nil }
+        return WasabiAnimatedLayerFrame(index: index, count: count, sourceRect: source)
+    }
+
+    private static func positiveNumber(_ value: String?) -> CGFloat? {
+        guard let value, let number = Double(value), number > 0 else { return nil }
+        return CGFloat(number)
+    }
+
+    private static func nonNegativeInteger(_ value: String?) -> Int? {
+        guard let value, let number = Double(value), number.isFinite else { return nil }
+        if number >= Double(Int.max) { return Int.max }
+        return max(0, Int(number.rounded(.towardZero)))
+    }
+}
+
 /// Walks a Wasabi scene in paint order. Structural nodes establish the
 /// transform and visibility scope; drawable nodes are handed to the caller
 /// in a context already translated by every local parent frame.

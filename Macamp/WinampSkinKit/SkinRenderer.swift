@@ -249,12 +249,12 @@ final class SkinRendererView: NSView {
                 width: min(declaredSource.width, image.size.width - declaredSource.minX),
                 height: min(declaredSource.height, declaredSource.maxY - declaredSource.minY)
             )
-        } else if node.kind == .animatedLayer, frame.width > 0, frame.height > 0 {
+        } else if let animated = WasabiAnimatedLayer.selection(for: node, imageSize: image.size) {
             source = CGRect(
-                x: 0,
-                y: max(0, image.size.height - frame.height),
-                width: min(image.size.width, frame.width),
-                height: min(image.size.height, frame.height)
+                x: animated.sourceRect.minX,
+                y: image.size.height - animated.sourceRect.maxY,
+                width: animated.sourceRect.width,
+                height: animated.sourceRect.height
             )
         } else {
             source = CGRect(origin: .zero, size: image.size)
