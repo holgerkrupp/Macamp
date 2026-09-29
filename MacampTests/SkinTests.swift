@@ -288,6 +288,79 @@ struct SkinTests {
         #expect(descriptor.controls.contains { $0.elementID == "scriptSlider" && $0.orientation == .horizontal })
     }
 
+    @Test func wasabiSceneKeepsLocalFramesWhenAGroupMoves() throws {
+        var scene = WasabiScene()
+        let container = scene.addNode(id: "main", kind: .container, localFrame: CGRect(x: 0, y: 0, width: 240, height: 120))
+        let layout = scene.addNode(id: "normal", kind: .layout, localFrame: CGRect(x: 0, y: 0, width: 240, height: 120), parent: container)
+        scene.setActiveLayout(layout, for: container)
+        let group = scene.addNode(id: "controls", kind: .group, localFrame: CGRect(x: 20, y: 12, width: 100, height: 60), parent: layout)
+        let button = scene.addNode(id: "button", kind: .button, localFrame: CGRect(x: 8, y: 6, width: 24, height: 18), parent: group)
+
+        let localBefore = try #require(scene.node(button)?.localFrame)
+        #expect(scene.worldFrame(of: button) == CGRect(x: 28, y: 18, width: 24, height: 18))
+        #expect(scene.hitTest(CGPoint(x: 30, y: 20))?.handle == button)
+
+        scene.setLocalFrame(CGRect(x: 80, y: 30, width: 100, height: 60), for: group)
+        #expect(scene.node(button)?.localFrame == localBefore)
+        #expect(scene.worldFrame(of: button) == CGRect(x: 88, y: 36, width: 24, height: 18))
+        #expect(scene.hitTest(CGPoint(x: 90, y: 38))?.handle == button)
+        #expect(scene.hitTest(CGPoint(x: 30, y: 20)) == nil)
+
+        scene.setVisible(false, for: group)
+        #expect(scene.effectiveVisible(button) == false)
+        #expect(scene.hitTest(CGPoint(x: 90, y: 38)) == nil)
+    }
+
+    @Test func modernParserRetainsMultipleLayoutsAndNestedOwnership() throws {
+        let xml = """
+        <WinampAbstractionLayer>
+          <container id="main" default_visible="1">
+            <groupdef id="buttons" w="80" h="30">
+              <button id="ok" x="4" y="5" w="20" h="10" />
+            </groupdef>
+            <layout id="normal" w="200" h="100">
+              <group id="buttons" x="30" y="20" />
+            </layout>
+            <layout id="shade" w="200" h="14">
+              <layer id="shadeLayer" x="0" y="0" w="200" h="14" />
+            </layout>
+          </container>
+        </WinampAbstractionLayer>
+        """
+        let descriptor = ModernSkinParser.parse(files: ["skin.xml": Data(xml.utf8)]).descriptor
+        #expect(descriptor.layouts.map(\.id).sorted() == ["normal", "shade"])
+
+        let scene = descriptor.scene
+        let normal = try #require(scene.firstHandle(for: "normal"))
+        let group = try #require(scene.handles(for: "buttons").first { scene.node($0)?.parent == normal })
+        let button = try #require(scene.handles(for: "ok").first { scene.node($0)?.parent == group })
+        #expect(scene.node(button)?.localFrame == CGRect(x: 4, y: 5, width: 20, height: 10))
+        #expect(scene.worldFrame(of: button) == CGRect(x: 34, y: 25, width: 20, height: 10))
+        #expect(scene.firstHandle(for: "shade") != nil)
+    }
+
+    @Test func classicMainSpriteCatalogUsesCanonicalTables() throws {
+        let next = try #require(ClassicSpriteCatalog.main[.next])
+        #expect(next.frame == CGRect(x: 108, y: 88, width: 22, height: 18))
+        #expect(next.normal.sourceRect == CGRect(x: 92, y: 0, width: 22, height: 18))
+
+        let eject = try #require(ClassicSpriteCatalog.main[.open])
+        #expect(eject.normal.sourceRect == CGRect(x: 114, y: 0, width: 22, height: 16))
+
+        let shuffle = try #require(ClassicSpriteCatalog.main[.shuffle])
+        #expect(shuffle.normal.sourceRect == CGRect(x: 28, y: 0, width: 47, height: 15))
+        #expect(shuffle.activePressed?.sourceRect == CGRect(x: 28, y: 45, width: 47, height: 15))
+
+        let equalizer = try #require(ClassicSpriteCatalog.main[.equalizer])
+        #expect(equalizer.frame == CGRect(x: 219, y: 58, width: 23, height: 12))
+        #expect(equalizer.normal.sourceRect == CGRect(x: 0, y: 61, width: 23, height: 12))
+
+        let volume = try #require(ClassicSpriteCatalog.main[.volume])
+        #expect(volume.normal.sourceRect == CGRect(x: 0, y: 0, width: 68, height: 420))
+        #expect(volume.pressed?.sourceRect == CGRect(x: 15, y: 422, width: 14, height: 11))
+        #expect(volume.active?.sourceRect == CGRect(x: 0, y: 422, width: 14, height: 11))
+    }
+
     @Test @MainActor func classicCatalogExposesStandardWindowAssets() {
         let catalog = SkinAssetCatalog(name: "Synthetic Classic", files: [:], report: .init(), format: .classic)
         #expect(catalog.classicAssets?.equalizer == "eqmain.bmp")

@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import ImageIO
 
-enum SkinAction: String, Sendable {
+enum SkinAction: String, Sendable, Equatable {
     case none, scripted
     case previous, play, pause, stop, next, open, seek, setVolume, setBalance
     case setEqualizerBand, resetEqualizer
@@ -20,7 +20,7 @@ enum SkinControlID: String, Sendable, Equatable {
     case playlist, equalizer, visualization, minimize, close
 }
 
-struct SpriteReference: Sendable {
+struct SpriteReference: Sendable, Equatable {
     var assetName: String
     var sourceRect: CGRect
 }
@@ -37,6 +37,56 @@ struct SkinControlDefinition: Sendable {
     var drawerRole: ModernDrawerRole? = nil
     var parameter: Int? = nil
     var orientation: SkinControlOrientation? = nil
+}
+
+/// The fixed Classic main-window table is data, not renderer inference.  The
+/// source rectangles are kept in the same logical coordinate system as the
+/// Winamp atlases; callers crop these sprites and never stretch an atlas as a
+/// whole.
+enum ClassicSpriteSheet: String, Sendable {
+    case main = "main.bmp"
+    case cbuttons = "cbuttons.bmp"
+    case titlebar = "titlebar.bmp"
+    case shufrep = "shufrep.bmp"
+    case volume = "volume.bmp"
+    case balance = "balance.bmp"
+    case posbar = "posbar.bmp"
+    case numbers = "numbers.bmp"
+    case numsExtra = "nums_ex.bmp"
+    case playPause = "playpaus.bmp"
+    case monoStereo = "monoster.bmp"
+    case text = "text.bmp"
+}
+
+struct ClassicElementDescriptor: Sendable, Equatable {
+    let id: SkinControlID
+    let frame: CGRect
+    let normal: SpriteReference
+    let pressed: SpriteReference?
+    let active: SpriteReference?
+    let activePressed: SpriteReference?
+    let action: SkinAction
+}
+
+enum ClassicSpriteCatalog {
+    private static func sprite(_ sheet: ClassicSpriteSheet, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat) -> SpriteReference {
+        SpriteReference(assetName: sheet.rawValue, sourceRect: CGRect(x: x, y: y, width: width, height: height))
+    }
+
+    static let main: [SkinControlID: ClassicElementDescriptor] = [
+        .previous: .init(id: .previous, frame: CGRect(x: 16, y: 88, width: 23, height: 18), normal: sprite(.cbuttons, 0, 0, 23, 18), pressed: sprite(.cbuttons, 0, 18, 23, 18), active: nil, activePressed: nil, action: .previous),
+        .play: .init(id: .play, frame: CGRect(x: 39, y: 88, width: 23, height: 18), normal: sprite(.cbuttons, 23, 0, 23, 18), pressed: sprite(.cbuttons, 23, 18, 23, 18), active: nil, activePressed: nil, action: .play),
+        .pause: .init(id: .pause, frame: CGRect(x: 62, y: 88, width: 23, height: 18), normal: sprite(.cbuttons, 46, 0, 23, 18), pressed: sprite(.cbuttons, 46, 18, 23, 18), active: nil, activePressed: nil, action: .pause),
+        .stop: .init(id: .stop, frame: CGRect(x: 85, y: 88, width: 23, height: 18), normal: sprite(.cbuttons, 69, 0, 23, 18), pressed: sprite(.cbuttons, 69, 18, 23, 18), active: nil, activePressed: nil, action: .stop),
+        .next: .init(id: .next, frame: CGRect(x: 108, y: 88, width: 22, height: 18), normal: sprite(.cbuttons, 92, 0, 22, 18), pressed: sprite(.cbuttons, 92, 18, 22, 18), active: nil, activePressed: nil, action: .next),
+        .open: .init(id: .open, frame: CGRect(x: 136, y: 89, width: 22, height: 16), normal: sprite(.cbuttons, 114, 0, 22, 16), pressed: sprite(.cbuttons, 114, 16, 22, 16), active: nil, activePressed: nil, action: .open),
+        .shuffle: .init(id: .shuffle, frame: CGRect(x: 164, y: 89, width: 47, height: 15), normal: sprite(.shufrep, 28, 0, 47, 15), pressed: sprite(.shufrep, 28, 15, 47, 15), active: sprite(.shufrep, 28, 30, 47, 15), activePressed: sprite(.shufrep, 28, 45, 47, 15), action: .toggleShuffle),
+        .repeat: .init(id: .repeat, frame: CGRect(x: 210, y: 89, width: 28, height: 15), normal: sprite(.shufrep, 0, 0, 28, 15), pressed: sprite(.shufrep, 0, 15, 28, 15), active: sprite(.shufrep, 0, 30, 28, 15), activePressed: sprite(.shufrep, 0, 45, 28, 15), action: .cycleRepeat),
+        .equalizer: .init(id: .equalizer, frame: CGRect(x: 219, y: 58, width: 23, height: 12), normal: sprite(.shufrep, 0, 61, 23, 12), pressed: sprite(.shufrep, 46, 61, 23, 12), active: sprite(.shufrep, 0, 73, 23, 12), activePressed: sprite(.shufrep, 46, 73, 23, 12), action: .toggleEqualizer),
+        .playlist: .init(id: .playlist, frame: CGRect(x: 242, y: 58, width: 23, height: 12), normal: sprite(.shufrep, 23, 61, 23, 12), pressed: sprite(.shufrep, 69, 61, 23, 12), active: sprite(.shufrep, 23, 73, 23, 12), activePressed: sprite(.shufrep, 69, 73, 23, 12), action: .togglePlaylist),
+        .seek: .init(id: .seek, frame: CGRect(x: 16, y: 72, width: 248, height: 10), normal: sprite(.posbar, 0, 0, 248, 10), pressed: sprite(.posbar, 278, 0, 29, 10), active: sprite(.posbar, 248, 0, 29, 10), activePressed: nil, action: .seek),
+        .volume: .init(id: .volume, frame: CGRect(x: 107, y: 57, width: 68, height: 10), normal: sprite(.volume, 0, 0, 68, 420), pressed: sprite(.volume, 15, 422, 14, 11), active: sprite(.volume, 0, 422, 14, 11), activePressed: nil, action: .setVolume)
+    ]
 }
 
 struct SkinValidationReport: Equatable, Sendable {
@@ -84,7 +134,7 @@ struct ModernMakiBinding: Sendable, Equatable {
 /// renderer's flattened arrays is important: scripts address Wasabi objects,
 /// not pixels or the native controls that happen to render them.
 nonisolated enum WasabiObjectKind: String, Sendable {
-    case container, layout, group, button, slider, layer, text, content, unknown
+    case container, layout, group, button, slider, layer, animatedLayer, text, songTicker, content, unknown
 }
 
 nonisolated struct WasabiObjectNode: Sendable, Equatable {
@@ -126,6 +176,176 @@ nonisolated struct WasabiObjectTree: Sendable, Equatable {
 
     var objectCount: Int { nodes.count }
     var eventObjectIDs: [String] { nodes.values.filter { $0.kind == .button || $0.kind == .slider || $0.kind == .layer }.map(\.id).sorted() }
+}
+
+/// A live, value-semantic Wasabi scene. Nodes retain local geometry and
+/// ownership; world geometry is resolved by walking the same parent chain used
+/// by rendering, hit testing and (in the next runtime migration) MAKI.
+nonisolated struct WasabiHandle: Hashable, Sendable, Equatable {
+    let rawValue: UInt64
+}
+
+nonisolated struct WasabiSceneNode: Sendable, Equatable {
+    let handle: WasabiHandle
+    var id: String
+    var originalID: String
+    var kind: WasabiObjectKind
+    var localFrame: CGRect
+    var parent: WasabiHandle?
+    var children: [WasabiHandle] = []
+    var visible = true
+    var alpha: CGFloat = 1
+    var ghost = false
+    var zIndex = 0
+    var attributes: [String: String] = [:]
+}
+
+nonisolated struct WasabiScene: Sendable, Equatable {
+    private(set) var nodes: [WasabiHandle: WasabiSceneNode] = [:]
+    private(set) var handlesByID: [String: [WasabiHandle]] = [:]
+    private(set) var rootHandles: [WasabiHandle] = []
+    private(set) var activeLayoutByContainer: [WasabiHandle: WasabiHandle] = [:]
+    private var nextRawHandle: UInt64 = 1
+
+    init() {}
+
+    @discardableResult
+    mutating func addNode(
+        id rawID: String,
+        kind: WasabiObjectKind,
+        localFrame: CGRect,
+        parent: WasabiHandle? = nil,
+        visible: Bool = true,
+        alpha: CGFloat = 1,
+        ghost: Bool = false,
+        zIndex: Int = 0,
+        attributes: [String: String] = [:]
+    ) -> WasabiHandle {
+        let handle = WasabiHandle(rawValue: nextRawHandle)
+        nextRawHandle += 1
+        let originalID = rawID.isEmpty ? "node-\(handle.rawValue)" : rawID
+        let id = originalID.lowercased()
+        let node = WasabiSceneNode(
+            handle: handle,
+            id: id,
+            originalID: originalID,
+            kind: kind,
+            localFrame: localFrame,
+            parent: parent,
+            visible: visible,
+            alpha: min(max(alpha, 0), 1),
+            ghost: ghost,
+            zIndex: zIndex,
+            attributes: attributes
+        )
+        nodes[handle] = node
+        handlesByID[id, default: []].append(handle)
+        if let parent, nodes[parent] != nil {
+            nodes[parent]!.children.append(handle)
+        } else {
+            rootHandles.append(handle)
+        }
+        return handle
+    }
+
+    func node(_ handle: WasabiHandle) -> WasabiSceneNode? { nodes[handle] }
+
+    func handles(for id: String) -> [WasabiHandle] { handlesByID[id.lowercased()] ?? [] }
+
+    func firstHandle(for id: String) -> WasabiHandle? { handles(for: id).first }
+
+    func worldFrame(of handle: WasabiHandle) -> CGRect? {
+        worldFrame(of: handle, visiting: [])
+    }
+
+    private func worldFrame(of handle: WasabiHandle, visiting: Set<WasabiHandle>) -> CGRect? {
+        guard let node = nodes[handle], !visiting.contains(handle) else { return nil }
+        var next = visiting
+        next.insert(handle)
+        guard let parent = node.parent, let parentFrame = worldFrame(of: parent, visiting: next) else {
+            return node.localFrame
+        }
+        return node.localFrame.offsetBy(dx: parentFrame.minX, dy: parentFrame.minY)
+    }
+
+    func effectiveVisible(_ handle: WasabiHandle) -> Bool {
+        guard let node = nodes[handle] else { return false }
+        guard node.visible else { return false }
+        guard let parent = node.parent else { return true }
+        return effectiveVisible(parent)
+    }
+
+    func effectiveAlpha(_ handle: WasabiHandle) -> CGFloat {
+        guard let node = nodes[handle] else { return 0 }
+        guard let parent = node.parent else { return node.alpha }
+        return node.alpha * effectiveAlpha(parent)
+    }
+
+    mutating func setLocalFrame(_ frame: CGRect, for handle: WasabiHandle) {
+        guard var node = nodes[handle] else { return }
+        node.localFrame = frame
+        nodes[handle] = node
+    }
+
+    mutating func setVisible(_ visible: Bool, for handle: WasabiHandle) {
+        guard var node = nodes[handle] else { return }
+        node.visible = visible
+        nodes[handle] = node
+    }
+
+    mutating func setActiveLayout(_ layout: WasabiHandle, for container: WasabiHandle) {
+        guard nodes[layout]?.kind == .layout, nodes[container]?.kind == .container else { return }
+        activeLayoutByContainer[container] = layout
+    }
+
+    func isInActiveLayout(_ handle: WasabiHandle) -> Bool {
+        var cursor = handle
+        var visited: Set<WasabiHandle> = []
+        while let node = nodes[cursor], !visited.contains(cursor) {
+            visited.insert(cursor)
+            if node.kind == .layout, let container = node.parent {
+                return activeLayoutByContainer[container].map { $0 == node.handle } ?? true
+            }
+            guard let parent = node.parent else { return true }
+            cursor = parent
+        }
+        return false
+    }
+
+    func hitTest(_ point: CGPoint) -> WasabiSceneNode? {
+        nodes.values
+            .filter { node in
+                node.kind != .container && node.kind != .layout && node.kind != .group &&
+                !node.ghost && effectiveVisible(node.handle) && effectiveAlpha(node.handle) > 0 &&
+                isInActiveLayout(node.handle) && (worldFrame(of: node.handle)?.contains(point) ?? false)
+            }
+            .sorted { lhs, rhs in
+                if lhs.zIndex != rhs.zIndex { return lhs.zIndex > rhs.zIndex }
+                return lhs.handle.rawValue > rhs.handle.rawValue
+            }
+            .first
+    }
+
+    /// Compatibility projection for the pre-#35 callers. It intentionally
+    /// derives from the live hierarchy rather than making the old dictionary
+    /// authoritative.
+    var compatibilityTree: WasabiObjectTree {
+        var tree = WasabiObjectTree()
+        if let root = rootHandles.first, let rootNode = nodes[root] { tree.rootID = rootNode.id }
+        for node in nodes.values {
+            let parentID = node.parent.flatMap { nodes[$0]?.id }
+            tree.insert(WasabiObjectNode(
+                id: node.id,
+                kind: node.kind,
+                frame: worldFrame(of: node.handle) ?? node.localFrame,
+                parentID: parentID,
+                initiallyVisible: effectiveVisible(node.handle),
+                attributes: node.attributes,
+                zIndex: node.zIndex
+            ))
+        }
+        return tree
+    }
 }
 
 nonisolated struct ModernLayoutDescriptor: Sendable, Equatable {
@@ -224,6 +444,7 @@ struct ModernSkinDescriptor: Sendable {
     var drawers: [ModernDrawerDescriptor] = []
     var makiBindings: [ModernMakiBinding] = []
     var layouts: [ModernLayoutDescriptor] = []
+    var scene = WasabiScene()
     var objectTree = WasabiObjectTree()
     var windowRegion: ModernWindowRegionDescriptor?
 }
@@ -267,6 +488,7 @@ final class SkinAssetCatalog {
     let modernBitmapFiles: [String: String]
     let modernBitmapSourceRects: [String: CGRect]
     let modernLayouts: [ModernLayoutDescriptor]
+    let scene: WasabiScene
     let objectTree: WasabiObjectTree
     let classicAssets: ClassicSkinAssetDescriptor?
     private let renderedMainImage: NSImage?
@@ -321,7 +543,8 @@ final class SkinAssetCatalog {
             modernBitmapFiles = modern.bitmapFiles
             modernBitmapSourceRects = modern.bitmapSourceRects
             modernLayouts = modern.layouts
-            objectTree = modern.objectTree
+            scene = modern.scene
+            objectTree = modern.scene.compatibilityTree
             classicAssets = nil
             makiBindings = modern.makiBindings
             makiPrograms = Array(Set(modern.makiBindings.map { $0.path.lowercased() })).sorted().compactMap { path in
@@ -368,21 +591,8 @@ final class SkinAssetCatalog {
         } else {
             canvasSize = CGSize(width: 275, height: 116)
             let classic = ClassicSkinControls.main.map { control -> SkinControlDefinition in
-                let sprite: SpriteReference?
-                let pressed: SpriteReference?
-                switch control.id {
-                case .previous, .play, .pause, .stop, .next:
-                    let index = [.previous, .play, .pause, .stop, .next].firstIndex(of: control.id) ?? 0
-                    sprite = SpriteReference(assetName: "cbuttons.bmp", sourceRect: CGRect(x: CGFloat(index * 23), y: 0, width: 23, height: 18))
-                    pressed = SpriteReference(assetName: "cbuttons.bmp", sourceRect: CGRect(x: CGFloat(index * 23), y: 18, width: 23, height: 18))
-                case .shuffle, .repeat:
-                    let index = control.id == .shuffle ? 0 : 1
-                    sprite = SpriteReference(assetName: "shufrep.bmp", sourceRect: CGRect(x: CGFloat(index * 46), y: 0, width: index == 0 ? 46 : 28, height: 15))
-                    pressed = SpriteReference(assetName: "shufrep.bmp", sourceRect: CGRect(x: CGFloat(index * 46), y: 15, width: index == 0 ? 46 : 28, height: 15))
-                default:
-                    sprite = nil; pressed = nil
-                }
-                return SkinControlDefinition(id: control.id, frame: control.frame, normalSprite: sprite, pressedSprite: pressed, disabledSprite: control.disabledSprite, action: control.action, elementID: control.elementID, initiallyVisible: control.initiallyVisible, drawerRole: control.drawerRole, parameter: control.parameter, orientation: control.orientation)
+                let descriptor = ClassicSpriteCatalog.main[control.id]
+                return SkinControlDefinition(id: control.id, frame: control.frame, normalSprite: descriptor?.normal, pressedSprite: descriptor?.pressed, disabledSprite: control.disabledSprite, action: control.action, elementID: control.elementID, initiallyVisible: control.initiallyVisible, drawerRole: control.drawerRole, parameter: control.parameter, orientation: control.orientation)
             }
             controls = classic
             textRegions = []
@@ -392,6 +602,7 @@ final class SkinAssetCatalog {
             modernBitmapFiles = [:]
             modernBitmapSourceRects = [:]
             modernLayouts = []
+            scene = WasabiScene()
             objectTree = WasabiObjectTree()
             classicAssets = ClassicSkinAssetDescriptor()
             makiPrograms = []
@@ -589,14 +800,14 @@ enum ClassicSkinControls {
         .init(id: .play, frame: CGRect(x: 39, y: 88, width: 23, height: 18), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .play),
         .init(id: .pause, frame: CGRect(x: 62, y: 88, width: 23, height: 18), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .pause),
         .init(id: .stop, frame: CGRect(x: 85, y: 88, width: 23, height: 18), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .stop),
-        .init(id: .next, frame: CGRect(x: 108, y: 88, width: 23, height: 18), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .next),
+        .init(id: .next, frame: CGRect(x: 108, y: 88, width: 22, height: 18), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .next),
         .init(id: .open, frame: CGRect(x: 136, y: 89, width: 22, height: 16), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .open),
         .init(id: .seek, frame: CGRect(x: 16, y: 72, width: 248, height: 10), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .seek),
         .init(id: .volume, frame: CGRect(x: 107, y: 57, width: 68, height: 10), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .setVolume),
-        .init(id: .shuffle, frame: CGRect(x: 164, y: 89, width: 46, height: 15), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .toggleShuffle),
+        .init(id: .shuffle, frame: CGRect(x: 164, y: 89, width: 47, height: 15), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .toggleShuffle),
         .init(id: .repeat, frame: CGRect(x: 210, y: 89, width: 28, height: 15), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .cycleRepeat),
-        .init(id: .equalizer, frame: CGRect(x: 238, y: 89, width: 18, height: 15), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .toggleEqualizer),
-        .init(id: .playlist, frame: CGRect(x: 256, y: 89, width: 18, height: 15), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .togglePlaylist),
+        .init(id: .equalizer, frame: CGRect(x: 219, y: 58, width: 23, height: 12), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .toggleEqualizer),
+        .init(id: .playlist, frame: CGRect(x: 242, y: 58, width: 23, height: 12), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .togglePlaylist),
         .init(id: .visualization, frame: CGRect(x: 24, y: 43, width: 72, height: 16), normalSprite: nil, pressedSprite: nil, disabledSprite: nil, action: .toggleVisualization)
     ]
 }

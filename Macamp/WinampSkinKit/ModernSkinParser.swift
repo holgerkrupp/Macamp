@@ -50,7 +50,8 @@ enum ModernSkinParser {
                         initiallyVisible: $0.containerIsDefaultVisible
                     )
                 }
-            descriptor.objectTree = makeObjectTree(for: selected)
+            descriptor.scene = makeScene(candidates: candidates, activeCandidate: selected)
+            descriptor.objectTree = descriptor.scene.compatibilityTree
             if !selected.regionShapes.isEmpty || selected.desktopAlpha {
                 descriptor.windowRegion = ModernWindowRegionDescriptor(
                     shapes: selected.regionShapes,
@@ -247,7 +248,10 @@ enum ModernSkinParser {
             let contentBounds = layers.map(\.frame).reduce(CGRect.null) { $0.union($1) }
             let width = declaredWidth > 0 ? declaredWidth : max(1, contentBounds.maxX.isFinite ? contentBounds.maxX : 275)
             let height = declaredHeight > 0 ? declaredHeight : max(1, contentBounds.maxY.isFinite ? contentBounds.maxY : 116)
-            if !layers.isEmpty || !controls.isEmpty || !groups.isEmpty || !textRegions.isEmpty || !contentRegions.isEmpty {
+            // Retain every layout, including an intentionally sparse shade or
+            // state layout. A layout is part of the live Container graph even
+            // when all of its visible pixels come from runtime/component data.
+            if isLayout || !layers.isEmpty || !controls.isEmpty || !groups.isEmpty || !textRegions.isEmpty || !contentRegions.isEmpty {
                 let container = nearestAncestor(named: "container", of: root)
                 result.append(LayoutCandidate(
                     id: id,
@@ -296,6 +300,154 @@ enum ModernSkinParser {
             tree.insert(WasabiObjectNode(id: (region.elementID?.lowercased() ?? "content-\(index)"), kind: .content, frame: region.frame, parentID: candidate.id, initiallyVisible: region.initiallyVisible, zIndex: z)); z += 1
         }
         return tree
+    }
+
+    /// Builds the authoritative #35 scene from the unflattened candidate
+    /// definitions. The older arrays remain as a temporary compatibility
+    /// projection for the renderer migration, but they are no longer used to
+    /// decide parent ownership or world geometry.
+    nonisolated private static func makeScene(candidates: [LayoutCandidate], activeCandidate: LayoutCandidate) -> WasabiScene {
+        var scene = WasabiScene()
+        let definitions = Dictionary(candidates.map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+        let layouts = candidates.filter(\.isLayout)
+        var containers: [String: WasabiHandle] = [:]
+
+        for layout in layouts {
+            let containerID = (layout.containerID ?? "main").lowercased()
+            if containers[containerID] == nil {
+                let visible = layout.containerIsDefaultVisible
+                containers[containerID] = scene.addNode(
+                    id: containerID,
+                    kind: .container,
+                    localFrame: CGRect(origin: .zero, size: layout.canvasSize),
+                    visible: visible,
+                    attributes: ["default_visible": visible ? "1" : "0"]
+                )
+            }
+        }
+
+        var layoutHandles: [(candidate: LayoutCandidate, handle: WasabiHandle, container: WasabiHandle)] = []
+        for layout in layouts {
+            let containerID = (layout.containerID ?? "main").lowercased()
+            guard let container = containers[containerID] else { continue }
+            let handle = scene.addNode(
+                id: layout.id,
+                kind: .layout,
+                localFrame: CGRect(origin: .zero, size: layout.canvasSize),
+                parent: container,
+                visible: layout.containerIsDefaultVisible,
+                attributes: ["container": containerID]
+            )
+            layoutHandles.append((layout, handle, container))
+            if layout.id.caseInsensitiveCompare(activeCandidate.id) == .orderedSame {
+                scene.setActiveLayout(handle, for: container)
+            }
+        }
+
+        for item in layoutHandles {
+            addDirectChildren(of: item.candidate, parent: item.handle, definitions: definitions, scene: &scene, visited: [])
+        }
+
+        for container in containers.values where scene.activeLayoutByContainer[container] == nil {
+            if let first = layoutHandles.first(where: { $0.container == container }) {
+                scene.setActiveLayout(first.handle, for: container)
+            }
+        }
+        return scene
+    }
+
+    nonisolated private static func addDirectChildren(
+        of candidate: LayoutCandidate,
+        parent: WasabiHandle,
+        definitions: [String: LayoutCandidate],
+        scene: inout WasabiScene,
+        visited: Set<String>
+    ) {
+        let candidateKey = candidate.id.lowercased()
+        guard !visited.contains(candidateKey) else { return }
+        var nextVisited = visited
+        nextVisited.insert(candidateKey)
+        var z = 0
+
+        for (index, layer) in candidate.layers.enumerated() {
+            let id = layer.elementID ?? "layer-\(index)"
+            let kind: WasabiObjectKind = layer.cropToFirstFrame ? .animatedLayer : .layer
+            _ = scene.addNode(
+                id: id,
+                kind: kind,
+                localFrame: layer.frame,
+                parent: parent,
+                visible: layer.initiallyVisible,
+                alpha: CGFloat(layer.opacity),
+                ghost: false,
+                zIndex: z,
+                attributes: ["image": layer.imageID, "alpha": String(layer.opacity)]
+            )
+            z += 1
+        }
+
+        for (index, control) in candidate.controls.enumerated() {
+            let id = control.elementID ?? "control-\(index)"
+            let kind: WasabiObjectKind = control.orientation == nil ? .button : .slider
+            _ = scene.addNode(
+                id: id,
+                kind: kind,
+                localFrame: control.frame,
+                parent: parent,
+                visible: control.initiallyVisible,
+                zIndex: z,
+                attributes: ["action": control.action.rawValue]
+            )
+            z += 1
+        }
+
+        for (index, region) in candidate.textRegions.enumerated() {
+            let id = region.elementID ?? "text-\(index)"
+            _ = scene.addNode(
+                id: id,
+                kind: .text,
+                localFrame: region.frame,
+                parent: parent,
+                visible: region.initiallyVisible,
+                zIndex: z,
+                attributes: ["fontSize": String(region.fontSize)]
+            )
+            z += 1
+        }
+
+        for (index, region) in candidate.contentRegions.enumerated() {
+            let id = region.elementID ?? "content-\(index)"
+            _ = scene.addNode(id: id, kind: .content, localFrame: region.frame, parent: parent, visible: region.initiallyVisible, zIndex: z)
+            z += 1
+        }
+
+        for reference in candidate.groups {
+            let key = reference.id.lowercased()
+            guard let definition = definitions[key] else { continue }
+            let group = scene.addNode(
+                id: reference.id,
+                kind: .group,
+                localFrame: CGRect(origin: reference.origin, size: definition.canvasSize),
+                parent: parent,
+                zIndex: z,
+                attributes: ["definition": definition.id]
+            )
+            z += 1
+            addDefinitionChildren(definition, parent: group, definitions: definitions, scene: &scene, visited: nextVisited)
+        }
+    }
+
+    nonisolated private static func addDefinitionChildren(
+        _ definition: LayoutCandidate,
+        parent: WasabiHandle,
+        definitions: [String: LayoutCandidate],
+        scene: inout WasabiScene,
+        visited: Set<String>
+    ) {
+        if let inheritedID = definition.inheritedGroupID?.lowercased(), let inherited = definitions[inheritedID] {
+            addDefinitionChildren(inherited, parent: parent, definitions: definitions, scene: &scene, visited: visited)
+        }
+        addDirectChildren(of: definition, parent: parent, definitions: definitions, scene: &scene, visited: visited)
     }
 
     nonisolated private static func score(_ candidate: LayoutCandidate) -> Int {
