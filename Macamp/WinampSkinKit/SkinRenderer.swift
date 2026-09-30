@@ -37,11 +37,13 @@ final class SkinRendererView: NSView {
     private var refreshTask: Task<Void, Never>?
     private var makiRuntime: MakiRuntime?
     private var runtimeCatalog: SkinAssetCatalog?
+    private var resourceRegistry: WasabiResourceRegistry?
     private var liveScene: WasabiScene
     private var lastMakiPlaybackState: Bool?
     private var pressedControl: SkinControlID?
     private var activeControl: SkinControlDefinition?
     private var hoveredObjectID: String?
+    private var pressedObjectID: String?
     private var balanceValue = 0.5
     private var sceneAnimationTasks: [WasabiHandle: Task<Void, Never>] = [:]
     private var artworkTask: Task<Void, Never>?
@@ -69,6 +71,9 @@ final class SkinRendererView: NSView {
         self.visualizationToggle = visualizationToggle
         self.artworkLoader = artworkLoader
         self.liveScene = skinStore.activeCatalog.scene
+        self.resourceRegistry = skinStore.activeCatalog.format == .modern
+            ? WasabiResourceRegistry(catalog: skinStore.activeCatalog)
+            : nil
         scale = settings.skinScale
         let canvas = skinStore.activeCatalog.canvasSize
         super.init(frame: CGRect(origin: .zero, size: CGSize(width: canvas.width * CGFloat(scale), height: canvas.height * CGFloat(scale))))
@@ -155,6 +160,7 @@ final class SkinRendererView: NSView {
             return effectiveFrame(for: control).contains(point)
         }
         let object = hitObject(at: point)
+        pressedObjectID = object?.id
         let mouseDownHandled = object.flatMap { makiRuntime?.dispatchMouseDown(objectID: $0.id) } ?? false
         let control = candidates.first(where: { coordinator.state.isPlaying ? $0.action == .pause : $0.action == .play }) ?? candidates.first
         if let control {
@@ -173,6 +179,7 @@ final class SkinRendererView: NSView {
     @discardableResult
     func injectMouseDown(at point: CGPoint) -> String? {
         let object = hitObject(at: point)
+        pressedObjectID = object?.id
         _ = object.flatMap { makiRuntime?.dispatchMouseDown(objectID: $0.id) }
         guard let control = skinStore.activeCatalog.controls.first(where: { effectiveFrame(for: $0).contains(point) && isElementVisible($0.elementID, initiallyVisible: $0.initiallyVisible) }) else { return object?.id }
         pressedControl = control.id
@@ -194,6 +201,7 @@ final class SkinRendererView: NSView {
     func injectMouseUp(at point: CGPoint) {
         if let object = hitObject(at: point) { _ = makiRuntime?.dispatchMouseUp(objectID: object.id) }
         pressedControl = nil
+        pressedObjectID = nil
         activeControl = nil
         needsDisplay = true
     }
@@ -204,6 +212,7 @@ final class SkinRendererView: NSView {
             if let hoveredObjectID { _ = makiRuntime?.dispatchMouseLeave(objectID: hoveredObjectID) }
             if let object { _ = makiRuntime?.dispatchMouseEnter(objectID: object.id) }
             hoveredObjectID = object?.id
+            needsDisplay = true
         }
     }
 
@@ -296,10 +305,9 @@ final class SkinRendererView: NSView {
     }
 
     private func drawSceneLayer(_ node: WasabiSceneRenderNode, in frame: CGRect) {
-        guard let imageID = node.attributes["image"],
-              let path = skinStore.activeCatalog.modernBitmapFiles[imageID.lowercased()],
-              let image = skinStore.activeCatalog.images[path.lowercased()] else { return }
-        let declaredSource = skinStore.activeCatalog.modernBitmapSourceRects[imageID.lowercased()]
+        guard let bitmap = resourceRegistry?.bitmap(for: node.attributes["image"]) else { return }
+        let image = bitmap.image
+        let declaredSource = bitmap.sourceRect
         let source: CGRect
         if let declaredSource {
             source = CGRect(
@@ -322,8 +330,24 @@ final class SkinRendererView: NSView {
     }
 
     private func drawSceneControl(_ node: WasabiSceneRenderNode, in frame: CGRect) {
-        guard let image = skinStore.activeCatalog.makiControlImages[node.id] else { return }
-        image.draw(in: frame, from: .zero, operation: .sourceOver, fraction: node.alpha, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
+        let active = node.attributes["active"] == "1" || node.attributes["activated"] == "1"
+        let imageID: String?
+        if node.id == pressedObjectID || node.attributes["pressed"] == "1" {
+            imageID = node.attributes["activepressedimage"].flatMap { $0.isEmpty ? nil : $0 }
+                ?? node.attributes["downimage"].flatMap { $0.isEmpty ? nil : $0 }
+        } else if node.id == hoveredObjectID {
+            imageID = node.attributes["hoverimage"].flatMap { $0.isEmpty ? nil : $0 }
+        } else if active {
+            imageID = node.attributes["activeimage"].flatMap { $0.isEmpty ? nil : $0 }
+                ?? node.attributes["image"].flatMap { $0.isEmpty ? nil : $0 }
+        } else {
+            imageID = node.attributes["image"].flatMap { $0.isEmpty ? nil : $0 }
+        }
+        guard let bitmap = resourceRegistry?.bitmap(for: imageID) else { return }
+        let source = bitmap.sourceRect.map { rect in
+            CGRect(x: rect.minX, y: bitmap.image.size.height - rect.maxY, width: rect.width, height: rect.height)
+        } ?? CGRect(origin: .zero, size: bitmap.image.size)
+        bitmap.image.draw(in: frame, from: source, operation: .sourceOver, fraction: node.alpha, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
     }
 
     private func drawSceneContent(_ node: WasabiSceneRenderNode, in frame: CGRect) {
@@ -345,17 +369,25 @@ final class SkinRendererView: NSView {
         let title = item.map { "\($0.artist ?? "UNKNOWN") - \($0.title)" } ?? "MACAMP — READY"
         let elapsed = Int(coordinator.state.elapsed.secondsValue)
         let time = String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
-        let text: String = switch role {
-        case "songTitle": title
-        case "elapsedTime": time
+        let scriptedText = makiRuntime?.text(objectID: node.id)
+        let semantic: SkinTextSemantic = switch role {
+        case "custom": .staticUI
+        case "songTitle": .mediaMetadata
+        default: .technical
+        }
+        let sourceText: String = switch role {
+        case "custom": scriptedText ?? node.attributes["text"] ?? node.attributes["defaulttext"] ?? ""
+        case "songTitle": scriptedText ?? title
+        case "elapsedTime": scriptedText ?? time
         case "remainingTime":
-            if let duration = coordinator.state.duration { "-\(formatted(max(0, duration.secondsValue - coordinator.state.elapsed.secondsValue)))" } else { "--:--" }
-        case "bitrate": technicalBitrate
-        case "frequency": technicalFrequency
-        case "channels": technicalChannels
-        case "fileExtension": technicalExtension
+            scriptedText ?? (coordinator.state.duration.map { "-\(formatted(max(0, $0.secondsValue - coordinator.state.elapsed.secondsValue)))" } ?? "--:--")
+        case "bitrate": scriptedText ?? technicalBitrate
+        case "frequency": scriptedText ?? technicalFrequency
+        case "channels": scriptedText ?? technicalChannels
+        case "fileExtension": scriptedText ?? technicalExtension
         default: ""
         }
+        let text = BrandingText.replacingWinamp(in: sourceText, semantic: semantic)
         guard !text.isEmpty else { return }
         let alignment: NSTextAlignment = switch node.attributes["align"] {
         case "center": .center
@@ -379,12 +411,13 @@ final class SkinRendererView: NSView {
             )
             return
         }
-        let fontSize = min(max(Double(node.attributes["fontSize"] ?? "9") ?? 9, 5), 36)
+        let fontResource = resourceRegistry?.fonts[node.attributes["font"] ?? ""]
+        let fontSize = min(max(fontResource?.pointSize ?? Double(node.attributes["fontSize"] ?? "9") ?? 9, 5), 36)
         let red = CGFloat(Double(node.attributes["red"] ?? "1") ?? 1)
         let green = CGFloat(Double(node.attributes["green"] ?? "1") ?? 1)
         let blue = CGFloat(Double(node.attributes["blue"] ?? "1") ?? 1)
         text.draw(in: frame, withAttributes: [
-            .font: NSFont.systemFont(ofSize: CGFloat(fontSize)),
+            .font: (fontResource?.faceName.flatMap { NSFont(name: $0, size: CGFloat(fontSize)) } ?? NSFont.systemFont(ofSize: CGFloat(fontSize))),
             .foregroundColor: NSColor(calibratedRed: red, green: green, blue: blue, alpha: node.alpha),
             .paragraphStyle: paragraph
         ])
@@ -498,11 +531,21 @@ final class SkinRendererView: NSView {
             if object.kind == .slider { _ = makiRuntime?.dispatchSliderPosition(objectID: object.id, value: 0, final: true) }
         }
         pressedControl = nil
+        pressedObjectID = nil
         activeControl = nil
         needsDisplay = true
     }
 
     private func activate(_ control: SkinControlDefinition, point: CGPoint, frame: CGRect) async {
+        // Wasabi skins often use a button tooltip only as a label while the
+        // real behavior lives in MAKI.  HeadAMP's eqToggle and plToggle are
+        // exactly that: their scripts move the inline drawers.  Opening the
+        // native auxiliary window as well creates a second, empty window and
+        // leaves the live scene looking as if the drawer had the wrong side.
+        let makiHandled = control.elementID.map { makiRuntime?.dispatchClick(objectID: $0) == true } ?? false
+        let makiOwnsAuxiliaryToggle = makiHandled && (control.action == .togglePlaylist || control.action == .toggleEqualizer)
+
+        if makiOwnsAuxiliaryToggle { return }
         switch control.action {
         case .previous: await coordinator.previous()
         case .play: await coordinator.play()
@@ -541,8 +584,9 @@ final class SkinRendererView: NSView {
         case .none, .scripted: break
         }
         // Declarative behavior and MAKI are both part of a Winamp Button's
-        // lifecycle. A handled script event must not swallow the XML action.
-        if let elementID = control.elementID { _ = makiRuntime?.dispatchClick(objectID: elementID) }
+        // lifecycle. For auxiliary toggles, a handled script event is the
+        // authoritative behavior; other controls retain both behaviors.
+        if !makiHandled, let elementID = control.elementID { _ = makiRuntime?.dispatchClick(objectID: elementID) }
     }
 
     private func drawTransportControls() {
@@ -591,7 +635,21 @@ final class SkinRendererView: NSView {
         } else {
             titleBar = (window?.isKeyWindow ?? true) ? ClassicSpriteCatalog.activeTitleBar : ClassicSpriteCatalog.inactiveTitleBar
         }
-        _ = drawClassicSprite(titleBar, in: CGRect(x: 0, y: 0, width: 275, height: 14))
+        let destination = CGRect(x: 0, y: 0, width: 275, height: 14)
+        guard drawClassicSprite(titleBar, in: destination) else { return }
+        let layout = ClassicBrandingRenderer.layout(for: .main, size: destination.size, shaded: windowHost?.isShaded == true)
+        ClassicBrandingRenderer.draw(
+            window: .main,
+            layout: layout,
+            sourceRect: titleBar.sourceRect,
+            destinationRect: destination,
+            drawSprite: { [weak self] source, frame in
+                self?.drawClassicSprite(.init(assetName: titleBar.assetName, sourceRect: source), in: frame) ?? false
+            },
+            // text.bmp is the green metadata font, not the titlebar font.
+            // Let the centralized renderer use its titlebar-style fallback.
+            drawTextSprite: { _, _ in false }
+        )
     }
 
     private func drawClassicSprite(_ sprite: SpriteReference, in frame: CGRect) -> Bool {
@@ -619,6 +677,7 @@ final class SkinRendererView: NSView {
                 guard isElementVisible(region.elementID, initiallyVisible: region.initiallyVisible) else { continue }
                 let frame = effectiveFrame(for: region)
                 let fallbackText: String = switch region.role {
+                case .custom: region.defaultText ?? ""
                 case .songTitle: title
                 case .elapsedTime: time
                 case .remainingTime:
@@ -630,9 +689,15 @@ final class SkinRendererView: NSView {
                 case .channels: technicalChannels
                 case .fileExtension: technicalExtension
                 }
-                let text = region.elementID.flatMap { objectID in
+                let semantic: SkinTextSemantic = switch region.role {
+                case .custom: .staticUI
+                case .songTitle: .mediaMetadata
+                default: .technical
+                }
+                let sourceText = region.elementID.flatMap { objectID in
                     makiRuntime?.text(objectID: objectID).flatMap { $0.isEmpty ? nil : $0 }
                 } ?? fallbackText
+                let text = BrandingText.replacingWinamp(in: sourceText, semantic: semantic)
                 let alignment: NSTextAlignment = switch region.alignment {
                 case "center": .center
                 case "right": .right
@@ -954,6 +1019,7 @@ final class SkinRendererView: NSView {
         guard runtimeCatalog !== catalog else { return }
         runtimeCatalog = catalog
         liveScene = catalog.scene
+        resourceRegistry = catalog.format == .modern ? WasabiResourceRegistry(catalog: catalog) : nil
         makiRuntime = nil
         lastMakiPlaybackState = nil
         sceneAnimationTasks.values.forEach { $0.cancel() }
@@ -1100,5 +1166,15 @@ extension SkinRendererView: MakiRuntimeHost {
     func makiDuration() -> Duration? { coordinator.state.duration }
     func makiText(objectID: String) -> String? { makiRuntime?.text(objectID: objectID) }
     func makiSetText(objectID: String, text: String) { needsDisplay = true }
+    func makiButtonPressedChanged(receiver: WasabiHandle, isPressed: Bool) {
+        liveScene.setAttribute(isPressed ? "1" : "0", for: "pressed", handle: receiver)
+        needsDisplay = true
+    }
+    func makiDeclarativeButtonAction(receiver: WasabiHandle) {
+        guard let node = liveScene.node(receiver) else { return }
+        let activated = node.attributes["activated"] == "1"
+        liveScene.setAttribute(activated ? "0" : "1", for: "activated", handle: receiver)
+        needsDisplay = true
+    }
     func makiTargetReached(objectID: String) { makiRuntime?.targetReached(objectID: objectID) }
 }

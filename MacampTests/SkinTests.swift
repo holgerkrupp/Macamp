@@ -5,6 +5,66 @@ import Testing
 
 @Suite
 struct SkinTests {
+    @Test func brandingReplacesOnlyProductText() {
+        #expect(BrandingText.replacingWinamp(in: "Winamp / WINAMP / winamp") == "Macamp / Macamp / Macamp")
+        #expect(BrandingText.replacingWinamp(in: "Open Winamp skins", semantic: .staticUI) == "Open Macamp skins")
+        #expect(BrandingText.replacingWinamp(in: "The Winamp track", semantic: .mediaMetadata) == "The Winamp track")
+        #expect(BrandingText.replacingWinamp(in: "Winamp-compatible", semantic: .technical) == "Winamp-compatible")
+    }
+
+    @Test func modernTextClassificationKeepsMetadataSeparateFromStaticBranding() throws {
+        let xml = """
+        <WinampAbstractionLayer>
+          <container id="main"><layout id="normal" w="200" h="40">
+            <songticker id="branding" text="Winamp Player" x="0" y="0" w="100" h="10" />
+            <songticker id="track" x="0" y="12" w="100" h="10" />
+            <text id="static" text="Winamp Menu" x="0" y="24" w="100" h="10" />
+          </layout></container>
+        </WinampAbstractionLayer>
+        """
+        let descriptor = ModernSkinParser.parse(files: ["skin.xml": Data(xml.utf8)]).descriptor
+        #expect(descriptor.textRegions.first { $0.elementID == "branding" }?.role == .custom)
+        #expect(descriptor.textRegions.first { $0.elementID == "branding" }?.defaultText == "Winamp Player")
+        #expect(descriptor.textRegions.first { $0.elementID == "track" }?.role == .songTitle)
+        #expect(descriptor.textRegions.first { $0.elementID == "static" }?.role == .custom)
+    }
+
+    @Test func classicBrandingUsesStableCanonicalRegions() {
+        let main = ClassicBrandingRenderer.layout(for: .main, size: CGSize(width: 275, height: 116))
+        let playlist = ClassicBrandingRenderer.layout(for: .playlist, size: CGSize(width: 275, height: 232))
+        let playlistShade = ClassicBrandingRenderer.layout(for: .playlist, size: CGSize(width: 340, height: 14), shaded: true)
+        let equalizer = ClassicBrandingRenderer.layout(for: .equalizer, size: CGSize(width: 275, height: 116))
+
+        #expect(main.titleRect == CGRect(x: 34, y: 0, width: 207, height: 14))
+        #expect(playlist.titleRect == CGRect(x: 87.5, y: 0, width: 100, height: 20))
+        #expect(playlistShade.titleRect == CGRect(x: 25, y: 0, width: 265, height: 14))
+        #expect(equalizer.titleRect == CGRect(x: 30, y: 0, width: 215, height: 14))
+        #expect(MacampWindowBranding.player.title == "MACAMP")
+        #expect(MacampWindowBranding.playlist.title == "MACAMP PLAYLIST")
+        #expect(MacampWindowBranding.equalizer.title == "MACAMP EQUALIZER")
+    }
+
+    @Test @MainActor func classicBrandingOverlayDoesNotRequestPixelsOutsideTitleRegion() {
+        let image = NSImage(size: CGSize(width: 275, height: 14))
+        image.lockFocus()
+        defer { image.unlockFocus() }
+        let layout = ClassicBrandingRenderer.layout(for: .main, size: image.size)
+        var requestedFrames: [CGRect] = []
+        ClassicBrandingRenderer.draw(
+            window: .main,
+            layout: layout,
+            sourceRect: CGRect(x: 27, y: 0, width: 275, height: 14),
+            destinationRect: CGRect(origin: .zero, size: image.size),
+            drawSprite: { _, frame in
+                requestedFrames.append(frame)
+                return true
+            },
+            drawTextSprite: { _, _ in true }
+        )
+        #expect(!requestedFrames.isEmpty)
+        #expect(requestedFrames.allSatisfy { layout.titleRect.contains($0) })
+    }
+
     @Test func uppercaseAssetsAreCaseInsensitive() async throws {
         let url = try temporarySkin(entries: [("MAIN.BMP", Data([1, 2, 3]))])
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
@@ -222,6 +282,46 @@ struct SkinTests {
         #expect(!runtime.diagnostics.contains { $0.contains("Disabled") })
     }
 
+    @Test @MainActor func bundledHeadAMPMAKIUsesLiveSceneObjectHandlesWhenFixtureIsAvailable() async throws {
+        let projectRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let url = projectRoot.appending(path: "Skins/HeadAMP.wal")
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+
+        let loaded = try await SkinArchiveLoader().load(url: url)
+        let catalog = try #require(loaded.modern.map {
+            SkinAssetCatalog(name: "HeadAMP", files: loaded.files, report: loaded.report, format: loaded.format, modern: $0)
+        })
+        let host = TestMakiHost()
+        #expect(catalog.scene.firstHandle(for: "leftdrawercoords") != nil)
+        #expect(catalog.scene.firstHandle(for: "leftdrawerstatus") != nil)
+        #expect(catalog.scene.firstHandle(for: "rightdrawercoords") != nil)
+        #expect(catalog.scene.firstHandle(for: "rightdrawerstatus") != nil)
+        let runtime = MakiRuntime(
+            programs: catalog.makiPrograms,
+            bindings: catalog.makiBindings,
+            host: host,
+            limits: .init(),
+            skinID: catalog.name,
+            persistentState: .standard,
+            scene: catalog.scene
+        )
+        runtime.start()
+
+        #expect(runtime.dispatchClick(objectID: "eqToggle"))
+        #expect(host.targets.last?.objectID == "leftdrawer")
+        #expect(host.targets.last?.x == 0)
+        #expect(runtime.dispatchClick(objectID: "eqToggle"))
+        #expect(host.targets.last?.objectID == "leftdrawer")
+        #expect(host.targets.last?.x == 207)
+        #expect(runtime.dispatchClick(objectID: "plToggle"))
+        #expect(host.targets.last?.objectID == "rightdrawer")
+        #expect(host.targets.last?.x == 488)
+        #expect(runtime.dispatchClick(objectID: "plToggle"))
+        #expect(host.targets.last?.objectID == "rightdrawer")
+        #expect(host.targets.last?.x == 277)
+        #expect(!runtime.diagnostics.contains { $0.contains("Disabled") })
+    }
+
     @Test func bundledCellLayoutAndMetadataWhenFixtureIsAvailable() async throws {
         let projectRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let url = projectRoot.appending(path: "Skins/CELL V3.wal")
@@ -239,6 +339,8 @@ struct SkinTests {
         #expect(catalog.images["gfx/big.png"] != nil)
         #expect(catalog.images["gfx/big.png"]?.size == CGSize(width: 479, height: 451))
         #expect(catalog.mainImage?.size == CGSize(width: 810, height: 448))
+        #expect(!WasabiScenePainter.renderNodes(in: catalog.scene).isEmpty)
+        #expect(catalog.scene.firstHandle(for: "playerbody").flatMap { catalog.scene.worldFrame(of: $0) } == CGRect(x: 0, y: 0, width: 479, height: 451))
         #expect(!catalog.makiPrograms.isEmpty)
         let rendered = try #require(catalog.mainImage?.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
         #expect(rendered.colorAt(x: 100, y: 100)?.alphaComponent ?? 0 > 0)
@@ -328,6 +430,34 @@ struct SkinTests {
         #expect(descriptor.controls.filter { $0.action == .minimize }.count == 1)
         #expect(descriptor.controls.filter { $0.action == .close }.count == 1)
         #expect(descriptor.controls.filter { $0.action == .play }.isEmpty)
+    }
+
+    @Test func modernSceneRetainsGenericTextAndControlVisualStates() throws {
+        let xml = """
+        <WinampAbstractionLayer>
+          <elements><bitmap id="button" file="button.png" /></elements>
+          <container id="main" default_visible="1">
+            <layout id="normal" w="100" h="40">
+              <button id="action" image="button" downimage="button-down" hoverimage="button-hover" activeimage="button-active" active_downimage="button-active-down" x="2" y="2" w="12" h="12" />
+              <text id="customText" text="Hello" x="20" y="2" w="50" h="12" />
+            </layout>
+          </container>
+        </WinampAbstractionLayer>
+        """
+        let descriptor = ModernSkinParser.parse(files: [
+            "skin.xml": Data(xml.utf8), "button.png": Data([1])
+        ]).descriptor
+        let controlHandle = try #require(descriptor.scene.firstHandle(for: "action"))
+        let control = try #require(descriptor.scene.node(controlHandle))
+        #expect(control.attributes["image"] == "button")
+        #expect(control.attributes["downimage"] == "button-down")
+        #expect(control.attributes["hoverimage"] == "button-hover")
+        #expect(control.attributes["activeimage"] == "button-active")
+        #expect(control.attributes["activepressedimage"] == "button-active-down")
+        let textHandle = try #require(descriptor.scene.firstHandle(for: "customtext"))
+        let text = try #require(descriptor.scene.node(textHandle))
+        #expect(text.attributes["role"] == "custom")
+        #expect(text.attributes["text"] == "Hello")
     }
 
     @Test @MainActor func modernParserRetainsWasabiObjectsAndMakiOnlyButtons() {
@@ -956,7 +1086,10 @@ struct SkinTests {
         #expect(descriptor.layers.first { $0.elementID == "hole" }?.sysRegion == -2)
 
         let catalog = SkinAssetCatalog(name: "Modern", files: ["skin.xml": Data(xml.utf8), "pixel.png": try alphaAndMagentaPNG()], report: .init(), format: .modern, modern: descriptor)
-        #expect(catalog.regionPath != nil)
+        let path = try #require(catalog.regionPath)
+        #expect(path.contains(CGPoint(x: 10, y: 50)))
+        #expect(!path.contains(CGPoint(x: 50, y: 50)))
+        #expect(path.contains(CGPoint(x: 90, y: 50)))
         #expect(catalog.modernWindowUsesBitmapAlpha)
         #expect(catalog.mainImage != nil)
     }
@@ -984,6 +1117,16 @@ struct SkinTests {
         host.minimumLogicalSize = CGSize(width: 275, height: 116)
         let snapped = host.windowWillResize(host.window, toFrameSize: CGSize(width: 641, height: 527))
         #expect(snapped == CGSize(width: 600, height: 522))
+    }
+
+    @Test @MainActor func skinHostCanAdoptTheSelectedModernCanvas() {
+        let host = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 116), scale: 1)
+        host.setLogicalFrame(CGRect(x: 40, y: 50, width: 275, height: 116))
+        host.resizeLogicalWindow(to: CGSize(width: 760, height: 394), display: false)
+
+        #expect(host.normalLogicalSize == CGSize(width: 760, height: 394))
+        #expect(host.logicalFrame.size == CGSize(width: 760, height: 394))
+        #expect(host.logicalFrame.origin == CGPoint(x: 40, y: 50))
     }
 
     @Test @MainActor func detachedSkinWindowsMoveIndependently() throws {

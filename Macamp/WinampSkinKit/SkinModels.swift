@@ -32,6 +32,9 @@ struct SkinControlDefinition: Sendable {
     let normalSprite: SpriteReference?
     let pressedSprite: SpriteReference?
     let disabledSprite: SpriteReference?
+    var hoverSprite: SpriteReference? = nil
+    var activeSprite: SpriteReference? = nil
+    var activePressedSprite: SpriteReference? = nil
     let action: SkinAction
     var elementID: String? = nil
     var initiallyVisible: Bool = true
@@ -511,6 +514,16 @@ nonisolated struct WasabiScene: Sendable, Equatable {
         nodes[handle] = node
     }
 
+    mutating func setAttribute(_ value: String?, for key: String, handle: WasabiHandle) {
+        guard var node = nodes[handle] else { return }
+        if let value {
+            node.attributes[key.lowercased()] = value
+        } else {
+            node.attributes.removeValue(forKey: key.lowercased())
+        }
+        nodes[handle] = node
+    }
+
     /// Stores AnimatedLayer selection in the live node rather than in a
     /// renderer-side table. The painter and every scene query therefore see
     /// the same selected frame.
@@ -673,12 +686,13 @@ struct ModernSkinLayer: Sendable {
     var drawerRole: ModernDrawerRole? = nil
     var sysRegion: Int? = nil
     var isLayoutBackground = false
+    var attributes: [String: String] = [:]
 
     var isSystemRegion: Bool { sysRegion != nil && sysRegion != 0 }
 }
 
 enum ModernSkinTextRole: Sendable {
-    case songTitle, elapsedTime, remainingTime, bitrate, frequency, channels, fileExtension
+    case custom, songTitle, elapsedTime, remainingTime, bitrate, frequency, channels, fileExtension
 }
 
 struct ModernSkinTextRegion: Sendable {
@@ -694,6 +708,8 @@ struct ModernSkinTextRegion: Sendable {
     var alignment: String
     var drawerRole: ModernDrawerRole? = nil
     var sysRegion: Int? = nil
+    var display: String? = nil
+    var defaultText: String? = nil
 }
 
 enum ModernSkinContentRole: Sendable {
@@ -773,12 +789,9 @@ final class SkinAssetCatalog {
     let drawers: [ModernDrawerDescriptor]
     let makiPrograms: [MakiProgram]
     let makiBindings: [ModernMakiBinding]
-    let makiControlImages: [String: NSImage]
-    let drawerImages: [ModernDrawerRole: NSImage]
     let modernBaseImage: NSImage?
     let modernOcclusionFrame: CGRect?
     let modernWindowUsesBitmapAlpha: Bool
-    let modernLayers: [ModernSkinLayer]
     let modernBitmapFiles: [String: String]
     let modernBitmapSourceRects: [String: CGRect]
     let modernBitmapFonts: [String: ModernBitmapFontResource]
@@ -829,6 +842,9 @@ final class SkinAssetCatalog {
                     normalSprite: control.normalSprite,
                     pressedSprite: control.pressedSprite,
                     disabledSprite: control.disabledSprite,
+                    hoverSprite: control.hoverSprite,
+                    activeSprite: control.activeSprite,
+                    activePressedSprite: control.activePressedSprite,
                     action: control.action,
                     elementID: control.elementID,
                     initiallyVisible: control.initiallyVisible,
@@ -842,7 +858,6 @@ final class SkinAssetCatalog {
             textRegions = modern.textRegions
             contentRegions = modern.contentRegions
             drawers = modern.drawers
-            modernLayers = modern.layers
             modernBitmapFiles = modern.bitmapFiles
             modernBitmapSourceRects = modern.bitmapSourceRects
             modernBitmapFonts = modern.bitmapFonts
@@ -859,17 +874,6 @@ final class SkinAssetCatalog {
             makiPrograms = Array(Set(modern.makiBindings.map { $0.path.lowercased() })).sorted().compactMap { path in
                 files[path].flatMap { try? MakiDecoder.decode($0, path: path) }
             }
-            makiControlImages = Dictionary(resolvedControls.compactMap { control in
-                guard let elementID = control.elementID?.lowercased(),
-                      let imageID = control.normalSprite?.assetName.lowercased(),
-                      let image = Self.renderedSprite(
-                        imageID: imageID,
-                        size: control.orientation == nil ? control.frame.size : .zero,
-                        descriptor: modern,
-                        images: loadedImages
-                      ) else { return nil }
-                return (elementID, image)
-            }, uniquingKeysWith: { first, _ in first })
             let occlusionFrames = modern.layers
                 .filter { $0.drawerRole == nil && ($0.sysRegion ?? 0) > 0 }
                 .compactMap { Self.resolvedFrame(for: $0, descriptor: modern, images: loadedImages) }
@@ -906,16 +910,12 @@ final class SkinAssetCatalog {
                 images: loadedImages,
                 layers: modern.layers.filter { $0.drawerRole == nil && $0.elementID == nil && $0.initiallyVisible }
             ) ?? NSImage(size: canvasSize, flipped: true) { _ in true }
-            drawerImages = Dictionary(uniqueKeysWithValues: ModernDrawerRole.allCases.compactMap { role in
-                Self.renderModern(modern, images: loadedImages, layers: modern.layers.filter { $0.drawerRole == role && $0.elementID == nil && $0.initiallyVisible }).map { (role, $0) }
-            })
         } else {
             canvasSize = CGSize(width: 275, height: 116)
             controls = ClassicSpriteCatalog.mainControls
             textRegions = []
             contentRegions = []
             drawers = []
-            modernLayers = []
             modernBitmapFiles = [:]
             modernBitmapSourceRects = [:]
             modernBitmapFonts = [:]
@@ -930,8 +930,6 @@ final class SkinAssetCatalog {
             classicVisualizationPalette = Self.parseVisualizationPalette(Self.file(named: "viscolor.txt", in: files))
             makiPrograms = []
             makiBindings = []
-            makiControlImages = [:]
-            drawerImages = [:]
             modernBaseImage = nil
             modernOcclusionFrame = nil
             modernWindowUsesBitmapAlpha = false
@@ -1022,28 +1020,6 @@ final class SkinAssetCatalog {
 
     private static func image(named name: String, in images: [String: NSImage]) -> NSImage? {
         images[name] ?? images.first { $0.key.hasSuffix("/\(name)") }?.value
-    }
-
-    private static func renderedSprite(
-        imageID: String,
-        size requestedSize: CGSize,
-        descriptor: ModernSkinDescriptor,
-        images: [String: NSImage]
-    ) -> NSImage? {
-        guard let path = descriptor.bitmapFiles[imageID], let sourceImage = images[path.lowercased()] else { return nil }
-        let source = descriptor.bitmapSourceRects[imageID]
-        let size = CGSize(
-            width: requestedSize.width > 0 ? requestedSize.width : source?.width ?? sourceImage.size.width,
-            height: requestedSize.height > 0 ? requestedSize.height : source?.height ?? sourceImage.size.height
-        )
-        guard size.width > 0, size.height > 0 else { return nil }
-        return NSImage(size: size, flipped: true) { rect in
-            let sourceRect = source.map {
-                CGRect(x: $0.minX, y: sourceImage.size.height - $0.maxY, width: $0.width, height: $0.height)
-            } ?? CGRect(origin: .zero, size: sourceImage.size)
-            sourceImage.draw(in: rect, from: sourceRect, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
-            return true
-        }
     }
 
     private static func renderModern(
