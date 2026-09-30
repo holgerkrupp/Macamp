@@ -190,12 +190,12 @@ struct ProviderSnapshot: Equatable, Sendable {
 }
 
 extension Duration {
-    var secondsValue: Double {
+    nonisolated var secondsValue: Double {
         let components = components
         return Double(components.seconds) + Double(components.attoseconds) / 1e18
     }
 
-    static func seconds(_ value: Double) -> Duration {
+    nonisolated static func seconds(_ value: Double) -> Duration {
         .milliseconds(Int64((value * 1_000).rounded()))
     }
 }

@@ -35,6 +35,14 @@ protocol QueueEditingPlaybackProvider: PlaybackProvider {
     func clearQueue() async throws
 }
 
+/// Providers may opt into restoring a previously persisted queue. The
+/// provider owns item resolution so security-scoped access and remote-provider
+/// queue semantics stay out of UI and coordinator code.
+@MainActor
+protocol PlaybackSessionRestoring: PlaybackProvider {
+    func restore(session: PersistedPlaybackSession) async throws
+}
+
 @MainActor
 protocol MusicDiscoveryProvider: PlaybackProvider {
     func search(_ term: String) async throws -> MusicSearchResults

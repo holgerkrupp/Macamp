@@ -44,6 +44,65 @@ struct PlaybackCoreTests {
         #expect(provider.queue.currentIndex == 1)
     }
 
+    @Test func persistedPlaybackSessionRoundTripsAndClears() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacampPlaybackSessionTests")
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("json")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = PlaybackSessionStore(fileURL: root)
+        let item = PlaybackItem(
+            id: "local:/Music/one.mp3", providerID: .localMedia,
+            providerItemID: "file:///Music/one.mp3", title: "One",
+            artist: "Artist", duration: .seconds(120), mediaKind: .localFile,
+            isExplicit: false
+        )
+        let session = PersistedPlaybackSession(
+            providerID: .localMedia,
+            items: [PersistedQueueItem(item: item)],
+            currentIndex: 0,
+            elapsedSeconds: 24.5,
+            shuffleMode: .songs,
+            repeatMode: .all
+        )
+
+        await store.save(session)
+        #expect(await store.load() == session)
+        await store.clear()
+        #expect(await store.load() == nil)
+    }
+
+    @Test func persistedSessionRestoresQueueWithoutStartingPlayback() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacampPlaybackSessionTests")
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("json")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = TestPlaybackProvider(id: "restorable", capabilities: [.playback])
+        let store = PlaybackSessionStore(fileURL: root)
+        let coordinator = PlaybackCoordinator(sessionStore: store)
+        coordinator.register(provider)
+
+        let first = PlaybackItem(id: "first", providerID: provider.id, providerItemID: "1", title: "First", mediaKind: .song, isExplicit: false)
+        let second = PlaybackItem(id: "second", providerID: provider.id, providerItemID: "2", title: "Second", mediaKind: .song, isExplicit: false)
+        let session = PersistedPlaybackSession(
+            providerID: provider.id,
+            items: [PersistedQueueItem(item: first), PersistedQueueItem(item: second)],
+            currentIndex: 1,
+            elapsedSeconds: 8,
+            shuffleMode: .off,
+            repeatMode: .off
+        )
+        await store.save(session)
+
+        await coordinator.restorePersistedSession()
+
+        #expect(coordinator.queue.items.map(\.title) == ["First", "Second"])
+        #expect(coordinator.queue.currentIndex == 1)
+        #expect(coordinator.state.status == .paused)
+        #expect(provider.playCount == 0)
+    }
+
     @Test func queueEditingProviderMutatesQueueWithoutChangingPlaybackContract() async throws {
         let provider = MockPlaybackProvider()
         try await provider.play()
@@ -126,7 +185,7 @@ struct PlaybackCoreTests {
 }
 
 @MainActor
-private final class TestPlaybackProvider: PlaybackProvider {
+private final class TestPlaybackProvider: PlaybackSessionRestoring {
     let id: PlaybackProviderID
     let displayName = "Test"
     let capabilities: PlaybackCapabilities
@@ -158,6 +217,29 @@ private final class TestPlaybackProvider: PlaybackProvider {
     func setVolume(_ volume: Double) async throws { volumeCount += 1 }
     func setShuffleMode(_ mode: ShuffleMode) async throws { }
     func setRepeatMode(_ mode: RepeatMode) async throws { }
+
+    func restore(session: PersistedPlaybackSession) async throws {
+        guard session.providerID == id else {
+            throw ProviderError(code: .providerUnavailable, message: "Wrong provider")
+        }
+        let items = session.items.map { item in
+            PlaybackItem(
+                id: item.id, providerID: id, providerItemID: item.providerItemID,
+                title: item.title, artist: item.artist, albumTitle: item.albumTitle,
+                duration: item.durationSeconds.map(Duration.seconds), mediaKind: item.mediaKind,
+                isExplicit: false, sourceURL: item.sourceURL, attribution: nil
+            )
+        }
+        queue = PlaybackQueue(items: items, currentIndex: session.currentIndex)
+        state.currentItem = queue.currentItem
+        state.duration = queue.currentItem?.duration
+        state.elapsed = .seconds(session.elapsedSeconds ?? 0)
+        state.shuffleMode = session.shuffleMode
+        state.repeatMode = session.repeatMode
+        state.status = queue.currentItem == nil ? .stopped : .paused
+        state.playbackRate = 0
+        publish()
+    }
     private var snapshot: ProviderSnapshot { .init(authenticationState: authenticationState, state: state, queue: queue) }
     private func publish() { continuation?.yield(snapshot) }
 }
