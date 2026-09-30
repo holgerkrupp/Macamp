@@ -29,6 +29,30 @@ struct SkinTests {
         #expect(descriptor.textRegions.first { $0.elementID == "static" }?.role == .custom)
     }
 
+    @Test @MainActor func modernLayoutBackgroundWithoutDimensionsGetsBitmapGeometry() throws {
+        let xml = """
+        <WinampAbstractionLayer>
+          <elements><bitmap id="background" file="background.png" /></elements>
+          <container id="main" default_visible="1">
+            <layout id="normal" w="64" h="32" background="background" />
+          </container>
+        </WinampAbstractionLayer>
+        """
+        let descriptor = ModernSkinParser.parse(files: [
+            "skin.xml": Data(xml.utf8),
+            "background.png": SkinDiagnosticFixtures.diagnosticPNG(
+                size: CGSize(width: 64, height: 32),
+                background: .systemGreen,
+                fills: []
+            )
+        ]).descriptor
+
+        #expect(descriptor.layers.first?.frame == CGRect(x: 0, y: 0, width: 64, height: 32))
+        let layer = try #require(descriptor.scene.allNodes.first { $0.kind == WasabiObjectKind.layer })
+        #expect(layer.localFrame == CGRect(x: 0, y: 0, width: 64, height: 32))
+        #expect(descriptor.canvasSize == CGSize(width: 64, height: 32))
+    }
+
     @Test func classicBrandingUsesStableCanonicalRegions() {
         let main = ClassicBrandingRenderer.layout(for: .main, size: CGSize(width: 275, height: 116))
         let playlist = ClassicBrandingRenderer.layout(for: .playlist, size: CGSize(width: 275, height: 232))

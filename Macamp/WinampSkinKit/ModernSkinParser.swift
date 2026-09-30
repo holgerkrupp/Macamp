@@ -1016,7 +1016,14 @@ enum ModernSkinParser {
         result.layers = candidate.layers.map { layer in
             var layer = layer
             if layer.isLayoutBackground {
-                layer.frame = CGRect(origin: .zero, size: candidate.canvasSize)
+                // Layout backgrounds often omit their frame. Fall back to the
+                // referenced bitmap dimensions when the layout has no canvas.
+                let imageID = layer.imageID.lowercased()
+                let source = descriptor.bitmapSourceRects[imageID]
+                let bitmapSize = imageSizes[imageID]
+                let width = candidate.canvasSize.width > 0 ? candidate.canvasSize.width : (source?.width ?? bitmapSize?.width ?? 0)
+                let height = candidate.canvasSize.height > 0 ? candidate.canvasSize.height : (source?.height ?? bitmapSize?.height ?? 0)
+                layer.frame = CGRect(origin: .zero, size: CGSize(width: width, height: height))
             } else if let size = imageSizes[layer.imageID.lowercased()] {
                 if layer.frame.width <= 0 { layer.frame.size.width = descriptor.bitmapSourceRects[layer.imageID.lowercased()]?.width ?? size.width }
                 if layer.frame.height <= 0 { layer.frame.size.height = descriptor.bitmapSourceRects[layer.imageID.lowercased()]?.height ?? size.height }
