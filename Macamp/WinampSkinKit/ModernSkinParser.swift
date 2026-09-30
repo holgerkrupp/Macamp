@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import ImageIO
 
 enum ModernSkinParser {
     struct Result: Sendable {
@@ -48,6 +49,11 @@ enum ModernSkinParser {
         }
 
         applyElementAliases(elementAliases, to: &descriptor)
+        // Static rendering has always repaired omitted bitmap geometry at the
+        // catalog boundary.  The live Wasabi scene must receive the same
+        // repaired frames, otherwise a sysregion/background object with no
+        // explicit w/h becomes a zero-sized live node.
+        candidates = candidates.map { normalizeBitmapGeometry($0, descriptor: descriptor, files: files) }
 
         let definitions: [String: LayoutCandidate] = Dictionary(candidates.map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
         let xuiDefinitions: [String: LayoutCandidate] = Dictionary(candidates.compactMap { candidate in
@@ -81,6 +87,9 @@ enum ModernSkinParser {
                 makiBindings: &descriptor.makiBindings
             )
             descriptor.objectTree = descriptor.scene.compatibilityTree
+            if selected.regionShapes.contains(where: { abs($0.sysRegion) > 2 }) {
+                warnings.append("Modern region values beyond +/-2 use Macamp's additive/subtractive rectangle subset.")
+            }
             if !selected.regionShapes.isEmpty || selected.desktopAlpha {
                 descriptor.windowRegion = ModernWindowRegionDescriptor(
                     shapes: selected.regionShapes,
@@ -115,6 +124,9 @@ enum ModernSkinParser {
         var sendParams: [SendParam]
         var hiddenIDs: Set<String>
         var hiddenObjects: [HideObject]
+        var sysRegion: Int?
+        var hasDeclaredWidth: Bool
+        var hasDeclaredHeight: Bool
     }
 
     private struct GroupReference {
@@ -282,7 +294,7 @@ enum ModernSkinParser {
             let rootSize = CGSize(width: declaredWidth, height: declaredHeight)
             let desktopAlpha = bool(attribute("desktopalpha", root))
             if let background = attribute("background", root)?.lowercased() {
-                layers.append(ModernSkinLayer(imageID: background, frame: .zero, elementID: id))
+                layers.append(ModernSkinLayer(imageID: background, frame: .zero, isLayoutBackground: true))
             }
             for case let element as XMLElement in try root.nodes(forXPath: ".//*") {
                 guard nearestStructuralRoot(of: element) === root else { continue }
@@ -329,7 +341,7 @@ enum ModernSkinParser {
                         sysRegion: sysRegion
                     ))
                     if let sysRegion, sysRegion != 0, !visualFrame.isEmpty {
-                        regionShapes.append(ModernWindowRegionShape(frame: visualFrame, additive: sysRegion > 0))
+                        regionShapes.append(ModernWindowRegionShape(frame: visualFrame, additive: sysRegion > 0, sysRegion: sysRegion))
                     }
                 }
                 if let mapped {
@@ -348,7 +360,8 @@ enum ModernSkinParser {
                         elementID: attribute("id", element),
                         initiallyVisible: initiallyVisible,
                         parameter: Int(attribute("param", element) ?? "") ?? equalizerBandNumber(from: attribute("id", element)),
-                        orientation: orientation
+                        orientation: orientation,
+                        sysRegion: number(attribute("sysregion", element)).map(Int.init)
                     ))
                 } else if ["button", "togglebutton", "nstatesbutton", "slider"].contains(tag) {
                     // A button can be completely MAKI-owned. It still needs a
@@ -367,8 +380,14 @@ enum ModernSkinParser {
                         elementID: attribute("id", element),
                         initiallyVisible: initiallyVisible,
                         parameter: Int(attribute("param", element) ?? "") ?? equalizerBandNumber(from: attribute("id", element)),
-                        orientation: orientation
+                        orientation: orientation,
+                        sysRegion: number(attribute("sysregion", element)).map(Int.init)
                     ))
+                }
+                if let sysRegion = number(attribute("sysregion", element)).map(Int.init), sysRegion != 0,
+                   !frame.isEmpty,
+                   !["layer", "animatedlayer"].contains(tag) {
+                    regionShapes.append(ModernWindowRegionShape(frame: frame, additive: sysRegion > 0, sysRegion: sysRegion))
                 }
                 if tag == "group" || element.name?.contains(":") == true {
                     let definitionID = attribute("id", element) ?? element.name ?? ""
@@ -396,7 +415,8 @@ enum ModernSkinParser {
                         red: color.red,
                         green: color.green,
                         blue: color.blue,
-                        alignment: attribute("align", element)?.lowercased() ?? "left"
+                        alignment: attribute("align", element)?.lowercased() ?? "left",
+                        sysRegion: number(attribute("sysregion", element)).map(Int.init)
                     ))
                 }
                 if let role = contentRole(tag: tag, element: element), frame.width > 0, frame.height > 0 {
@@ -404,7 +424,8 @@ enum ModernSkinParser {
                         role: role,
                         frame: frame,
                         elementID: attribute("id", element),
-                        initiallyVisible: initiallyVisible
+                        initiallyVisible: initiallyVisible,
+                        sysRegion: number(attribute("sysregion", element)).map(Int.init)
                     ))
                 }
             }
@@ -450,6 +471,17 @@ enum ModernSkinParser {
             let contentBounds = layers.map(\.frame).reduce(CGRect.null) { $0.union($1) }
             let width = declaredWidth > 0 ? declaredWidth : max(1, contentBounds.maxX.isFinite ? contentBounds.maxX : 275)
             let height = declaredHeight > 0 ? declaredHeight : max(1, contentBounds.maxY.isFinite ? contentBounds.maxY : 116)
+            let canvasSize = CGSize(width: width, height: height)
+            if let sysRegion = number(attribute("sysregion", root)).map(Int.init), sysRegion != 0 {
+                regionShapes.insert(
+                    ModernWindowRegionShape(
+                        frame: CGRect(origin: .zero, size: canvasSize),
+                        additive: sysRegion > 0,
+                        sysRegion: sysRegion
+                    ),
+                    at: 0
+                )
+            }
             // Retain every layout, including an intentionally sparse shade or
             // state layout. A layout is part of the live Container graph even
             // when all of its visible pixels come from runtime/component data.
@@ -476,7 +508,10 @@ enum ModernSkinParser {
                     scripts: scripts,
                     sendParams: sendParams,
                     hiddenIDs: hiddenIDs,
-                    hiddenObjects: hiddenObjects
+                    hiddenObjects: hiddenObjects,
+                    sysRegion: number(attribute("sysregion", root)).map(Int.init),
+                    hasDeclaredWidth: declaredWidth > 0,
+                    hasDeclaredHeight: declaredHeight > 0
                 ))
             }
         }
@@ -549,7 +584,10 @@ enum ModernSkinParser {
                 localFrame: CGRect(origin: .zero, size: layout.canvasSize),
                 parent: container,
                 visible: layout.containerIsDefaultVisible,
-                attributes: ["container": containerID]
+                attributes: [
+                    "container": containerID,
+                    "sysregion": layout.sysRegion.map(String.init) ?? ""
+                ]
             )
             layoutHandles.append((layout, handle, container))
             if layout.id.caseInsensitiveCompare(activeCandidate.id) == .orderedSame {
@@ -641,7 +679,8 @@ enum ModernSkinParser {
                 zIndex: z,
                 attributes: [
                     "action": control.action.rawValue,
-                    "orientation": control.orientation.map { $0 == .vertical ? "vertical" : "horizontal" } ?? ""
+                    "orientation": control.orientation.map { $0 == .vertical ? "vertical" : "horizontal" } ?? "",
+                    "sysregion": control.sysRegion.map(String.init) ?? ""
                 ].merging(nodeOverrides, uniquingKeysWith: { _, new in new })
             )
             z += 1
@@ -664,7 +703,8 @@ enum ModernSkinParser {
                     "red": String(region.red),
                     "green": String(region.green),
                     "blue": String(region.blue),
-                    "align": region.alignment
+                    "align": region.alignment,
+                    "sysregion": region.sysRegion.map(String.init) ?? ""
                 ].merging(nodeOverrides, uniquingKeysWith: { _, new in new })
             )
             z += 1
@@ -680,7 +720,10 @@ enum ModernSkinParser {
                 parent: parent,
                 visible: region.initiallyVisible && !hiddenIDs.contains(id.lowercased()) && bool(nodeOverrides["visible"] ?? "1"),
                 zIndex: z,
-                attributes: ["role": contentRoleName(region.role)].merging(nodeOverrides, uniquingKeysWith: { _, new in new })
+                attributes: [
+                    "role": contentRoleName(region.role),
+                    "sysregion": region.sysRegion.map(String.init) ?? ""
+                ].merging(nodeOverrides, uniquingKeysWith: { _, new in new })
             )
             z += 1
         }
@@ -704,6 +747,9 @@ enum ModernSkinParser {
                 )
             )
             var groupAttributes = ["definition": definition.id, "tag": reference.tag]
+            if let sysRegion = reference.attributes["sysregion"] ?? definition.sysRegion.map(String.init) {
+                groupAttributes["sysregion"] = sysRegion
+            }
             if let embedXUITarget = definition.embedXUITarget?.trimmingCharacters(in: .whitespacesAndNewlines),
                !embedXUITarget.isEmpty {
                 groupAttributes["embed_xui"] = embedXUITarget
@@ -843,6 +889,7 @@ enum ModernSkinParser {
             result.drawers.insert(contentsOf: parent.drawers, at: 0)
             result.regionShapes.insert(contentsOf: parent.regionShapes, at: 0)
             result.desktopAlpha = result.desktopAlpha || parent.desktopAlpha
+            if result.sysRegion == nil { result.sysRegion = parent.sysRegion }
         }
         for reference in candidate.groups {
             let referenceID = reference.definitionID.lowercased()
@@ -884,7 +931,8 @@ enum ModernSkinParser {
                     initiallyVisible: control.initiallyVisible,
                     drawerRole: control.drawerRole ?? drawerRole,
                     parameter: control.parameter,
-                    orientation: control.orientation
+                    orientation: control.orientation,
+                    sysRegion: control.sysRegion
                 )
             })
             result.textRegions.append(contentsOf: child.textRegions.map { region in
@@ -919,6 +967,81 @@ enum ModernSkinParser {
             }
         }
         return result
+    }
+
+    nonisolated private static func normalizeBitmapGeometry(
+        _ candidate: LayoutCandidate,
+        descriptor: ModernSkinDescriptor,
+        files: [String: Data]
+    ) -> LayoutCandidate {
+        var result = candidate
+        let imageSizes = Dictionary(uniqueKeysWithValues: descriptor.bitmapFiles.compactMap { id, path in
+            imagePixelSize(files[path]).map { (id, $0) }
+        })
+        result.layers = candidate.layers.map { layer in
+            var layer = layer
+            if layer.isLayoutBackground {
+                layer.frame = CGRect(origin: .zero, size: candidate.canvasSize)
+            } else if let size = imageSizes[layer.imageID.lowercased()] {
+                if layer.frame.width <= 0 { layer.frame.size.width = descriptor.bitmapSourceRects[layer.imageID.lowercased()]?.width ?? size.width }
+                if layer.frame.height <= 0 { layer.frame.size.height = descriptor.bitmapSourceRects[layer.imageID.lowercased()]?.height ?? size.height }
+            }
+            return layer
+        }
+        let layerBounds = result.layers.map(\.frame).reduce(CGRect.null) { $0.union($1) }
+        if layerBounds.maxX.isFinite, layerBounds.maxY.isFinite {
+            result.canvasSize = CGSize(
+                width: candidate.hasDeclaredWidth ? candidate.canvasSize.width : max(candidate.canvasSize.width, layerBounds.maxX),
+                height: candidate.hasDeclaredHeight ? candidate.canvasSize.height : max(candidate.canvasSize.height, layerBounds.maxY)
+            )
+        }
+        // Region shapes are also produced for controls/text/content. Keep
+        // their parsed geometry, but replace zero-sized layer contributions
+        // with the repaired live bitmap frames.
+        result.regionShapes.removeAll { $0.frame.isEmpty }
+        result.regionShapes.append(contentsOf: result.layers.compactMap { layer in
+            guard let value = layer.sysRegion, value != 0, !layer.frame.isEmpty else { return nil }
+            guard !result.regionShapes.contains(where: { $0.frame == layer.frame && $0.additive == (value > 0) && $0.sysRegion == value }) else { return nil }
+            return ModernWindowRegionShape(frame: layer.frame, additive: value > 0, sysRegion: value)
+        })
+        if let value = result.sysRegion, value != 0,
+           let first = result.regionShapes.firstIndex(where: { $0.frame.origin == .zero }) {
+            result.regionShapes[first].frame = CGRect(origin: .zero, size: result.canvasSize)
+            result.regionShapes[first].sysRegion = value
+        }
+        result.controls = candidate.controls.map { control in
+            var frame = control.frame
+            if let imageID = control.normalSprite?.assetName,
+               let size = imageSizes[imageID.lowercased()] {
+                if frame.width <= 0 { frame.size.width = descriptor.bitmapSourceRects[imageID.lowercased()]?.width ?? size.width }
+                if frame.height <= 0 { frame.size.height = descriptor.bitmapSourceRects[imageID.lowercased()]?.height ?? size.height }
+            }
+            return SkinControlDefinition(
+                id: control.id,
+                frame: frame,
+                normalSprite: control.normalSprite,
+                pressedSprite: control.pressedSprite,
+                disabledSprite: control.disabledSprite,
+                action: control.action,
+                elementID: control.elementID,
+                initiallyVisible: control.initiallyVisible,
+                drawerRole: control.drawerRole,
+                parameter: control.parameter,
+                orientation: control.orientation,
+                sysRegion: control.sysRegion
+            )
+        }
+        return result
+    }
+
+    nonisolated private static func imagePixelSize(_ data: Data?) -> CGSize? {
+        guard let data,
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0 else { return nil }
+        return CGSize(width: width, height: height)
     }
 
     nonisolated private static func expandedOrigin(

@@ -38,6 +38,7 @@ struct SkinControlDefinition: Sendable {
     var drawerRole: ModernDrawerRole? = nil
     var parameter: Int? = nil
     var orientation: SkinControlOrientation? = nil
+    var sysRegion: Int? = nil
 }
 
 /// The fixed Classic main-window table is data, not renderer inference.  The
@@ -254,6 +255,9 @@ struct ModernDrawerDescriptor: Sendable {
 struct ModernWindowRegionShape: Sendable, Equatable {
     var frame: CGRect
     var additive: Bool
+    /// Preserve the raw Wasabi value.  The sign controls add/remove while
+    /// skins occasionally use values other than +/-1 for region objects.
+    var sysRegion: Int = 1
     var drawerRole: ModernDrawerRole? = nil
 }
 
@@ -261,6 +265,71 @@ struct ModernWindowRegionDescriptor: Sendable, Equatable {
     var shapes: [ModernWindowRegionShape] = []
     var desktopAlpha = false
     var usesBitmapAlpha = false
+}
+
+/// Composes the small, deliberately supported subset of Wasabi regions that
+/// Macamp can represent with an AppKit path.  Both catalog/static rendering
+/// and the live scene use this helper so a mask cannot disagree with drawing
+/// or hit testing.
+enum ModernWindowRegionComposer {
+    static func path(
+        base: NSBezierPath? = nil,
+        shapes: [ModernWindowRegionShape]
+    ) -> NSBezierPath? {
+        guard base != nil || !shapes.isEmpty else { return nil }
+        let result = base?.copy() as? NSBezierPath ?? NSBezierPath()
+        result.windingRule = .nonZero
+        for shape in shapes where !shape.frame.isEmpty {
+            append(rect: shape.frame, to: result, additive: shape.additive)
+        }
+        return result.isEmpty ? nil : result
+    }
+
+    /// Converts the alpha of a rendered logical image into a compact path of
+    /// horizontal runs.  Run rectangles keep this practical for large WAL
+    /// canvases while preserving transparent corners and holes.
+    static func alphaPath(from image: NSImage, logicalSize: CGSize, threshold: CGFloat = 0.08) -> NSBezierPath? {
+        guard logicalSize.width > 0, logicalSize.height > 0,
+              let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              bitmap.pixelsWide > 0, bitmap.pixelsHigh > 0 else { return nil }
+        let path = NSBezierPath()
+        path.windingRule = .nonZero
+        let widthScale = logicalSize.width / CGFloat(bitmap.pixelsWide)
+        let heightScale = logicalSize.height / CGFloat(bitmap.pixelsHigh)
+        for pixelY in 0..<bitmap.pixelsHigh {
+            var runStart: Int?
+            for pixelX in 0...bitmap.pixelsWide {
+                let opaque = pixelX < bitmap.pixelsWide &&
+                    (bitmap.colorAt(x: pixelX, y: bitmap.pixelsHigh - 1 - pixelY)?.alphaComponent ?? 0) > threshold
+                if opaque, runStart == nil {
+                    runStart = pixelX
+                } else if !opaque, let start = runStart {
+                    append(
+                        rect: CGRect(
+                            x: CGFloat(start) * widthScale,
+                            y: CGFloat(pixelY) * heightScale,
+                            width: CGFloat(pixelX - start) * widthScale,
+                            height: heightScale
+                        ),
+                        to: path,
+                        additive: true
+                    )
+                    runStart = nil
+                }
+            }
+        }
+        return path.isEmpty ? nil : path
+    }
+
+    private static func append(rect: CGRect, to path: NSBezierPath, additive: Bool) {
+        let points: [CGPoint] = additive
+            ? [CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: rect.minX, y: rect.maxY)]
+            : [CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: rect.maxX, y: rect.minY)]
+        path.move(to: points[0])
+        points.dropFirst().forEach { path.line(to: $0) }
+        path.close()
+    }
 }
 
 struct ModernMakiBinding: Sendable, Equatable {
@@ -603,6 +672,7 @@ struct ModernSkinLayer: Sendable {
     var initiallyVisible = true
     var drawerRole: ModernDrawerRole? = nil
     var sysRegion: Int? = nil
+    var isLayoutBackground = false
 
     var isSystemRegion: Bool { sysRegion != nil && sysRegion != 0 }
 }
@@ -623,6 +693,7 @@ struct ModernSkinTextRegion: Sendable {
     var blue: Double
     var alignment: String
     var drawerRole: ModernDrawerRole? = nil
+    var sysRegion: Int? = nil
 }
 
 enum ModernSkinContentRole: Sendable {
@@ -635,6 +706,17 @@ struct ModernSkinContentRegion: Sendable {
     var elementID: String? = nil
     var initiallyVisible = true
     var drawerRole: ModernDrawerRole? = nil
+    var sysRegion: Int? = nil
+}
+
+/// The four colours Winamp exposes through PLEDIT.TXT.  Keep these as RGB
+/// values in the model so the catalog remains safe to pass through the skin
+/// loader without retaining AppKit objects.
+nonisolated struct ClassicPlaylistPalette: Sendable, Equatable {
+    var normalText = ClassicRGBColor(red: 255, green: 255, blue: 255)
+    var currentText = ClassicRGBColor(red: 255, green: 255, blue: 255)
+    var normalBackground = ClassicRGBColor(red: 0, green: 0, blue: 0)
+    var selectedBackground = ClassicRGBColor(red: 0, green: 0, blue: 128)
 }
 
 struct ModernSkinDescriptor: Sendable {
@@ -707,6 +789,7 @@ final class SkinAssetCatalog {
     let objectTree: WasabiObjectTree
     let classicAssets: ClassicSkinAssetDescriptor?
     let classicPlaylistText: Data?
+    let classicPlaylistPalette: ClassicPlaylistPalette?
     let classicVisualizationPalette: ClassicVisualizationPalette?
     let cursorCatalog: WinampCursorCatalog
     private let renderedMainImage: NSImage?
@@ -751,7 +834,8 @@ final class SkinAssetCatalog {
                     initiallyVisible: control.initiallyVisible,
                     drawerRole: control.drawerRole,
                     parameter: control.parameter,
-                    orientation: control.orientation
+                    orientation: control.orientation,
+                    sysRegion: control.sysRegion
                 )
             }
             controls = resolvedControls
@@ -769,6 +853,7 @@ final class SkinAssetCatalog {
             objectTree = modern.scene.compatibilityTree
             classicAssets = nil
             classicPlaylistText = nil
+            classicPlaylistPalette = nil
             classicVisualizationPalette = nil
             makiBindings = modern.makiBindings
             makiPrograms = Array(Set(modern.makiBindings.map { $0.path.lowercased() })).sorted().compactMap { path in
@@ -792,20 +877,30 @@ final class SkinAssetCatalog {
                 partial.map { $0.union(frame) } ?? frame
             }
             modernWindowUsesBitmapAlpha = modern.windowRegion?.usesBitmapAlpha ?? false
-            // With desktopalpha, native bitmap alpha is the silhouette. The
-            // sysregion shapes remain useful for occlusion but must not clip the
-            // alpha-backed window down to their small bounding rectangles.
-            let windowRegionPath = modern.windowRegion.flatMap { $0.usesBitmapAlpha ? nil : Self.regionPath($0) }
-            regionPath = windowRegionPath
             equalizerRegionPath = nil
             equalizerShadeRegionPath = nil
-            renderedMainImage = Self.renderModern(
+            let staticRegionPath = modern.windowRegion.flatMap { descriptor in
+                descriptor.usesBitmapAlpha ? nil : ModernWindowRegionComposer.path(shapes: descriptor.shapes)
+            }
+            let rendered = Self.renderModern(
                 modern,
                 images: loadedImages,
                 layers: modern.layers.filter(\.initiallyVisible),
                 allowScreenshotFallback: true,
-                clipPath: windowRegionPath
-            ) ?? NSImage(size: canvasSize, flipped: true) { _ in true }
+                clipPath: staticRegionPath
+            )
+            let windowRegionPath: NSBezierPath?
+            if let descriptor = modern.windowRegion {
+                let logicalSize = canvasSize
+                let alpha = descriptor.usesBitmapAlpha
+                    ? rendered.flatMap { ModernWindowRegionComposer.alphaPath(from: $0, logicalSize: logicalSize) }
+                    : nil
+                windowRegionPath = ModernWindowRegionComposer.path(base: alpha, shapes: descriptor.shapes)
+            } else {
+                windowRegionPath = nil
+            }
+            regionPath = windowRegionPath
+            renderedMainImage = rendered ?? NSImage(size: canvasSize, flipped: true) { _ in true }
             modernBaseImage = Self.renderModern(
                 modern,
                 images: loadedImages,
@@ -831,6 +926,7 @@ final class SkinAssetCatalog {
             objectTree = WasabiObjectTree()
             classicAssets = ClassicSkinAssetDescriptor()
             classicPlaylistText = Self.file(named: "pledit.txt", in: files)
+            classicPlaylistPalette = Self.parsePlaylistPalette(classicPlaylistText)
             classicVisualizationPalette = Self.parseVisualizationPalette(Self.file(named: "viscolor.txt", in: files))
             makiPrograms = []
             makiBindings = []
@@ -869,6 +965,38 @@ final class SkinAssetCatalog {
             oscillator: Array(entries[18...22]),
             peakDots: entries[23]
         )
+    }
+
+    private static func parsePlaylistPalette(_ data: Data?) -> ClassicPlaylistPalette? {
+        guard let data else { return nil }
+        var palette = ClassicPlaylistPalette()
+        var found = false
+        let text = String(decoding: data, as: UTF8.self)
+        for rawLine in text.split(whereSeparator: \.isNewline) {
+            let line = rawLine.split(separator: ";", maxSplits: 1).first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            guard parts.count == 2, let color = Self.playlistColor(String(parts[1])) else { continue }
+            switch parts[0].lowercased() {
+            case "normal": palette.normalText = color; found = true
+            case "current": palette.currentText = color; found = true
+            case "normalbg": palette.normalBackground = color; found = true
+            case "selectedbg": palette.selectedBackground = color; found = true
+            default: break
+            }
+        }
+        return found ? palette : nil
+    }
+
+    private static func playlistColor(_ value: String) -> ClassicRGBColor? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("#"), trimmed.count == 7 {
+            let hex = String(trimmed.dropFirst())
+            guard let rgb = UInt32(hex, radix: 16) else { return nil }
+            return ClassicRGBColor(red: UInt8((rgb >> 16) & 0xff), green: UInt8((rgb >> 8) & 0xff), blue: UInt8(rgb & 0xff))
+        }
+        let values = trimmed.split { !$0.isNumber }.compactMap { UInt8($0) }
+        guard values.count >= 3 else { return nil }
+        return ClassicRGBColor(red: values[0], green: values[1], blue: values[2])
     }
 
     private static func safeImage(data: Data, applyChromaKey: Bool) -> NSImage? {
@@ -962,22 +1090,6 @@ final class SkinAssetCatalog {
             }
             return true
         }
-    }
-
-    private static func regionPath(_ descriptor: ModernWindowRegionDescriptor) -> NSBezierPath? {
-        guard !descriptor.shapes.isEmpty else { return nil }
-        let path = NSBezierPath()
-        path.windingRule = .nonZero
-        for shape in descriptor.shapes where !shape.frame.isEmpty {
-            let frame = shape.frame
-            let points: [CGPoint] = shape.additive
-                ? [CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.maxY), CGPoint(x: frame.minX, y: frame.maxY)]
-                : [CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.minX, y: frame.maxY), CGPoint(x: frame.maxX, y: frame.maxY), CGPoint(x: frame.maxX, y: frame.minY)]
-            path.move(to: points[0])
-            points.dropFirst().forEach { path.line(to: $0) }
-            path.close()
-        }
-        return path.isEmpty ? nil : path
     }
 
     private static func resolvedFrame(

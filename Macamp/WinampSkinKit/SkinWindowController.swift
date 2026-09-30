@@ -294,6 +294,13 @@ final class ClassicPlaylistSurface: NSView {
         let middleFrame = CGRect(x: 0, y: 20, width: width, height: max(0, height - 20 - bottomHeight))
         tile(source: CGRect(x: 0, y: 42, width: 12, height: 29), in: CGRect(x: 0, y: middleFrame.minY, width: 12, height: middleFrame.height))
         tile(source: CGRect(x: 31, y: 42, width: 20, height: 29), in: CGRect(x: max(12, width - 20), y: middleFrame.minY, width: 20, height: middleFrame.height))
+        // PLEDIT.BMP contains the frame chrome, not the client surface.  The
+        // host is transparent by design, so paint the normal playlist
+        // background before rows; otherwise the desktop shows through every
+        // unoccupied row.
+        let clientFrame = CGRect(x: 12, y: middleFrame.minY, width: max(0, width - 32), height: middleFrame.height)
+        playlistBackgroundColor().setFill()
+        clientFrame.fill()
         drawRows(in: CGRect(x: 12, y: 23, width: max(0, width - 32), height: max(0, middleFrame.height - 6)))
 
         let bottomY = max(20, height - bottomHeight)
@@ -419,18 +426,21 @@ final class ClassicPlaylistSurface: NSView {
     private func drawRows(in frame: CGRect) {
         let items = coordinator.queue.items
         let visibleCount = max(0, Int(frame.height / rowHeight))
-        let textColor = playlistTextColor()
+        let palette = playlistPalette()
+        palette.normalBackground.setFill()
+        frame.fill()
         for index in 0..<min(visibleCount, max(0, items.count - scrollOffset)) {
             let itemIndex = index + scrollOffset
             let row = CGRect(x: frame.minX, y: frame.minY + CGFloat(index) * rowHeight, width: frame.width, height: rowHeight)
-            if itemIndex == selectedIndex || itemIndex == coordinator.queue.currentIndex {
-                NSColor(calibratedRed: 0.16, green: 0.24, blue: 0.45, alpha: 1).setFill(); row.fill()
-            }
+            let isCurrent = itemIndex == coordinator.queue.currentIndex
+            let isSelected = itemIndex == selectedIndex
+            if isSelected { palette.selectedBackground.setFill(); row.fill() }
             let duration = items[itemIndex].duration.map { String(format: "%d:%02d", Int($0.secondsValue) / 60, Int($0.secondsValue) % 60) } ?? ""
             let title = "\(itemIndex + 1). \(items[itemIndex].title)"
             let text = duration.isEmpty ? title : "\(title)  \(duration)"
             text.draw(in: row.insetBy(dx: 2, dy: 0), withAttributes: [
-                .font: NSFont.systemFont(ofSize: 9), .foregroundColor: textColor
+                .font: NSFont.systemFont(ofSize: 9),
+                .foregroundColor: isCurrent ? palette.currentText : palette.normalText
             ])
         }
     }
@@ -447,16 +457,16 @@ final class ClassicPlaylistSurface: NSView {
         _ = drawSprite(source: CGRect(x: 52, y: 53, width: 8, height: 18), in: thumb)
     }
 
-    private func playlistTextColor() -> NSColor {
-        guard let data = skinStore.activeCatalog.classicPlaylistText,
-              let text = String(data: data, encoding: .ascii) else { return .white }
-        for line in text.split(whereSeparator: \.isNewline) {
-            let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
-            guard parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces).lowercased().contains("text") else { continue }
-            let values = parts[1].split { !$0.isNumber }.compactMap { Double($0) }
-            if values.count >= 3 { return NSColor(calibratedRed: CGFloat(values[0] / 255), green: CGFloat(values[1] / 255), blue: CGFloat(values[2] / 255), alpha: 1) }
+    private func playlistPalette() -> (normalText: NSColor, currentText: NSColor, normalBackground: NSColor, selectedBackground: NSColor) {
+        let palette = skinStore.activeCatalog.classicPlaylistPalette ?? ClassicPlaylistPalette()
+        func color(_ value: ClassicRGBColor) -> NSColor {
+            NSColor(calibratedRed: CGFloat(value.red) / 255, green: CGFloat(value.green) / 255, blue: CGFloat(value.blue) / 255, alpha: 1)
         }
-        return .white
+        return (color(palette.normalText), color(palette.currentText), color(palette.normalBackground), color(palette.selectedBackground))
+    }
+
+    private func playlistBackgroundColor() -> NSColor {
+        playlistPalette().normalBackground
     }
 
     private func tile(source: CGRect, in destination: CGRect) {

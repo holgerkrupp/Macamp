@@ -283,11 +283,9 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
     }
 }
 
-/// Keeps a set of independent skin windows moving as one logical Winamp
-/// window group. Membership is relationship-based; no skin or object IDs are
-/// involved. A move originating from any member propagates its logical delta
-/// to every other member, so hosts at different display scales remain aligned
-/// in Winamp coordinates.
+/// Tracks the actual docking graph between skin windows. Membership is only a
+/// registry; detached members never move together. Edges are created when a
+/// window is snapped close to another member or explicitly through `dock`.
 @MainActor
 final class WinampSkinWindowGroup {
     private struct Member {
@@ -296,8 +294,18 @@ final class WinampSkinWindowGroup {
         var lastLogicalOrigin: CGPoint
     }
 
+    private struct DockEdge: Hashable {
+        let first: ObjectIdentifier
+        let second: ObjectIdentifier
+        let relativeOrigin: CGPoint
+
+        func contains(_ key: ObjectIdentifier) -> Bool { first == key || second == key }
+    }
+
     private var members: [ObjectIdentifier: Member] = [:]
+    private var edges: Set<DockEdge> = []
     private var isApplyingGroupMove = false
+    private let snapDistance: CGFloat = 10
 
     var hosts: [WinampSkinWindowHost] {
         members.values.compactMap(\.host)
@@ -317,6 +325,41 @@ final class WinampSkinWindowGroup {
     func remove(_ host: WinampSkinWindowHost) {
         guard let member = members.removeValue(forKey: ObjectIdentifier(host)) else { return }
         host.removeWindowMoveObserver(member.observerToken)
+        edges = edges.filter { !$0.contains(ObjectIdentifier(host)) }
+    }
+
+    var dockedPairs: [(WinampSkinWindowHost, WinampSkinWindowHost)] {
+        edges.compactMap { edge in
+            guard let first = members[edge.first]?.host,
+                  let second = members[edge.second]?.host else { return nil }
+            return (first, second)
+        }
+    }
+
+    /// Creates a persistent relationship using the current logical frames.
+    func dock(_ first: WinampSkinWindowHost, to second: WinampSkinWindowHost) {
+        guard first !== second,
+              members[ObjectIdentifier(first)] != nil,
+              members[ObjectIdentifier(second)] != nil else { return }
+        let firstID = ObjectIdentifier(first)
+        let secondID = ObjectIdentifier(second)
+        let edge = firstID.hashValue < secondID.hashValue
+            ? DockEdge(first: firstID, second: secondID, relativeOrigin: CGPoint(x: first.logicalFrame.minX - second.logicalFrame.minX, y: first.logicalFrame.minY - second.logicalFrame.minY))
+            : DockEdge(first: secondID, second: firstID, relativeOrigin: CGPoint(x: second.logicalFrame.minX - first.logicalFrame.minX, y: second.logicalFrame.minY - first.logicalFrame.minY))
+        edges = edges.filter { !($0.contains(firstID) && $0.contains(secondID)) }
+        edges.insert(edge)
+    }
+
+    func connect(_ first: WinampSkinWindowHost, _ second: WinampSkinWindowHost) {
+        dock(first, to: second)
+    }
+
+    func undock(_ host: WinampSkinWindowHost) {
+        edges = edges.filter { !$0.contains(ObjectIdentifier(host)) }
+    }
+
+    func disconnect(_ host: WinampSkinWindowHost) {
+        undock(host)
     }
 
     /// Moves the whole group so that the selected member reaches the requested
@@ -325,7 +368,7 @@ final class WinampSkinWindowGroup {
     func move(_ host: WinampSkinWindowHost, toLogicalOrigin origin: CGPoint, display: Bool = false) {
         guard members[ObjectIdentifier(host)] != nil else { return }
         let delta = CGPoint(x: origin.x - host.logicalFrame.minX, y: origin.y - host.logicalFrame.minY)
-        apply(delta: delta, display: display)
+        apply(delta: delta, display: display, from: host)
     }
 
     private func hostDidMove(_ host: WinampSkinWindowHost) {
@@ -336,21 +379,31 @@ final class WinampSkinWindowGroup {
             y: currentOrigin.y - member.lastLogicalOrigin.y
         )
         guard delta.x != 0 || delta.y != 0 else { return }
-        apply(delta: delta, display: false, excluding: host)
+
+        let hostID = ObjectIdentifier(host)
+        let connected = edges.filter { $0.contains(hostID) }
+        if !connected.isEmpty, max(abs(delta.x), abs(delta.y)) > snapDistance {
+            // A large first jump is a deliberate pull-away rather than the
+            // small movement produced while dragging a connected cluster.
+            undock(host)
+        }
+        if edges.contains(where: { $0.contains(hostID) }) {
+            apply(delta: delta, display: false, from: host)
+        } else {
+            tryAutoDock(host)
+            members[hostID]?.lastLogicalOrigin = host.logicalFrame.origin
+        }
     }
 
-    private func apply(delta: CGPoint, display: Bool, excluding excludedHost: WinampSkinWindowHost? = nil) {
+    private func apply(delta: CGPoint, display: Bool, from source: WinampSkinWindowHost) {
         guard delta.x != 0 || delta.y != 0 else { return }
+        let component = connectedComponent(containing: source)
         isApplyingGroupMove = true
         defer { isApplyingGroupMove = false }
 
-        for key in Array(members.keys) {
+        for key in component {
             guard let member = members[key], let host = member.host else {
                 members.removeValue(forKey: key)
-                continue
-            }
-            if let excludedHost, host === excludedHost {
-                members[key]?.lastLogicalOrigin = host.logicalFrame.origin
                 continue
             }
             var frame = host.logicalFrame
@@ -359,5 +412,57 @@ final class WinampSkinWindowGroup {
             host.setLogicalFrame(frame, display: display)
             members[key]?.lastLogicalOrigin = frame.origin
         }
+    }
+
+    private func connectedComponent(containing source: WinampSkinWindowHost) -> Set<ObjectIdentifier> {
+        let sourceID = ObjectIdentifier(source)
+        var result: Set<ObjectIdentifier> = [sourceID]
+        var changed = true
+        while changed {
+            changed = false
+            for edge in edges where result.contains(edge.first) || result.contains(edge.second) {
+                if result.insert(edge.first).inserted { changed = true }
+                if result.insert(edge.second).inserted { changed = true }
+            }
+        }
+        return result
+    }
+
+    private func tryAutoDock(_ host: WinampSkinWindowHost) {
+        let hostID = ObjectIdentifier(host)
+        guard members[hostID] != nil,
+              let other = members.values.compactMap(\.host).first(where: { $0 !== host && shouldDock(host, to: $0) }) else { return }
+        let frame = host.logicalFrame
+        let otherFrame = other.logicalFrame
+        var snapped = frame
+        let horizontalCandidates = [otherFrame.minX - frame.width, otherFrame.maxX]
+        let verticalCandidates = [otherFrame.minY - frame.height, otherFrame.maxY]
+        let horizontal = horizontalCandidates.min(by: { abs($0 - frame.minX) < abs($1 - frame.minX) })
+        let vertical = verticalCandidates.min(by: { abs($0 - frame.minY) < abs($1 - frame.minY) })
+        if let horizontal, abs(horizontal - frame.minX) <= snapDistance,
+           frame.maxY > otherFrame.minY && frame.minY < otherFrame.maxY {
+            snapped.origin.x = horizontal
+        } else if let vertical, abs(vertical - frame.minY) <= snapDistance,
+                  frame.maxX > otherFrame.minX && frame.minX < otherFrame.maxX {
+            snapped.origin.y = vertical
+        } else {
+            return
+        }
+        isApplyingGroupMove = true
+        host.setLogicalFrame(snapped, display: false)
+        isApplyingGroupMove = false
+        dock(host, to: other)
+        members[hostID]?.lastLogicalOrigin = snapped.origin
+    }
+
+    private func shouldDock(_ host: WinampSkinWindowHost, to other: WinampSkinWindowHost) -> Bool {
+        let frame = host.logicalFrame
+        let otherFrame = other.logicalFrame
+        let horizontalGap = min(abs(frame.maxX - otherFrame.minX), abs(frame.minX - otherFrame.maxX))
+        let verticalGap = min(abs(frame.maxY - otherFrame.minY), abs(frame.minY - otherFrame.maxY))
+        let overlapsVertically = frame.maxY > otherFrame.minY && frame.minY < otherFrame.maxY
+        let overlapsHorizontally = frame.maxX > otherFrame.minX && frame.minX < otherFrame.maxX
+        return (horizontalGap <= snapDistance && overlapsVertically) ||
+            (verticalGap <= snapDistance && overlapsHorizontally)
     }
 }

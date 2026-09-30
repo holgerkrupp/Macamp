@@ -200,6 +200,9 @@ struct SkinTests {
         #expect(!loaded.report.warnings.contains { $0.contains("Rejected scripts/") })
         let catalog = SkinAssetCatalog(name: "HeadAMP", files: loaded.files, report: loaded.report, format: loaded.format, modern: loaded.modern)
         #expect(catalog.modernOcclusionFrame == CGRect(x: 260, y: 0, width: 234, height: 394))
+        #expect(descriptor.layers.first { $0.elementID?.caseInsensitiveCompare("BGLayer") == .orderedSame }?.frame.width ?? 0 > 0)
+        #expect(descriptor.scene.firstHandle(for: "bglayer").flatMap { descriptor.scene.worldFrame(of: $0) }?.width ?? 0 > 0)
+        #expect(catalog.regionPath != nil)
         let host = TestMakiHost()
         let runtime = MakiRuntime(programs: catalog.makiPrograms, bindings: catalog.makiBindings, host: host)
         runtime.start()
@@ -825,6 +828,17 @@ struct SkinTests {
         #expect(catalog.controls.contains { $0.id == .play && $0.normalSprite?.assetName == "cbuttons.bmp" })
     }
 
+    @Test @MainActor func classicPlaylistPaletteReadsPleDITColors() {
+        let files = ["pledit.txt": Data("Normal=#FF0000\nCurrent=0,255,0\nNormalBG=1, 2, 3\nSelectedBG=#000080\n".utf8)]
+        let catalog = SkinAssetCatalog(name: "Synthetic Playlist Palette", files: files, report: .init(), format: .classic)
+        #expect(catalog.classicPlaylistPalette == ClassicPlaylistPalette(
+            normalText: ClassicRGBColor(red: 255, green: 0, blue: 0),
+            currentText: ClassicRGBColor(red: 0, green: 255, blue: 0),
+            normalBackground: ClassicRGBColor(red: 1, green: 2, blue: 3),
+            selectedBackground: ClassicRGBColor(red: 0, green: 0, blue: 128)
+        ))
+    }
+
     @Test func duplicateCaseInsensitivePathsAreRejected() async throws {
         let url = try temporarySkin(entries: [("main.bmp", Data([1])), ("MAIN.BMP", Data([2]))])
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
@@ -942,7 +956,7 @@ struct SkinTests {
         #expect(descriptor.layers.first { $0.elementID == "hole" }?.sysRegion == -2)
 
         let catalog = SkinAssetCatalog(name: "Modern", files: ["skin.xml": Data(xml.utf8), "pixel.png": try alphaAndMagentaPNG()], report: .init(), format: .modern, modern: descriptor)
-        #expect(catalog.regionPath == nil)
+        #expect(catalog.regionPath != nil)
         #expect(catalog.modernWindowUsesBitmapAlpha)
         #expect(catalog.mainImage != nil)
     }
@@ -972,7 +986,7 @@ struct SkinTests {
         #expect(snapped == CGSize(width: 600, height: 522))
     }
 
-    @Test @MainActor func groupedSkinWindowsMoveTogetherInLogicalCoordinates() throws {
+    @Test @MainActor func detachedSkinWindowsMoveIndependently() throws {
         let main = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 116), scale: 1)
         let playlist = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 232), scale: 2)
         main.setLogicalFrame(CGRect(x: 100, y: 80, width: 275, height: 116))
@@ -984,15 +998,33 @@ struct SkinTests {
 
         group.move(main, toLogicalOrigin: CGPoint(x: 125, y: 65))
         #expect(main.logicalFrame.origin == CGPoint(x: 125, y: 65))
-        #expect(playlist.logicalFrame.origin == CGPoint(x: 425, y: 65))
+        #expect(playlist.logicalFrame.origin == CGPoint(x: 400, y: 80))
 
-        // A later AppKit move from the second member propagates back to the
-        // first, proving that the relationship is not limited to group APIs.
-        playlist.setLogicalFrame(CGRect(x: 410, y: 75, width: 275, height: 232))
+        playlist.setLogicalFrame(CGRect(x: 430, y: 75, width: 275, height: 232))
         playlist.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: playlist.window))
-        #expect(playlist.logicalFrame.origin == CGPoint(x: 410, y: 75))
-        #expect(main.logicalFrame.origin == CGPoint(x: 110, y: 75))
+        #expect(playlist.logicalFrame.origin == CGPoint(x: 430, y: 75))
+        #expect(main.logicalFrame.origin == CGPoint(x: 125, y: 65))
         #expect(group.hosts.count == 2)
+    }
+
+    @Test @MainActor func dockedSkinWindowsMoveAsAConnectedCluster() {
+        let main = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 116), scale: 1)
+        let playlist = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 232), scale: 1)
+        main.setLogicalFrame(CGRect(x: 100, y: 80, width: 275, height: 116))
+        playlist.setLogicalFrame(CGRect(x: 375, y: 80, width: 275, height: 232))
+
+        let graph = WinampSkinWindowGroup()
+        graph.add(main)
+        graph.add(playlist)
+        graph.dock(main, to: playlist)
+        graph.move(main, toLogicalOrigin: CGPoint(x: 125, y: 65))
+
+        #expect(main.logicalFrame.origin == CGPoint(x: 125, y: 65))
+        #expect(playlist.logicalFrame.origin == CGPoint(x: 400, y: 65))
+
+        graph.undock(playlist)
+        graph.move(main, toLogicalOrigin: CGPoint(x: 140, y: 65))
+        #expect(playlist.logicalFrame.origin == CGPoint(x: 400, y: 65))
     }
 
     @Test @MainActor func skinWindowHostSnapsToVisibleScreenEdgesInDisplayCoordinates() {

@@ -208,9 +208,12 @@ final class SkinRendererView: NSView {
     }
 
     private func drawModernScene() {
-        let catalog = skinStore.activeCatalog
-        let scene = liveScene
         guard let context = NSGraphicsContext.current?.cgContext else { return }
+        paintModernScene(liveScene, in: context)
+    }
+
+    private func paintModernScene(_ scene: WasabiScene, in context: CGContext) {
+        let catalog = skinStore.activeCatalog
 
         if WasabiScenePainter.renderNodes(in: scene).isEmpty {
             if let image = catalog.modernBaseImage ?? catalog.mainImage {
@@ -238,21 +241,58 @@ final class SkinRendererView: NSView {
     }
 
     private func updateModernWindowRegion() {
-        guard skinStore.activeCatalog.format == .modern,
-              !skinStore.activeCatalog.modernWindowUsesBitmapAlpha else { return }
-        let path = NSBezierPath()
-        path.windingRule = .nonZero
-        for node in WasabiScenePainter.renderNodes(in: liveScene) {
+        guard skinStore.activeCatalog.format == .modern else { return }
+        let catalog = skinStore.activeCatalog
+        var shapes: [ModernWindowRegionShape] = []
+        // Structural Wasabi objects can carry sysregion too.  Walking the
+        // live scene (rather than the flattened parser arrays) keeps group
+        // transforms, active layouts, visibility and MAKI geometry aligned.
+        for node in liveScene.allNodes where liveScene.isInActiveLayout(node.handle) &&
+            liveScene.effectiveVisible(node.handle) && liveScene.effectiveAlpha(node.handle) > 0 {
             guard let value = Int(node.attributes["sysregion"] ?? ""), value != 0,
                   let frame = liveScene.worldFrame(of: node.handle), !frame.isEmpty else { continue }
-            let points: [CGPoint] = value > 0
-                ? [CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.maxY), CGPoint(x: frame.minX, y: frame.maxY)]
-                : [CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.minX, y: frame.maxY), CGPoint(x: frame.maxX, y: frame.maxY), CGPoint(x: frame.maxX, y: frame.minY)]
-            path.move(to: points[0])
-            points.dropFirst().forEach { path.line(to: $0) }
-            path.close()
+            shapes.append(ModernWindowRegionShape(frame: frame, additive: value > 0, sysRegion: value))
         }
-        windowHost?.regionPath = path.isEmpty ? skinStore.activeCatalog.regionPath : path
+        let alphaPath: NSBezierPath?
+        if catalog.modernWindowUsesBitmapAlpha {
+            alphaPath = liveSceneAlphaPath()
+        } else {
+            alphaPath = nil
+        }
+        windowHost?.regionPath = ModernWindowRegionComposer.path(
+            base: alphaPath,
+            shapes: shapes
+        ) ?? catalog.regionPath
+    }
+
+    private func liveSceneAlphaPath() -> NSBezierPath? {
+        let size = skinStore.activeCatalog.canvasSize
+        let width = max(1, Int(ceil(size.width)))
+        let height = max(1, Int(ceil(size.height)))
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: width,
+            pixelsHigh: height,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bitmapFormat: [],
+            bytesPerRow: width * 4,
+            bitsPerPixel: 32
+        ), let graphics = NSGraphicsContext(bitmapImageRep: bitmap) else { return nil }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = graphics
+        graphics.cgContext.clear(CGRect(origin: .zero, size: size))
+        paintModernScene(liveScene, in: graphics.cgContext)
+        graphics.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+
+        let image = NSImage(size: size)
+        image.addRepresentation(bitmap)
+        return ModernWindowRegionComposer.alphaPath(from: image, logicalSize: size)
     }
 
     private func drawSceneLayer(_ node: WasabiSceneRenderNode, in frame: CGRect) {
@@ -569,7 +609,6 @@ final class SkinRendererView: NSView {
         let title = item.map { "\($0.artist ?? "UNKNOWN") - \($0.title)" } ?? "MACAMP — READY"
         let elapsed = Int(coordinator.state.elapsed.secondsValue)
         let time = String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
-        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 7.5, weight: .medium), .foregroundColor: NSColor.systemGreen]
         if skinStore.activeCatalog.format == .modern,
            WasabiScenePainter.renderNodes(in: liveScene).contains(where: { $0.kind == .text || $0.kind == .songTicker }) { return }
         if skinStore.activeCatalog.format == .classic {
@@ -762,7 +801,10 @@ final class SkinRendererView: NSView {
 
     private func logical(_ point: CGPoint) -> CGPoint { point }
     private func isVisible(at point: CGPoint) -> Bool {
-        if let region = skinStore.activeCatalog.regionPath, !region.contains(point) { return false }
+        // Runtime MAKI movement/visibility can change the live silhouette;
+        // prefer the host's current composed path over the import-time
+        // catalog path so hit testing cannot lag behind the mask.
+        if let region = windowHost?.regionPath ?? skinStore.activeCatalog.regionPath, !region.contains(point) { return false }
         if skinStore.activeCatalog.format == .modern, liveScene.hitTest(point) != nil { return true }
         if skinStore.activeCatalog.contentRegions.contains(where: { $0.frame.contains(point) }) { return true }
         if skinStore.activeCatalog.modernWindowUsesBitmapAlpha {
