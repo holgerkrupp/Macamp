@@ -326,19 +326,26 @@ enum ModernSkinParser {
                     ?? attribute("image", element)
                     ?? attribute("background", element)
                 if ["layer", "animatedlayer", "button", "togglebutton", "nstatesbutton", "slider"].contains(tag),
-                   let imageID,
                    mapped == nil {
                     let sysRegion = number(attribute("sysregion", element)).map(Int.init)
                     let visualFrame = tag == "slider" ? CGRect(origin: frame.origin, size: .zero) : frame
                     layers.append(ModernSkinLayer(
-                        imageID: imageID.lowercased(),
+                        // Zero-sized, image-less layers are still real Wasabi
+                        // objects. MAKI skins use them as coordinate/status
+                        // anchors (for example HeadAMP's DrawerCoords and
+                        // DrawerStatus). Keep them in the live scene so
+                        // lookup, XML parameters and hit/mask composition
+                        // agree with the authored object graph; the scene
+                        // painter naturally skips their empty bitmap ID.
+                        imageID: imageID?.lowercased() ?? "",
                         frame: visualFrame,
                         elementID: attribute("id", element),
                         opacity: opacity(of: element),
                         cropToFirstFrame: tag == "animatedlayer",
                         action: mapped?.action,
                         initiallyVisible: initiallyVisible,
-                        sysRegion: sysRegion
+                        sysRegion: sysRegion,
+                        attributes: elementAttributes(element)
                     ))
                     if let sysRegion, sysRegion != 0, !visualFrame.isEmpty {
                         regionShapes.append(ModernWindowRegionShape(frame: visualFrame, additive: sysRegion > 0, sysRegion: sysRegion))
@@ -356,6 +363,9 @@ enum ModernSkinParser {
                         normalSprite: sprite,
                         pressedSprite: pressed,
                         disabledSprite: nil,
+                        hoverSprite: spriteAttribute(element, names: ["hoverimage", "hover"]),
+                        activeSprite: spriteAttribute(element, names: ["activeimage", "active"]),
+                        activePressedSprite: spriteAttribute(element, names: ["active_downimage", "activedownimage", "activepressedimage"]),
                         action: mapped.action,
                         elementID: attribute("id", element),
                         initiallyVisible: initiallyVisible,
@@ -376,6 +386,9 @@ enum ModernSkinParser {
                         normalSprite: imageID.map { SpriteReference(assetName: $0.lowercased(), sourceRect: .zero) },
                         pressedSprite: attribute("downimage", element).map { SpriteReference(assetName: $0.lowercased(), sourceRect: .zero) },
                         disabledSprite: nil,
+                        hoverSprite: spriteAttribute(element, names: ["hoverimage", "hover"]),
+                        activeSprite: spriteAttribute(element, names: ["activeimage", "active"]),
+                        activePressedSprite: spriteAttribute(element, names: ["active_downimage", "activedownimage", "activepressedimage"]),
                         action: .scripted,
                         elementID: attribute("id", element),
                         initiallyVisible: initiallyVisible,
@@ -416,7 +429,9 @@ enum ModernSkinParser {
                         green: color.green,
                         blue: color.blue,
                         alignment: attribute("align", element)?.lowercased() ?? "left",
-                        sysRegion: number(attribute("sysregion", element)).map(Int.init)
+                        sysRegion: number(attribute("sysregion", element)).map(Int.init),
+                        display: attribute("display", element)?.lowercased(),
+                        defaultText: attribute("text", element) ?? element.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
                     ))
                 }
                 if let role = contentRole(tag: tag, element: element), frame.width > 0, frame.height > 0 {
@@ -560,21 +575,27 @@ enum ModernSkinParser {
         let layouts = candidates.filter(\.isLayout)
         var containers: [String: WasabiHandle] = [:]
 
-        for layout in layouts {
-            let containerID = (layout.containerID ?? "main").lowercased()
-            if containers[containerID] == nil {
-                let visible = layout.containerIsDefaultVisible
-                containers[containerID] = scene.addNode(
-                    id: containerID,
-                    kind: .container,
-                    localFrame: CGRect(origin: .zero, size: layout.canvasSize),
-                    visible: visible,
-                    attributes: ["default_visible": visible ? "1" : "0"]
-                )
-            }
+        let layoutsByContainer = Dictionary(grouping: layouts) { ($0.containerID ?? "main").lowercased() }
+        for (containerID, containerLayouts) in layoutsByContainer {
+            // Included helper XML can contribute small layouts before the
+            // actual player layout. Container geometry and visibility must
+            // follow the selected canvas, not file order.
+            let preferred = containerLayouts.first {
+                $0.id.caseInsensitiveCompare(activeCandidate.id) == .orderedSame &&
+                $0.canvasSize == activeCandidate.canvasSize
+            } ?? containerLayouts.first(where: \.containerIsDefaultVisible) ?? containerLayouts[0]
+            let visible = preferred.containerIsDefaultVisible
+            containers[containerID] = scene.addNode(
+                id: containerID,
+                kind: .container,
+                localFrame: CGRect(origin: .zero, size: preferred.canvasSize),
+                visible: visible,
+                attributes: ["default_visible": visible ? "1" : "0"]
+            )
         }
 
         var layoutHandles: [(candidate: LayoutCandidate, handle: WasabiHandle, container: WasabiHandle)] = []
+        var activeLayoutAssigned: Set<WasabiHandle> = []
         for layout in layouts {
             let containerID = (layout.containerID ?? "main").lowercased()
             guard let container = containers[containerID] else { continue }
@@ -590,8 +611,11 @@ enum ModernSkinParser {
                 ]
             )
             layoutHandles.append((layout, handle, container))
-            if layout.id.caseInsensitiveCompare(activeCandidate.id) == .orderedSame {
+            if !activeLayoutAssigned.contains(container),
+               layout.id.caseInsensitiveCompare(activeCandidate.id) == .orderedSame,
+               layout.canvasSize == activeCandidate.canvasSize {
                 scene.setActiveLayout(handle, for: container)
+                activeLayoutAssigned.insert(container)
             }
         }
 
@@ -661,7 +685,8 @@ enum ModernSkinParser {
                     "image": nodeOverrides["image"] ?? layer.imageID,
                     "alpha": String(layer.opacity),
                     "sysregion": layer.sysRegion.map(String.init) ?? ""
-                ].merging(nodeOverrides, uniquingKeysWith: { _, new in new })
+                ].merging(layer.attributes, uniquingKeysWith: { _, new in new })
+                 .merging(nodeOverrides, uniquingKeysWith: { _, new in new })
             )
             z += 1
         }
@@ -680,7 +705,12 @@ enum ModernSkinParser {
                 attributes: [
                     "action": control.action.rawValue,
                     "orientation": control.orientation.map { $0 == .vertical ? "vertical" : "horizontal" } ?? "",
-                    "sysregion": control.sysRegion.map(String.init) ?? ""
+                    "sysregion": control.sysRegion.map(String.init) ?? "",
+                    "image": control.normalSprite?.assetName ?? "",
+                    "downimage": control.pressedSprite?.assetName ?? "",
+                    "hoverimage": control.hoverSprite?.assetName ?? "",
+                    "activeimage": control.activeSprite?.assetName ?? "",
+                    "activepressedimage": control.activePressedSprite?.assetName ?? ""
                 ].merging(nodeOverrides, uniquingKeysWith: { _, new in new })
             )
             z += 1
@@ -704,6 +734,8 @@ enum ModernSkinParser {
                     "green": String(region.green),
                     "blue": String(region.blue),
                     "align": region.alignment,
+                    "display": region.display ?? "",
+                    "text": region.defaultText ?? "",
                     "sysregion": region.sysRegion.map(String.init) ?? ""
                 ].merging(nodeOverrides, uniquingKeysWith: { _, new in new })
             )
@@ -926,6 +958,9 @@ enum ModernSkinParser {
                     normalSprite: control.normalSprite,
                     pressedSprite: control.pressedSprite,
                     disabledSprite: control.disabledSprite,
+                    hoverSprite: control.hoverSprite,
+                    activeSprite: control.activeSprite,
+                    activePressedSprite: control.activePressedSprite,
                     action: control.action,
                     elementID: control.elementID,
                     initiallyVisible: control.initiallyVisible,
@@ -1022,6 +1057,9 @@ enum ModernSkinParser {
                 normalSprite: control.normalSprite,
                 pressedSprite: control.pressedSprite,
                 disabledSprite: control.disabledSprite,
+                hoverSprite: control.hoverSprite,
+                activeSprite: control.activeSprite,
+                activePressedSprite: control.activePressedSprite,
                 action: control.action,
                 elementID: control.elementID,
                 initiallyVisible: control.initiallyVisible,
@@ -1116,6 +1154,15 @@ enum ModernSkinParser {
 
     nonisolated private static func textRole(tag: String, element: XMLElement) -> ModernSkinTextRole? {
         guard tag == "text" || tag == "songticker" else { return nil }
+        let explicitText = attribute("text", element)
+            ?? element.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A SongTicker normally displays media metadata, but some WAL files
+        // use the same object as a static title/branding label. An explicit
+        // XML value is the semantic signal that this is UI text, so it can be
+        // branded without changing a real track title at runtime.
+        if tag == "songticker", let explicitText, !explicitText.isEmpty {
+            return .custom
+        }
         let value = "\(attribute("display", element) ?? "") \(attribute("id", element) ?? "")".lowercased()
         if tag == "songticker" || value.contains("songname") || value.contains("songtitle") || value.contains("songinfo") {
             return .songTitle
@@ -1126,7 +1173,7 @@ enum ModernSkinParser {
         if value.contains("frequency") || value.contains("sample") || value.contains("khz") { return .frequency }
         if value.contains("channels") || value.contains("channel") { return .channels }
         if value.contains("extension") || value.contains("fileext") || value.contains("file type") { return .fileExtension }
-        return nil
+        return .custom
     }
 
     nonisolated private static func textColor(_ value: String?) -> (red: Double, green: Double, blue: Double) {
@@ -1188,6 +1235,7 @@ enum ModernSkinParser {
 
     nonisolated private static func textRoleName(_ role: ModernSkinTextRole) -> String {
         switch role {
+        case .custom: "custom"
         case .songTitle: "songTitle"
         case .elapsedTime: "elapsedTime"
         case .remainingTime: "remainingTime"
@@ -1196,6 +1244,22 @@ enum ModernSkinParser {
         case .channels: "channels"
         case .fileExtension: "fileExtension"
         }
+    }
+
+    nonisolated private static func elementAttributes(_ element: XMLElement) -> [String: String] {
+        (element.attributes ?? []).reduce(into: [String: String]()) { result, attribute in
+            guard let name = attribute.name?.lowercased(), let value = attribute.stringValue else { return }
+            result[name] = value
+        }
+    }
+
+    nonisolated private static func spriteAttribute(_ element: XMLElement, names: [String]) -> SpriteReference? {
+        for name in names {
+            if let value = attribute(name, element), !value.isEmpty {
+                return SpriteReference(assetName: value.lowercased(), sourceRect: .zero)
+            }
+        }
+        return nil
     }
 
     nonisolated private static func contentRoleName(_ role: ModernSkinContentRole) -> String {

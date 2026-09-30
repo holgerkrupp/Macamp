@@ -17,9 +17,19 @@ final class PlaybackCoordinator {
 
     @ObservationIgnored private var providers: [PlaybackProviderID: any PlaybackProvider] = [:]
     @ObservationIgnored private var observationTask: Task<Void, Never>?
+    @ObservationIgnored private let sessionStore: PlaybackSessionStore
+    @ObservationIgnored private var persistenceTask: Task<Void, Never>?
+    @ObservationIgnored private var lastAppliedProviderID: PlaybackProviderID?
     @ObservationIgnored private let logger = Logger(subsystem: "dev.holgerkrupp.Macamp", category: "Playback")
 
-    deinit { observationTask?.cancel() }
+    init(sessionStore: PlaybackSessionStore = PlaybackSessionStore()) {
+        self.sessionStore = sessionStore
+    }
+
+    deinit {
+        observationTask?.cancel()
+        persistenceTask?.cancel()
+    }
 
     func register(_ provider: any PlaybackProvider) {
         providers[provider.id] = provider
@@ -44,6 +54,28 @@ final class PlaybackCoordinator {
                 guard !Task.isCancelled else { return }
                 self?.apply(snapshot)
             }
+        }
+    }
+
+    func restorePersistedSession() async {
+        guard let session = await sessionStore.load(),
+              let provider = providers[session.providerID],
+              let restorable = provider as? any PlaybackSessionRestoring else { return }
+
+        activate(session.providerID)
+        do {
+            try await restorable.restore(session: session)
+            apply(ProviderSnapshot(
+                authenticationState: restorable.authenticationState,
+                state: restorable.state,
+                queue: restorable.queue
+            ))
+            if restorable.queue.items.isEmpty {
+                enqueuePersistence { await $0.clear() }
+            }
+        } catch is CancellationError {
+        } catch {
+            record(error as? ProviderError ?? ProviderError(code: .unknown, message: error.localizedDescription))
         }
     }
 
@@ -173,9 +205,58 @@ final class PlaybackCoordinator {
     }
 
     private func apply(_ snapshot: ProviderSnapshot) {
+        let previousState = state
+        let previousQueue = queue
+        let previousProviderID = lastAppliedProviderID
         authenticationState = snapshot.authenticationState
         state = snapshot.state
         queue = snapshot.queue
+        persistMeaningfulChanges(
+            from: (providerID: previousProviderID, state: previousState, queue: previousQueue),
+            to: snapshot
+        )
+        lastAppliedProviderID = activeProviderID
+    }
+
+    private func persistMeaningfulChanges(
+        from previous: (providerID: PlaybackProviderID?, state: PlaybackState, queue: PlaybackQueue),
+        to snapshot: ProviderSnapshot
+    ) {
+        guard let providerID = activeProviderID,
+              snapshot.state.providerID == nil || snapshot.state.providerID == providerID else { return }
+
+        let providerChanged = previous.providerID != providerID
+        if snapshot.queue.items.isEmpty {
+            // A provider switch can legitimately expose an empty queue. Only
+            // an explicit local queue clear invalidates the saved session.
+            if providerID == .localMedia, !providerChanged, !previous.queue.items.isEmpty {
+                enqueuePersistence { await $0.clear() }
+            }
+            return
+        }
+
+        guard providers[providerID] is any PlaybackSessionRestoring else { return }
+        let queueChanged = previous.queue != snapshot.queue
+        let itemChanged = previous.state.currentItem?.id != snapshot.state.currentItem?.id
+        let modesChanged = previous.state.shuffleMode != snapshot.state.shuffleMode
+            || previous.state.repeatMode != snapshot.state.repeatMode
+        let elapsedChangedWhileStopped = snapshot.state.status != .playing
+            && previous.state.elapsed != snapshot.state.elapsed
+        let pausedOrStopped = previous.state.status != snapshot.state.status
+            && snapshot.state.status != .playing
+
+        guard queueChanged || itemChanged || modesChanged || elapsedChangedWhileStopped || pausedOrStopped else { return }
+        enqueuePersistence {
+            await $0.save(PersistedPlaybackSession(providerID: providerID, queue: snapshot.queue, state: snapshot.state))
+        }
+    }
+
+    private func enqueuePersistence(_ operation: @escaping @Sendable (PlaybackSessionStore) async -> Void) {
+        let previous = persistenceTask
+        persistenceTask = Task { [sessionStore] in
+            await previous?.value
+            await operation(sessionStore)
+        }
     }
 
     private func record(_ error: ProviderError) {

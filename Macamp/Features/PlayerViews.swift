@@ -153,7 +153,7 @@ struct SkinManagerView: View {
                     Picker("Scale", selection: Binding(get: { dependencies.settings.skinScale }, set: { dependencies.settings.skinScale = $0; dependencies.classicPlayer.applySettings() })) { ForEach(1...4, id: \.self) { Text("\($0)×").tag($0) } }
                     Toggle("Window shadow", isOn: Binding(get: { dependencies.settings.playerShadow }, set: { dependencies.settings.playerShadow = $0; dependencies.classicPlayer.applySettings() }))
                     Toggle("Click through transparent pixels", isOn: Binding(get: { dependencies.settings.clickThroughTransparentPixels }, set: { dependencies.settings.clickThroughTransparentPixels = $0 }))
-                    Button("Use bundled fallback") { dependencies.skins.useFallback(); dependencies.classicPlayer.applySettings() }
+                    Button("Use bundled fallback") { dependencies.skins.useFallback(); dependencies.classicPlayer.applySettings(); dependencies.classicPlayer.show() }
                     Button("Show Classic Player") { dependencies.classicPlayer.toggle() }
                 }.formStyle(.grouped)
             }
@@ -171,6 +171,7 @@ struct SkinManagerView: View {
                             Task {
                                 await dependencies.skins.use(skin)
                                 dependencies.classicPlayer.applySettings()
+                                dependencies.classicPlayer.show()
                             }
                         }
                         .disabled(dependencies.skins.activeSkinID == skin.id || !skin.report.isValid)
@@ -178,7 +179,7 @@ struct SkinManagerView: View {
                         Button(role: .destructive) {
                             let wasActive = dependencies.skins.activeSkinID == skin.id
                             dependencies.skins.delete(skin)
-                            if wasActive { dependencies.classicPlayer.applySettings() }
+                            if wasActive { dependencies.classicPlayer.applySettings(); dependencies.classicPlayer.show() }
                         } label: { Image(systemName: "trash") }
                     }
                 }
@@ -186,7 +187,7 @@ struct SkinManagerView: View {
         }.padding(24).navigationTitle("Skins")
         .dropDestination(for: URL.self) { urls, _ in
             let supported = urls.filter { ["wsz", "wal", "zip"].contains($0.pathExtension.lowercased()) }
-            for url in supported { Task { await dependencies.skins.importSkin(from: url); dependencies.classicPlayer.applySettings() } }
+            for url in supported { Task { await dependencies.skins.importSkin(from: url); dependencies.classicPlayer.applySettings(); dependencies.classicPlayer.show() } }
             return !supported.isEmpty
         }
     }
@@ -196,7 +197,7 @@ struct SkinManagerView: View {
         panel.allowedContentTypes = ["wsz", "wal", "zip"].compactMap { UTType(filenameExtension: $0) }
         panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await dependencies.skins.importSkin(from: url); dependencies.classicPlayer.applySettings() }
+        Task { await dependencies.skins.importSkin(from: url); dependencies.classicPlayer.applySettings(); dependencies.classicPlayer.show() }
     }
 }
 
@@ -211,8 +212,44 @@ private struct SkinValidationLabel: View {
 
 struct SkinPreview: NSViewRepresentable {
     let catalog: SkinAssetCatalog
-    func makeNSView(context: Context) -> NSImageView { let view = NSImageView(); view.imageScaling = .scaleProportionallyUpOrDown; view.animates = false; return view }
-    func updateNSView(_ view: NSImageView, context: Context) { view.image = catalog.mainImage; view.layer?.magnificationFilter = .nearest }
+    func makeNSView(context: Context) -> SkinPreviewSurface { SkinPreviewSurface(catalog: catalog) }
+    func updateNSView(_ view: SkinPreviewSurface, context: Context) { view.catalog = catalog; view.needsDisplay = true }
+}
+
+@MainActor
+final class SkinPreviewSurface: NSView {
+    var catalog: SkinAssetCatalog { didSet { needsDisplay = true } }
+    override var isFlipped: Bool { true }
+
+    init(catalog: SkinAssetCatalog) {
+        self.catalog = catalog
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.magnificationFilter = .nearest
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let image = catalog.mainImage, image.size.width > 0, image.size.height > 0 else { return }
+        let scale = min(bounds.width / image.size.width, bounds.height / image.size.height)
+        guard scale > 0 else { return }
+        let destination = CGRect(
+            x: bounds.midX - image.size.width * scale / 2,
+            y: bounds.midY - image.size.height * scale / 2,
+            width: image.size.width * scale,
+            height: image.size.height * scale
+        )
+        NSGraphicsContext.saveGraphicsState()
+        if let regionPath = catalog.regionPath {
+            var transform = CGAffineTransform(a: scale, b: 0, c: 0, d: scale, tx: destination.minX, ty: destination.minY)
+            if let transformed = regionPath.cgPath.copy(using: &transform) {
+                NSBezierPath(cgPath: transformed).addClip()
+            }
+        }
+        image.draw(in: destination, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
+        NSGraphicsContext.restoreGraphicsState()
+    }
 }
 
 struct VisualizationPickerView: View {

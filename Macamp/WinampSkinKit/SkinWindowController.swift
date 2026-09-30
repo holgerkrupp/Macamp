@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 @MainActor
 final class SkinWindowController: NSWindowController {
     private let settings: SettingsStore
+    private let skinStore: SkinLibraryStore
     private let renderer: SkinRendererView
     private let host: WinampSkinWindowHost
     private let auxiliaryWindows: SkinAuxiliaryWindowController
@@ -17,6 +18,7 @@ final class SkinWindowController: NSWindowController {
         visualizationToggle: @escaping () -> Void
     ) {
         self.settings = settings
+        self.skinStore = skinStore
         let auxiliaryWindows = SkinAuxiliaryWindowController(coordinator: coordinator, skinStore: skinStore, settings: settings)
         self.auxiliaryWindows = auxiliaryWindows
         let scale = settings.skinScale
@@ -57,13 +59,27 @@ final class SkinWindowController: NSWindowController {
 
     func toggle() {
         guard let window else { return }
-        if window.isVisible { window.orderOut(nil) } else { showWindow(nil); window.makeKeyAndOrderFront(nil); NSApp.activate() }
+        if window.isVisible { window.orderOut(nil) } else { show() }
+    }
+
+    /// Skin selection is an explicit request to use the player, even when a
+    /// previous failed Modern transition left the host ordered out.
+    func show() {
+        guard let window else { return }
+        showWindow(nil)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate()
     }
 
     func applySettings() {
         guard let window else { return }
         renderer.updateScale(settings.skinScale)
         host.setScale(CGFloat(settings.skinScale))
+        if host.isShaded { host.setShaded(false, display: false) }
+        if skinStore.activeCatalog.format == .modern {
+            auxiliaryWindows.hideClassicAuxiliaryWindows()
+        }
+        host.resizeLogicalWindow(to: skinStore.activeCatalog.canvasSize, display: false)
         host.regionPath = renderer.regionPath
         window.hasShadow = settings.playerShadow
         window.level = settings.playerFloating ? .floating : .normal
@@ -90,6 +106,14 @@ private final class SkinAuxiliaryWindowController: NSObject {
         windowGroup.add(host)
         if let playlistHost { windowGroup.add(playlistHost) }
         if let equalizerHost { windowGroup.add(equalizerHost) }
+    }
+
+    /// Modern skins can provide their own inline playlist/EQ components. Any
+    /// Classic auxiliary hosts left over from the previous skin would have no
+    /// matching bitmap surface and appear as opaque black rectangles.
+    func hideClassicAuxiliaryWindows() {
+        playlistHost?.window.orderOut(nil)
+        equalizerHost?.window.orderOut(nil)
     }
 
     func togglePlaylist() {
@@ -263,7 +287,7 @@ final class ClassicPlaylistSurface: NSView {
         wantsLayer = true
         autoresizingMask = [.width, .height]
         setAccessibilityRole(.list)
-        setAccessibilityLabel("Winamp Playlist")
+        setAccessibilityLabel("Macamp Playlist")
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -279,6 +303,11 @@ final class ClassicPlaylistSurface: NSView {
             _ = drawSprite(source: CGRect(x: 72, y: isActive ? 42 : 57, width: 25, height: 14), in: CGRect(x: 0, y: 0, width: 25, height: 14))
             tile(source: CGRect(x: 72, y: isActive ? 57 : 42, width: 25, height: 14), in: CGRect(x: 25, y: 0, width: max(0, width - 75), height: 14))
             _ = drawSprite(source: CGRect(x: 99, y: isActive ? 42 : 57, width: 50, height: 14), in: CGRect(x: max(25, width - 50), y: 0, width: 50, height: 14))
+            drawPlaylistBranding(
+                layout: ClassicBrandingRenderer.layout(for: .playlist, size: bounds.size, shaded: true),
+                source: CGRect(x: 72, y: isActive ? 57 : 42, width: 25, height: 14),
+                destination: CGRect(x: 25, y: 0, width: max(0, width - 75), height: 14)
+            )
             return
         }
         let topSourceY: CGFloat = isActive ? 0 : 21
@@ -288,6 +317,11 @@ final class ClassicPlaylistSurface: NSView {
         tile(source: CGRect(x: 127, y: topSourceY, width: 25, height: 20), in: CGRect(x: 25, y: 0, width: max(0, width - 50), height: 20))
         let titleWidth: CGFloat = 100
         _ = drawSprite(source: CGRect(x: 26, y: topSourceY, width: 100, height: 20), in: CGRect(x: (width - titleWidth) / 2, y: 0, width: titleWidth, height: 20))
+        drawPlaylistBranding(
+            layout: ClassicBrandingRenderer.layout(for: .playlist, size: bounds.size),
+            source: CGRect(x: 26, y: topSourceY, width: 100, height: 20),
+            destination: CGRect(x: (width - titleWidth) / 2, y: 0, width: titleWidth, height: 20)
+        )
         _ = drawSprite(source: CGRect(x: 153, y: topSourceY, width: 25, height: 20), in: CGRect(x: max(0, width - 25), y: 0, width: 25, height: 20))
 
         let bottomHeight: CGFloat = 38
@@ -469,6 +503,19 @@ final class ClassicPlaylistSurface: NSView {
         playlistPalette().normalBackground
     }
 
+    private func drawPlaylistBranding(layout: ClassicBrandingLayout, source: CGRect, destination: CGRect) {
+        ClassicBrandingRenderer.draw(
+            window: .playlist,
+            layout: layout,
+            sourceRect: source,
+            destinationRect: destination,
+            drawSprite: { [weak self] source, frame in
+                self?.drawSprite(source: source, in: frame) ?? false
+            },
+            drawTextSprite: { _, _ in false }
+        )
+    }
+
     private func tile(source: CGRect, in destination: CGRect) {
         guard destination.width > 0, destination.height > 0 else { return }
         var x = destination.minX
@@ -568,7 +615,7 @@ private final class ClassicEqualizerSurface: NSView {
         wantsLayer = true
         autoresizingMask = [.width, .height]
         setAccessibilityRole(.group)
-        setAccessibilityLabel("Winamp Equalizer")
+        setAccessibilityLabel("Macamp Equalizer")
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -578,9 +625,13 @@ private final class ClassicEqualizerSurface: NSView {
         context.interpolationQuality = .none
         let shaded = windowHost?.isShaded == true
         if shaded {
-            if !drawSprite(asset: "eq_ex.bmp", source: CGRect(x: 0, y: isActive ? 0 : 15, width: 275, height: 14), in: CGRect(x: 0, y: 0, width: 275, height: 14)) {
-                _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: 0, y: isActive ? 134 : 149, width: 275, height: 14), in: CGRect(x: 0, y: 0, width: 275, height: 14))
-            }
+            let eqExSource = CGRect(x: 0, y: isActive ? 0 : 15, width: 275, height: 14)
+            let eqMainSource = CGRect(x: 0, y: isActive ? 134 : 149, width: 275, height: 14)
+            let source = skinStore.activeCatalog.images["eq_ex.bmp"] != nil || skinStore.activeCatalog.images.keys.contains(where: { $0.hasSuffix("/eq_ex.bmp") })
+                ? (asset: "eq_ex.bmp", rect: eqExSource)
+                : (asset: "eqmain.bmp", rect: eqMainSource)
+            guard drawSprite(asset: source.asset, source: source.rect, in: CGRect(x: 0, y: 0, width: 275, height: 14)) else { return }
+            drawEqualizerBranding(source: source.rect, asset: source.asset, shaded: true)
             return
         }
 
@@ -589,7 +640,9 @@ private final class ClassicEqualizerSurface: NSView {
             bounds.fill()
             return
         }
-        _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: 0, y: isActive ? 134 : 149, width: 275, height: 14), in: CGRect(x: 0, y: 0, width: 275, height: 14))
+        let titleSource = CGRect(x: 0, y: isActive ? 134 : 149, width: 275, height: 14)
+        _ = drawSprite(asset: "eqmain.bmp", source: titleSource, in: CGRect(x: 0, y: 0, width: 275, height: 14))
+        drawEqualizerBranding(source: titleSource, asset: "eqmain.bmp", shaded: false)
 
         let enabled = coordinator.audioEffectState.isEnabled
         let onX: CGFloat = enabled ? 69 : 10
@@ -671,6 +724,21 @@ private final class ClassicEqualizerSurface: NSView {
         NSColor(calibratedRed: 0.55, green: 0.9, blue: 0.2, alpha: 1).setStroke()
         path.lineWidth = 1
         path.stroke()
+    }
+
+    private func drawEqualizerBranding(source: CGRect, asset: String, shaded: Bool) {
+        let destination = CGRect(x: 0, y: 0, width: 275, height: 14)
+        let layout = ClassicBrandingRenderer.layout(for: .equalizer, size: destination.size, shaded: shaded)
+        ClassicBrandingRenderer.draw(
+            window: .equalizer,
+            layout: layout,
+            sourceRect: source,
+            destinationRect: destination,
+            drawSprite: { [weak self] source, frame in
+                self?.drawSprite(asset: asset, source: source, in: frame) ?? false
+            },
+            drawTextSprite: { _, _ in false }
+        )
     }
 
     private func loadEQPreset() {

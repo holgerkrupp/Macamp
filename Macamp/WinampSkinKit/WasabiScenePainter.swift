@@ -98,6 +98,43 @@ enum WasabiAnimatedLayer {
     }
 }
 
+/// Runtime resource lookup for the scene painter.  Keeping bitmap identity,
+/// source cropping and the decoded AppKit image together prevents individual
+/// node kinds from silently falling back to the old flattened catalog maps.
+@MainActor
+final class WasabiResourceRegistry {
+    struct Bitmap {
+        let id: String
+        let image: NSImage
+        let sourceRect: CGRect?
+    }
+
+    private(set) var bitmaps: [String: Bitmap] = [:]
+    let bitmapFonts: [String: ModernBitmapFontResource]
+    let fonts: [String: ModernFontResource]
+    let gammaSets: [String: ModernGammaSetResource]
+
+    init(catalog: SkinAssetCatalog) {
+        for (id, path) in catalog.modernBitmapFiles {
+            guard let image = catalog.images[path.lowercased()] else { continue }
+            let key = id.lowercased()
+            bitmaps[key] = Bitmap(
+                id: key,
+                image: image,
+                sourceRect: catalog.modernBitmapSourceRects[key]
+            )
+        }
+        bitmapFonts = catalog.modernBitmapFonts
+        fonts = catalog.modernFonts
+        gammaSets = catalog.modernGammaSets
+    }
+
+    func bitmap(for id: String?) -> Bitmap? {
+        guard let id else { return nil }
+        return bitmaps[id.lowercased()]
+    }
+}
+
 /// Walks a Wasabi scene in paint order. Structural nodes establish the
 /// transform and visibility scope; drawable nodes are handed to the caller
 /// in a context already translated by every local parent frame.

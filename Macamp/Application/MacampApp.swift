@@ -15,6 +15,7 @@ struct MacampApp: App {
                     dependencies.appleMusic.restoreAuthorization()
                     await dependencies.skins.restoreLibrary()
                     await dependencies.localMedia.restoreLibrary()
+                    await dependencies.playback.restorePersistedSession()
                     if dependencies.settings.showPlayerOnLaunch, dependencies.classicPlayer.window?.isVisible != true {
                         dependencies.classicPlayer.toggle()
                     }

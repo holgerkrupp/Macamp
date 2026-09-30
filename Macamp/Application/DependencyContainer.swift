@@ -4,13 +4,13 @@ import Observation
 @MainActor
 @Observable
 final class DependencyContainer {
-    let playback = PlaybackCoordinator()
+    let playback: PlaybackCoordinator
     let providerRegistry = ProviderRegistry()
     let settings = SettingsStore()
     let skins = SkinLibraryStore()
     let appleMusic = AppleMusicPlaybackProvider()
     let preview = MockPlaybackProvider()
-    let localMedia = LocalFilePlaybackProvider()
+    let localMedia: LocalFilePlaybackProvider
     let spotify: SpotifyPlaybackProvider
     let tidal: TidalPlaybackProvider
     let soundCloud: SoundCloudPlaybackProvider
@@ -29,6 +29,9 @@ final class DependencyContainer {
     )
 
     init() {
+        let sessionStore = PlaybackSessionStore()
+        playback = PlaybackCoordinator(sessionStore: sessionStore)
+        localMedia = LocalFilePlaybackProvider(sessionStore: sessionStore)
         let externalConfiguration = ExternalProviderConfiguration.environment
         analysis = SimulatedAudioAnalysisSource(coordinator: playback)
         spotify = SpotifyPlaybackProvider(configuration: externalConfiguration)

@@ -4,7 +4,7 @@ import Observation
 
 @MainActor
 @Observable
-final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, AudioEffectController {
+final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSessionRestoring, AudioEffectController {
     let id: PlaybackProviderID = .localMedia
     let displayName = "Local Files"
     let capabilities: PlaybackCapabilities = [
@@ -30,6 +30,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, AudioEffect
     @ObservationIgnored private var scheduledStartFrame: AVAudioFramePosition = 0
     @ObservationIgnored private var usesAudioEngine = false
     @ObservationIgnored private let bookmarkStore: LocalMediaBookmarkStore
+    @ObservationIgnored private let sessionStore: PlaybackSessionStore
     @ObservationIgnored private var locations: [PlaybackItemID: URL] = [:]
     @ObservationIgnored private var continuations: [UUID: AsyncStream<ProviderSnapshot>.Continuation] = [:]
     @ObservationIgnored private var progressTask: Task<Void, Never>?
@@ -37,8 +38,12 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, AudioEffect
     @ObservationIgnored private var didRestoreBookmarks = false
     @ObservationIgnored private var handledCurrentEnd = false
 
-    init(bookmarkStore: LocalMediaBookmarkStore = LocalMediaBookmarkStore()) {
+    init(
+        bookmarkStore: LocalMediaBookmarkStore = LocalMediaBookmarkStore(),
+        sessionStore: PlaybackSessionStore = PlaybackSessionStore()
+    ) {
         self.bookmarkStore = bookmarkStore
+        self.sessionStore = sessionStore
         player.volume = 1
         audioPlayerNode.volume = 1
         audioEngine.attach(audioPlayerNode)
@@ -73,6 +78,49 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, AudioEffect
         await importURLs(urls, persistBookmarks: false)
     }
 
+    func restore(session: PersistedPlaybackSession) async throws {
+        guard session.providerID == id else {
+            throw ProviderError(code: .providerUnavailable, message: "That playback session belongs to another provider.")
+        }
+
+        var restoredItems: [PlaybackItem] = []
+        var originalIndexes: [Int] = []
+        for (index, persistedItem) in session.items.enumerated() {
+            guard let item = resolve(persistedItem) else { continue }
+            restoredItems.append(item)
+            originalIndexes.append(index)
+        }
+
+        let currentIndex = session.currentIndex.flatMap { originalIndex in
+            originalIndexes.firstIndex(of: originalIndex)
+        }
+        queue = PlaybackQueue(items: restoredItems, currentIndex: currentIndex)
+        state.shuffleMode = session.shuffleMode
+        state.repeatMode = session.repeatMode
+        state.lastError = nil
+
+        if let currentItem = queue.currentItem {
+            try loadCurrentItem(autoplay: false)
+            if let elapsed = session.elapsedSeconds, elapsed.isFinite, elapsed >= 0 {
+                let maximum = state.duration?.secondsValue ?? elapsed
+                let target = Duration.seconds(min(elapsed, maximum))
+                try seekPlayer(to: target, resume: false)
+                state.elapsed = target
+            }
+            state.currentItem = currentItem
+            state.status = .paused
+            state.playbackRate = 0
+        } else {
+            state.currentItem = nil
+            state.duration = nil
+            state.elapsed = .zero
+            state.status = .stopped
+            state.playbackRate = 0
+            stopProgressUpdates()
+        }
+        publish()
+    }
+
     @discardableResult
     func importURLs(_ urls: [URL], persistBookmarks: Bool = true) async -> [PlaybackItem] {
         guard !urls.isEmpty else { return [] }
@@ -97,6 +145,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, AudioEffect
 
     func clearLibrary() async {
         try? await stop()
+        await sessionStore.clear()
         bookmarkStore.removeAll()
         scopedURLs.forEach { $0.stopAccessingSecurityScopedResource() }
         scopedURLs.removeAll()
@@ -320,6 +369,23 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, AudioEffect
             stopProgressUpdates()
         }
         publish()
+    }
+
+    private func resolve(_ persistedItem: PersistedQueueItem) -> PlaybackItem? {
+        let candidate = libraryItems.first { item in
+            item.id == persistedItem.id || item.providerItemID == persistedItem.providerItemID
+        } ?? libraryItems.first { item in
+            guard let persistedURL = persistedItem.sourceURL else { return false }
+            return URL(string: item.providerItemID)?.standardizedFileURL == persistedURL.standardizedFileURL
+        }
+        guard let candidate else { return nil }
+
+        if locations[candidate.id] == nil, let url = URL(string: candidate.providerItemID) {
+            locations[candidate.id] = url
+        }
+        guard let location = locations[candidate.id],
+              !location.isFileURL || FileManager.default.fileExists(atPath: location.path) else { return nil }
+        return candidate
     }
 
     private func advance(manual: Bool) throws {
