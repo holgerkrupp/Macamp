@@ -12,6 +12,25 @@ struct PlaybackCoreTests {
         #expect(!apple.contains(.pcmAudio))
     }
 
+    @Test func equalizerProfileIsValidatedAndPersistedAsOneGlobalProfile() {
+        let suiteName = "MacampEqualizerSettings-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = SettingsStore(defaults: defaults)
+
+        var profile = AudioEffectState(isEnabled: true, preampGain: 99, bandGains: [EqualizerBand.winamp10[0]: -99])
+        profile.setGain(.infinity, for: EqualizerBand.winamp10[1])
+        settings.equalizerState = profile
+
+        let restored = SettingsStore(defaults: defaults).equalizerState
+        #expect(restored.isEnabled)
+        #expect(restored.preampGain == 12)
+        #expect(restored.bandGains.count == 10)
+        #expect(restored.gain(for: EqualizerBand.winamp10[0]) == -12)
+        #expect(restored.gain(for: EqualizerBand.winamp10[1]) == 0)
+        #expect(restored.gain(for: EqualizerBand.winamp10[9]) == 0)
+    }
+
     @Test func providerSwitchingAndStatePropagation() async {
         let coordinator = PlaybackCoordinator()
         let first = MockPlaybackProvider()
@@ -33,6 +52,17 @@ struct PlaybackCoreTests {
         await coordinator.setVolume(0.4)
         #expect(provider.volumeCount == 0)
         #expect(coordinator.state.lastError?.code == .unsupported)
+    }
+
+    @Test func providerSnapshotRefreshesRouteDependentEffectCapabilities() async {
+        let coordinator = PlaybackCoordinator()
+        let provider = LocalFilePlaybackProvider()
+        coordinator.register(provider)
+        #expect(!coordinator.capabilities.contains(.nativeEqualizer))
+        #expect(!coordinator.capabilities.contains(.pcmAudio))
+        #expect(coordinator.audioEffectUnavailableReason != nil)
+        coordinator.activate(provider.id)
+        #expect(!coordinator.capabilities.contains(.nativeEqualizer))
     }
 
     @Test func mockQueueMapsCurrentItem() async {
