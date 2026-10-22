@@ -36,6 +36,8 @@ final class SkinRendererView: NSView {
     private let settings: SettingsStore
     private let visualizationFrames: VisualizationFrameStore
     private let openMedia: () -> Void
+    private let mediaAction: (SkinAction) -> Void
+    var onFileURLsDropped: (([URL]) -> Void)?
     private let playlistToggle: () -> Void
     private let equalizerToggle: () -> Void
     private let visualizationToggle: () -> Void
@@ -59,6 +61,7 @@ final class SkinRendererView: NSView {
     private var artworkURL: URL?
     private var remoteArtwork: NSImage?
     private var artworkRequestID = UUID()
+    private var isShowingDropFeedback = false
     private(set) var scale: Int
 
     init(
@@ -67,6 +70,7 @@ final class SkinRendererView: NSView {
         settings: SettingsStore,
         visualizationFrames: VisualizationFrameStore = VisualizationFrameStore(),
         openMedia: @escaping () -> Void,
+        mediaAction: @escaping (SkinAction) -> Void = { _ in },
         playlistToggle: @escaping () -> Void,
         equalizerToggle: @escaping () -> Void,
         visualizationToggle: @escaping () -> Void,
@@ -77,6 +81,7 @@ final class SkinRendererView: NSView {
         self.settings = settings
         self.visualizationFrames = visualizationFrames
         self.openMedia = openMedia
+        self.mediaAction = mediaAction
         self.playlistToggle = playlistToggle
         self.equalizerToggle = equalizerToggle
         self.visualizationToggle = visualizationToggle
@@ -88,6 +93,7 @@ final class SkinRendererView: NSView {
         scale = settings.skinScale
         let canvas = skinStore.activeCatalog.canvasSize
         super.init(frame: CGRect(origin: .zero, size: CGSize(width: canvas.width * CGFloat(scale), height: canvas.height * CGFloat(scale))))
+        registerForDraggedTypes([.fileURL])
         bounds = CGRect(origin: .zero, size: canvas)
         autoresizingMask = [.width, .height]
         configureMakiRuntimeIfNeeded()
@@ -144,13 +150,87 @@ final class SkinRendererView: NSView {
             drawClassicVisualization()
         }
         drawMetadata()
+        if isShowingDropFeedback {
+            let outline = NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 2), xRadius: 3, yRadius: 3)
+            outline.lineWidth = 1
+            outline.setLineDash([4, 3], count: 2, phase: 0)
+            NSColor.controlAccentColor.withAlphaComponent(0.7).setStroke()
+            outline.stroke()
+        }
         NSGraphicsContext.restoreGraphicsState()
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let accepted: Bool
+        if case .success = FileURLDropPayloadParser.read(from: sender.draggingPasteboard) { accepted = true }
+        else { accepted = false }
+        isShowingDropFeedback = accepted
+        needsDisplay = accepted
+        return accepted ? .copy : []
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if case .success = FileURLDropPayloadParser.read(from: sender.draggingPasteboard) { return .copy }
+        return []
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        isShowingDropFeedback = false
+        needsDisplay = true
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if case .success = FileURLDropPayloadParser.read(from: sender.draggingPasteboard) { return true }
+        return false
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard case let .success(urls) = FileURLDropPayloadParser.read(from: sender.draggingPasteboard),
+              let onFileURLsDropped else {
+            isShowingDropFeedback = false
+            needsDisplay = true
+            return false
+        }
+        onFileURLsDropped(urls)
+        isShowingDropFeedback = false
+        needsDisplay = true
+        return true
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard bounds.contains(point) else { return nil }
         if settings.clickThroughTransparentPixels, !isVisible(at: logical(point)) { return nil }
         return self
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = NSMenu()
+        addContextMenuItem("Open & Play…", tag: 0, to: menu)
+        menu.addItem(.separator())
+        addContextMenuItem("Add Files…", tag: 1, to: menu)
+        addContextMenuItem("Add Folder…", tag: 2, to: menu)
+        addContextMenuItem("Add Playlist…", tag: 3, to: menu)
+        menu.addItem(.separator())
+        addContextMenuItem("Show Playlist", tag: 4, to: menu)
+        menu.popUp(positioning: nil, at: logical(convert(event.locationInWindow, from: nil)), in: self)
+    }
+
+    private func addContextMenuItem(_ title: String, tag: Int, to menu: NSMenu) {
+        let item = NSMenuItem(title: title, action: #selector(performContextMenuCommand(_:)), keyEquivalent: "")
+        item.target = self
+        item.tag = tag
+        menu.addItem(item)
+    }
+
+    @objc private func performContextMenuCommand(_ sender: NSMenuItem) {
+        switch sender.tag {
+        case 0: openMedia()
+        case 1: mediaAction(.addFiles)
+        case 2: mediaAction(.addFolder)
+        case 3: mediaAction(.addPlaylist)
+        case 4: playlistToggle()
+        default: break
+        }
     }
 
     override var mouseDownCanMoveWindow: Bool { true }
@@ -644,6 +724,7 @@ final class SkinRendererView: NSView {
         case .stop: await coordinator.stop()
         case .next: await coordinator.next()
         case .open: openMedia()
+        case .addFiles, .addFolder, .addPlaylist: mediaAction(control.action)
         case .seek:
             let fraction = (point.x - frame.minX) / frame.width
             if let duration = coordinator.state.duration { await coordinator.seek(to: .seconds(duration.secondsValue * fraction)) }

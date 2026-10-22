@@ -89,6 +89,19 @@ final class MockPlaybackProvider: MusicDiscoveryProvider, QueueEditingPlaybackPr
         publish()
     }
 
+    func addQueueItems(_ items: [PlaybackItem], placement: QueueInsertionPlacement) async throws {
+        guard !items.isEmpty else { return }
+        let insertionIndex = switch placement {
+        case .append: queue.items.endIndex
+        case .next: queue.currentIndex.map { $0 + 1 } ?? 0
+        }
+        queue.items.insert(contentsOf: items, at: insertionIndex)
+        if let currentIndex = queue.currentIndex, insertionIndex <= currentIndex {
+            queue.currentIndex = currentIndex + items.count
+        }
+        publish()
+    }
+
     func seek(to position: Duration) async throws {
         state.elapsed = .seconds(max(0, min(position.secondsValue, state.duration?.secondsValue ?? position.secondsValue)))
         publish()

@@ -33,6 +33,12 @@ protocol PlaybackProvider: AnyObject {
 protocol QueueEditingPlaybackProvider: PlaybackProvider {
     func removeQueueItems(at offsets: IndexSet) async throws
     func clearQueue() async throws
+    func addQueueItems(_ items: [PlaybackItem], placement: QueueInsertionPlacement) async throws
+}
+
+enum QueueInsertionPlacement: Sendable {
+    case append
+    case next
 }
 
 /// Providers may opt into restoring a previously persisted queue. The

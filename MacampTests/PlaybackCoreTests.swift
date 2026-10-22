@@ -54,6 +54,82 @@ struct PlaybackCoreTests {
         #expect(coordinator.state.lastError?.code == .unsupported)
     }
 
+    @Test func queueAppendPreservesCurrentPlaybackWithoutReplacementPlay() async {
+        let coordinator = PlaybackCoordinator()
+        let provider = TestPlaybackProvider(id: .localMedia, capabilities: [.playback, .queueEditing])
+        let current = PlaybackItem(id: "current", providerID: provider.id, providerItemID: "current", title: "Current", mediaKind: .localFile, isExplicit: false)
+        let existing = PlaybackItem(id: "existing", providerID: provider.id, providerItemID: "existing", title: "Existing", mediaKind: .localFile, isExplicit: false)
+        provider.queue = PlaybackQueue(items: [current], currentIndex: 0)
+        provider.state.currentItem = current
+        provider.state.elapsed = .seconds(37)
+        provider.state.status = .playing
+        coordinator.register(provider)
+        coordinator.activate(provider.id)
+
+        await coordinator.addQueueItems([existing], placement: .append)
+
+        #expect(provider.replacementPlayCount == 0)
+        #expect(provider.queue.items.map(\.id) == [current.id, existing.id])
+        #expect(provider.queue.currentIndex == 0)
+        #expect(provider.state.currentItem?.id == current.id)
+        #expect(provider.state.status == .playing)
+        #expect(provider.state.elapsed == .seconds(37))
+    }
+
+    @Test func emptyAppendImportDoesNotAutoplay() async {
+        let coordinator = PlaybackCoordinator()
+        let provider = TestPlaybackProvider(id: .localMedia, capabilities: [.playback, .queueEditing])
+        coordinator.register(provider)
+        let service = MediaImportService(playback: coordinator, localMedia: LocalFilePlaybackProvider())
+
+        let result = await service.importURLs([], action: .appendToQueue)
+
+        #expect(result.items.isEmpty)
+        #expect(provider.playCount == 0)
+        #expect(provider.replacementPlayCount == 0)
+        #expect(provider.queue.items.isEmpty)
+        #expect(provider.state.status == .stopped)
+    }
+
+    @Test func appendImportTargetsLocalQueueWhileExternalPlaybackRemainsActive() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampQueueImport-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mediaURL = root.appendingPathComponent("queued.mp3")
+        try Data([0x49, 0x44, 0x33]).write(to: mediaURL)
+
+        let current = PlaybackItem(id: "stream-current", providerID: .spotify, providerItemID: "stream-current", title: "Streaming", mediaKind: .song, isExplicit: false)
+        let external = TestPlaybackProvider(id: .spotify, capabilities: [.playback, .queueEditing])
+        external.queue = PlaybackQueue(items: [current], currentIndex: 0)
+        external.state.currentItem = current
+        external.state.status = .playing
+        external.state.elapsed = .seconds(24)
+        let storeURL = root.appendingPathComponent("session.json")
+        let defaultsName = "MacampQueueImport-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsName)!
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let local = LocalFilePlaybackProvider(
+            bookmarkStore: LocalMediaBookmarkStore(defaults: defaults),
+            sessionStore: PlaybackSessionStore(fileURL: storeURL)
+        )
+        let coordinator = PlaybackCoordinator(sessionStore: PlaybackSessionStore(fileURL: storeURL))
+        coordinator.register(external)
+        coordinator.register(local)
+        let service = MediaImportService(playback: coordinator, localMedia: local)
+
+        let result = await service.importURLs([mediaURL], action: .appendToQueue)
+
+        #expect(result.items.count == 1)
+        #expect(result.warnings.contains { $0.contains("Switch to Local Files") })
+        #expect(coordinator.activeProviderID == .spotify)
+        #expect(external.queue.items.map(\.id) == [current.id])
+        #expect(external.state.currentItem?.id == current.id)
+        #expect(external.state.status == .playing)
+        #expect(external.state.elapsed == .seconds(24))
+        #expect(coordinator.state.currentItem?.id == current.id)
+        #expect(local.queue.items.map(\.id) == result.items.map(\.id))
+    }
+
     @Test func providerSnapshotRefreshesRouteDependentEffectCapabilities() async {
         let coordinator = PlaybackCoordinator()
         let provider = LocalFilePlaybackProvider()
@@ -215,7 +291,7 @@ struct PlaybackCoreTests {
 }
 
 @MainActor
-private final class TestPlaybackProvider: PlaybackSessionRestoring {
+private final class TestPlaybackProvider: PlaybackSessionRestoring, QueueEditingPlaybackProvider {
     let id: PlaybackProviderID
     let displayName = "Test"
     let capabilities: PlaybackCapabilities
@@ -223,6 +299,7 @@ private final class TestPlaybackProvider: PlaybackSessionRestoring {
     var state: PlaybackState
     var queue = PlaybackQueue()
     var playCount = 0
+    var replacementPlayCount = 0
     var volumeCount = 0
     private var continuation: AsyncStream<ProviderSnapshot>.Continuation?
 
@@ -240,13 +317,26 @@ private final class TestPlaybackProvider: PlaybackSessionRestoring {
     func pause() async throws { state.status = .paused; publish() }
     func stop() async throws { state.status = .stopped; publish() }
     func play(item: PlaybackItem) async throws { try await play() }
-    func play(items: [PlaybackItem], startingAt index: Int) async throws { try await play() }
+    func play(items: [PlaybackItem], startingAt index: Int) async throws { replacementPlayCount += 1; try await play() }
     func seek(to position: Duration) async throws { }
     func skipToNext() async throws { }
     func skipToPrevious() async throws { }
     func setVolume(_ volume: Double) async throws { volumeCount += 1 }
     func setShuffleMode(_ mode: ShuffleMode) async throws { }
     func setRepeatMode(_ mode: RepeatMode) async throws { }
+    func removeQueueItems(at offsets: IndexSet) async throws {
+        queue.items = queue.items.enumerated().compactMap { offsets.contains($0.offset) ? nil : $0.element }
+    }
+    func clearQueue() async throws { queue = PlaybackQueue() }
+    func addQueueItems(_ items: [PlaybackItem], placement: QueueInsertionPlacement) async throws {
+        guard !items.isEmpty else { return }
+        let index = switch placement {
+        case .append: queue.items.endIndex
+        case .next: queue.currentIndex.map { $0 + 1 } ?? 0
+        }
+        queue.items.insert(contentsOf: items, at: index)
+        if let current = queue.currentIndex, index <= current { queue.currentIndex = current + items.count }
+    }
 
     func restore(session: PersistedPlaybackSession) async throws {
         guard session.providerID == id else {

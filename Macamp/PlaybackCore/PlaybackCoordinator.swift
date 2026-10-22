@@ -115,6 +115,42 @@ final class PlaybackCoordinator {
         }
     }
 
+    /// Adds items to the active provider's queue without invoking its playback
+    /// replacement API. Queue insertion is intentionally unavailable for
+    /// providers that do not expose queue editing.
+    func addQueueItems(_ items: [PlaybackItem], placement: QueueInsertionPlacement) async {
+        guard let activeProviderID else { return record(ProviderError(code: .unknown, message: "No playback provider is active.")) }
+        _ = await addQueueItems(items, placement: placement, to: activeProviderID)
+    }
+
+    /// Adds items to a specific provider queue. An inactive provider mutation
+    /// is persisted without publishing its playback state over the active
+    /// provider's visible state.
+    @discardableResult
+    func addQueueItems(
+        _ items: [PlaybackItem],
+        placement: QueueInsertionPlacement,
+        to providerID: PlaybackProviderID
+    ) async -> Bool {
+        guard !items.isEmpty else { return true }
+        guard let provider = providers[providerID] as? any QueueEditingPlaybackProvider else {
+            record(.unsupported("queue editing")); return false
+        }
+        do {
+            try await provider.addQueueItems(items, placement: placement)
+            if activeProviderID == providerID {
+                apply(ProviderSnapshot(authenticationState: provider.authenticationState, state: provider.state, queue: provider.queue))
+            } else if provider is any PlaybackSessionRestoring {
+                let session = PersistedPlaybackSession(providerID: providerID, queue: provider.queue, state: provider.state)
+                enqueuePersistence { await $0.save(session) }
+            }
+            return true
+        } catch is CancellationError { return false } catch {
+            record(error as? ProviderError ?? ProviderError(code: .unknown, message: error.localizedDescription))
+            return false
+        }
+    }
+
     func clearQueue() async {
         guard let provider = activeProvider as? any QueueEditingPlaybackProvider else {
             record(.unsupported("queue editing")); return

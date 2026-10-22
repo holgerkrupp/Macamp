@@ -1304,7 +1304,10 @@ enum ModernSkinParser {
         // Runtime behavior comes from declared action/parameter/tooltip
         // semantics. XML IDs remain diagnostic identity, not a behavior
         // switch, so a skin can freely rename its controls.
-        let value = "\(rawAction ?? "") \(parameter ?? "") \(label ?? "")".lowercased()
+        let action = rawAction?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let param = parameter?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let labelText = label?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let value = "\(action) \(param) \(labelText)"
         if value.contains("eq_band") || value.contains("eqband") {
             return (.equalizer, .setEqualizerBand)
         }
@@ -1318,7 +1321,32 @@ enum ModernSkinParser {
         if value.contains("reseteq") || value.contains("eqreset") || value.contains("reset eq") {
             return (.equalizer, .resetEqualizer)
         }
-        if value.contains("playlist") || value.contains("guid:pl") {
+
+        // Import actions must be classified before the broad playlist
+        // visibility check below. In particular, “Add Playlist” means import
+        // a playlist file; it must never toggle the playlist window.
+        if value.contains("addplaylist") || value.contains("add playlist") || value.contains("pe_addplaylist") {
+            return (.playlist, .addPlaylist)
+        }
+        if value.contains("addfolder") || value.contains("add folder") || value.contains("adddir") ||
+            value.contains("add dir") || value.contains("eject_dir") || value.contains("eject dir") ||
+            value.contains("openfolder") || value.contains("open folder") || value.contains("browse folder") {
+            return (.open, .addFolder)
+        }
+        if value.contains("addfile") || value.contains("add file") || value.contains("pe_add") {
+            return (.open, .addFiles)
+        }
+
+        // Winamp's declarative playlist visibility action is explicit in
+        // `param="guid:pl"` or in a show/hide/toggle phrase. A generic label
+        // such as “Playlist” is not enough to distinguish a visibility action
+        // from playlist content or an import operation, so leave it to MAKI.
+        let hasPlaylistToggleTarget = param == "guid:pl" || param.contains("guid:pl")
+        let hasPlaylistToggleVerb = ["toggle", "open", "close", "show", "hide"].contains { verb in
+            value.range(of: "\\b\(verb)\\b.*\\bplaylist\\b", options: .regularExpression) != nil ||
+                value.range(of: "\\bplaylist\\b.*\\b\(verb)\\b", options: .regularExpression) != nil
+        }
+        if hasPlaylistToggleTarget || (value.contains("playlist") && hasPlaylistToggleVerb) {
             return (.playlist, .togglePlaylist)
         }
         if value.contains("equalizer") || value.contains("eq_toggle") {
@@ -1329,7 +1357,9 @@ enum ModernSkinParser {
         if value.contains("minimize") || value.contains("minimise") { return (.minimize, .minimize) }
         if value.contains("close") { return (.close, .close) }
         if value.contains("previous") || value.contains("prev") || value.contains("rewind") { return (.previous, .previous) }
-        if value.contains("play") { return (.play, .play) }
+        // “Playlist” contains the substring “play”; require the action word
+        // so a generic playlist label cannot become native Play.
+        if value.range(of: "\\bplay\\b", options: .regularExpression) != nil { return (.play, .play) }
         if value.contains("pause") { return (.pause, .pause) }
         if value.contains("stop") { return (.stop, .stop) }
         if value.contains("next") || value.contains("forward") { return (.next, .next) }

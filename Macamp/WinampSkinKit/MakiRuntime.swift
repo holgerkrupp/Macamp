@@ -334,6 +334,10 @@ final class MakiRuntime {
     private var nestedEventDepth = 0
     private var pressedObject: WasabiHandle?
     private var pressedButton: WasabiHandle?
+    // A script can own the semantic action from any phase of a pointer
+    // sequence (for example, an onLeftButtonDown handler). Keep that result
+    // through mouse-up so the renderer does not also run the native action.
+    private var pressedSequenceHandled = false
     private var suppressTimers = false
     private(set) var pressedButtons: Set<WasabiHandle> = []
     private(set) var diagnostics: [String] = []
@@ -379,6 +383,7 @@ final class MakiRuntime {
     @discardableResult
     func dispatchMouseDown(receiver: WasabiHandle, x: Int, y: Int) -> Bool {
         pressedObject = receiver
+        pressedSequenceHandled = false
         if let pressedButton { setButtonPressed(pressedButton, isPressed: false) }
         pressedButton = nil
 
@@ -386,9 +391,11 @@ final class MakiRuntime {
             pressedButton = receiver
             setButtonPressed(receiver, isPressed: true)
         }
-        return dispatch(event: "onLeftButtonDown", receiver: receiver, arguments: [
+        let handled = dispatch(event: "onLeftButtonDown", receiver: receiver, arguments: [
             .integer(Int32(clamping: x)), .integer(Int32(clamping: y))
         ])
+        pressedSequenceHandled = handled
+        return handled
     }
 
     @discardableResult
@@ -407,9 +414,10 @@ final class MakiRuntime {
         // Winamp keeps the pressed Button as the mouse-capture receiver. The
         // release coordinates are still those of the pointer at mouse-up.
         let eventReceiver = pressedObject ?? pressedButton ?? receiver
-        var handled = dispatch(event: "onLeftButtonUp", receiver: eventReceiver, arguments: [
+        let mouseUpHandled = dispatch(event: "onLeftButtonUp", receiver: eventReceiver, arguments: [
             .integer(Int32(clamping: x)), .integer(Int32(clamping: y))
         ])
+        var handled = pressedSequenceHandled || mouseUpHandled
 
         if let button = pressedButton {
             setButtonPressed(button, isPressed: false)
@@ -434,6 +442,7 @@ final class MakiRuntime {
         }
         pressedButton = nil
         pressedObject = nil
+        pressedSequenceHandled = false
         return handled
     }
 

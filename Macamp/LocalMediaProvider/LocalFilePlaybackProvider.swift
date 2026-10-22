@@ -133,7 +133,22 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
 
     @discardableResult
     func importURLs(_ urls: [URL], persistBookmarks: Bool = true) async -> [PlaybackItem] {
-        guard !urls.isEmpty else { return [] }
+        let report = await prepareImport(urls, persistBookmarks: persistBookmarks)
+        for item in report.items where !libraryItems.contains(where: { $0.id == item.id }) {
+            libraryItems.append(item)
+        }
+        return report.items
+    }
+
+    /// Resolves media for a queue command without issuing a library import.
+    /// Bookmark and location tracking still happen so the queued files remain
+    /// playable and restorable after relaunch.
+    func importQueueItems(from urls: [URL]) async -> LocalMediaImportReport {
+        await prepareImport(urls, persistBookmarks: true)
+    }
+
+    private func prepareImport(_ urls: [URL], persistBookmarks: Bool) async -> LocalMediaImportReport {
+        guard !urls.isEmpty else { return LocalMediaImportReport(items: [], locations: [:], warnings: []) }
         isImporting = true
         defer { isImporting = false }
         for url in urls {
@@ -145,12 +160,9 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         }
         let report = await LocalMediaImporter.importURLs(urls)
         locations.merge(report.locations) { _, replacement in replacement }
-        for item in report.items where !libraryItems.contains(where: { $0.id == item.id }) {
-            libraryItems.append(item)
-        }
         importWarnings.append(contentsOf: report.warnings)
         importWarnings = Array(importWarnings.suffix(20))
-        return report.items
+        return report
     }
 
     func clearLibrary() async {
@@ -269,6 +281,32 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         queue = PlaybackQueue()
         state.currentItem = nil
         state.duration = nil
+        publish()
+    }
+
+    func addQueueItems(_ items: [PlaybackItem], placement: QueueInsertionPlacement) async throws {
+        guard !items.isEmpty else { return }
+        for item in items where locations[item.id] == nil {
+            guard let url = URL(string: item.providerItemID), ["file", "http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+                throw ProviderError(code: .itemUnavailable, message: "The selected local file is unavailable.")
+            }
+            locations[item.id] = url
+            if url.isFileURL { beginAccessing(url) }
+        }
+
+        let insertionIndex: Int
+        switch placement {
+        case .append:
+            insertionIndex = queue.items.endIndex
+        case .next:
+            insertionIndex = queue.currentIndex.map { $0 + 1 } ?? 0
+        }
+        queue.items.insert(contentsOf: items, at: insertionIndex)
+        if let currentIndex = queue.currentIndex, insertionIndex <= currentIndex {
+            queue.currentIndex = currentIndex + items.count
+        }
+        // Deliberately leave `state`, the loaded player item, and elapsed time
+        // untouched. Importing into an empty queue also never starts playback.
         publish()
     }
 
@@ -395,14 +433,32 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
             guard let persistedURL = persistedItem.sourceURL else { return false }
             return URL(string: item.providerItemID)?.standardizedFileURL == persistedURL.standardizedFileURL
         }
-        guard let candidate else { return nil }
-
-        if locations[candidate.id] == nil, let url = URL(string: candidate.providerItemID) {
-            locations[candidate.id] = url
+        if let candidate {
+            if locations[candidate.id] == nil, let url = URL(string: candidate.providerItemID) {
+                locations[candidate.id] = url
+            }
+            guard let location = locations[candidate.id],
+                  !location.isFileURL || FileManager.default.fileExists(atPath: location.path) else { return nil }
+            return candidate
         }
-        guard let location = locations[candidate.id],
-              !location.isFileURL || FileManager.default.fileExists(atPath: location.path) else { return nil }
-        return candidate
+
+        guard let url = persistedItem.sourceURL,
+              !url.isFileURL || FileManager.default.fileExists(atPath: url.path) else { return nil }
+        beginAccessing(url)
+        locations[persistedItem.id] = url
+        return PlaybackItem(
+            id: persistedItem.id,
+            providerID: id,
+            providerItemID: persistedItem.providerItemID,
+            title: persistedItem.title,
+            artist: persistedItem.artist,
+            albumTitle: persistedItem.albumTitle,
+            duration: persistedItem.durationSeconds.map(Duration.seconds),
+            mediaKind: persistedItem.mediaKind,
+            isExplicit: false,
+            sourceURL: url,
+            attribution: nil
+        )
     }
 
     private func advance(manual: Bool) throws {
