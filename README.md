@@ -12,11 +12,11 @@ Macamp is a native macOS music player that pairs a modern SwiftUI library with a
 - Provider-neutral playback state and capability-driven controls
 - Borderless transparent classic player at 1×–4× integer scales
 - Defensive `.wsz`, `.wal`, and `.zip` import with content detection, bounded extraction, case-insensitive nested assets, validation, and application-managed storage
-- Eight built-in visualizations driven by deterministic simulated data for the current playback providers
+- Eight built-in visualizations, with post-EQ PCM analysis for local audio-engine playback
 - Diagnostics, settings, keyboard/menu commands, persistence, and a mock development library
 - Swift 6 test coverage using synthetic skin archives and no real Apple Music account
 
-An Apple Music subscription may be required for catalogue playback. MusicKit does not provide this app with raw decoded PCM from protected Apple Music audio, so Apple Music visualizations are explicitly simulated. Local playback currently uses AVPlayer and also keeps visualization data simulated; a later AVAudioEngine path can add bounded PCM-based spectrum and waveform analysis.
+An Apple Music subscription may be required for catalogue playback. MusicKit does not provide this app with raw decoded PCM from protected Apple Music audio. Local file playback uses an AVAudioEngine path and exposes post-EQ PCM visualization through a bounded, non-blocking audio tap; hosted providers and AVPlayer URL playback report visualization as unavailable. Macamp does not capture microphone or system audio.
 
 Classic Winamp 2.x skins receive native bitmap rendering, region/alpha hit testing, and semantic controls. Winamp Modern `.wal` skins combine a declarative Wasabi XML renderer with a sandboxed Swift MAKI bytecode interpreter. Versions `0x15`–`0x17`, event dispatch, bounded VM operations, standard object lookup/visibility/XML calls, playback events, and target-position drawer animations are supported. MAKI never receives filesystem, network, process, native-code, or plug-in access. External XML entities and unsupported Wasabi components remain disabled. Macamp never loads Windows Winamp DLL plug-ins, captures system audio, or requests microphone/screen-recording permission.
 
@@ -48,6 +48,6 @@ xcodebuild test -project Macamp.xcodeproj -scheme Macamp -destination 'platform=
 - Modern `.wal` support is not yet a complete Wasabi runtime. Validated MAKI programs run inside the bounded interpreter, and HeadAMP-style cross-script drawer controls work. Unsupported host methods, dynamic Wasabi object creation, third-party components, bitmap-font engines, and some animation APIs remain compatibility gaps; scripts that encounter one are isolated while declarative behavior remains available.
 - Application volume and DSP are disabled for Apple Music because MusicKit does not expose those operations.
 - Queue editing is disabled for Apple Music; only supported transport is advertised.
-- Local playback is MP3-focused. Other local codecs, playlist editing/export, Now Playing/remote-command integration, gapless playback, ReplayGain, and real PCM visualization are not in this delivery.
+- Local playback is MP3-focused. Other local codecs, playlist editing/export, Now Playing/remote-command integration, gapless playback, and ReplayGain are not in this delivery.
 
 See [Architecture](Documentation/Architecture.md), [provider integration](Documentation/ProviderIntegration.md), [skin compatibility](Documentation/SkinCompatibility.md), [visualization compatibility](Documentation/VisualizationCompatibility.md), and [security notes](Documentation/SecurityAndPrivacy.md).

@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 
 enum BuiltInVisualization: String, CaseIterable, Identifiable, Sendable {
     case spectrum, oscilloscope, mirroredSpectrum, radialSpectrum, starfield, classicPeakHold, artworkAmbience, retroPattern
@@ -34,7 +35,11 @@ final class VisualizationRenderView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         NSColor(calibratedRed: 0.015, green: 0.02, blue: 0.035, alpha: 0.96).setFill(); bounds.fill()
-        guard case let .simulated(frame) = frameData else { drawPaused(); return }
+        guard let frame = frameData.analysisFrame else {
+            if case let .unavailable(reason) = frameData { drawUnavailable(reason) }
+            else { drawPaused() }
+            return
+        }
         switch mode {
         case .spectrum: drawSpectrum(frame.bands, mirrored: false, peaks: false)
         case .mirroredSpectrum: drawSpectrum(frame.bands, mirrored: true, peaks: false)
@@ -91,9 +96,9 @@ final class VisualizationRenderView: NSView {
         }
     }
 
-    private func drawStarfield(_ frame: SimulatedFrame) {
+    private func drawStarfield(_ frame: VisualizationAnalysisFrame) {
         for index in 0..<120 {
-            let n = UInt64(index) &* 6364136223846793005 &+ frame.seed
+            let n = UInt64(index) &* 6364136223846793005
             let angle = CGFloat(n % 6283) / 1000
             let depth = CGFloat((n >> 12) % 1000) / 1000
             let beat = CGFloat(frame.bands[index % frame.bands.count])
@@ -113,7 +118,7 @@ final class VisualizationRenderView: NSView {
         }
     }
 
-    private func drawPattern(_ frame: SimulatedFrame) {
+    private func drawPattern(_ frame: VisualizationAnalysisFrame) {
         for index in 0..<24 {
             let value = CGFloat(frame.bands[(index * 2) % frame.bands.count])
             let inset = CGFloat(index) * 6 + value * 18
@@ -130,23 +135,73 @@ final class VisualizationRenderView: NSView {
         drawBadge()
     }
 
+    private func drawUnavailable(_ reason: String) {
+        let title = "VISUALIZATION UNAVAILABLE"
+        let titleAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor]
+        let reasonAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 9, weight: .regular), .foregroundColor: NSColor.tertiaryLabelColor]
+        let titleSize = title.size(withAttributes: titleAttributes)
+        let reasonSize = reason.size(withAttributes: reasonAttributes)
+        title.draw(at: CGPoint(x: bounds.midX - titleSize.width / 2, y: bounds.midY - 12), withAttributes: titleAttributes)
+        reason.draw(at: CGPoint(x: bounds.midX - reasonSize.width / 2, y: bounds.midY + 5), withAttributes: reasonAttributes)
+    }
+
     private func drawBadge() {
-        "SIMULATED • NO PCM CAPTURE".draw(at: CGPoint(x: 10, y: 9), withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold), .foregroundColor: NSColor.systemOrange])
+        "LOCAL PCM • POST-EQ".draw(at: CGPoint(x: 10, y: 9), withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold), .foregroundColor: NSColor.systemGreen])
+    }
+}
+
+@MainActor
+@Observable
+final class VisualizationFrameStore {
+    private(set) var data: VisualizationAudioData = .unavailable("This playback route does not expose PCM audio.")
+    private var framesTask: Task<Void, Never>?
+    private var routeTask: Task<Void, Never>?
+
+    func update(_ value: VisualizationAudioData) { data = value }
+    func unavailable(_ reason: String) { data = .unavailable(reason) }
+
+    func start(source: LocalPCMAudioAnalysisSource, coordinator: PlaybackCoordinator) {
+        guard framesTask == nil else { return }
+        framesTask = Task {
+            try? await source.start()
+            for await frame in source.frames() {
+                guard !Task.isCancelled else { break }
+                guard coordinator.activeProviderID == .localMedia,
+                      coordinator.capabilities.contains(.pcmAudio),
+                      coordinator.state.isPlaying else { continue }
+                update(frame)
+            }
+        }
+        routeTask = Task {
+            while !Task.isCancelled {
+                if coordinator.activeProviderID != .localMedia || !coordinator.capabilities.contains(.pcmAudio) {
+                    unavailable(coordinator.activeProviderID == .localMedia
+                        ? "Start local file playback to analyze post-EQ PCM."
+                        : "The active playback provider does not expose decoded PCM.")
+                } else if !coordinator.state.isPlaying {
+                    update(.silent)
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
     }
 }
 
 @MainActor
 final class VisualizationWindowController: NSWindowController, NSWindowDelegate {
-    private let source: SimulatedAudioAnalysisSource
+    private let source: LocalPCMAudioAnalysisSource
+    private let coordinator: PlaybackCoordinator
+    let frameStore: VisualizationFrameStore
     private let renderView = VisualizationRenderView(frame: CGRect(x: 0, y: 0, width: 640, height: 360))
     private let settings: SettingsStore
     private var framesTask: Task<Void, Never>?
+    private var routeTask: Task<Void, Never>?
 
-    init(source: SimulatedAudioAnalysisSource, settings: SettingsStore) {
-        self.source = source; self.settings = settings
+    init(source: LocalPCMAudioAnalysisSource, coordinator: PlaybackCoordinator, frameStore: VisualizationFrameStore, settings: SettingsStore) {
+        self.source = source; self.coordinator = coordinator; self.frameStore = frameStore; self.settings = settings
         renderView.mode = BuiltInVisualization(rawValue: settings.selectedVisualization) ?? .spectrum
         let window = NSWindow(contentRect: renderView.frame, styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "Macamp Visualization — Simulated"
+        window.title = "Macamp Visualization — Local PCM"
         window.contentView = renderView
         window.minSize = CGSize(width: 320, height: 180)
         super.init(window: window)
@@ -163,25 +218,59 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
 
     func select(_ mode: BuiltInVisualization) { settings.selectedVisualization = mode.rawValue; renderView.mode = mode }
 
-    func applySettings() { source.configure(frameRate: settings.visualizationFrameRate, intensity: settings.visualizationIntensity) }
+    func applySettings() { source.configure(frameRate: settings.visualizationFrameRate) }
 
     func windowWillClose(_ notification: Notification) { stop() }
 
     private func start() {
         applySettings()
+        source.configure(frameRate: settings.visualizationFrameRate)
         framesTask?.cancel()
         framesTask = Task { [weak self] in
             guard let self else { return }
             try? await self.source.start()
             for await frame in self.source.frames() {
                 guard !Task.isCancelled else { break }
+                guard self.canUsePCMRoute else { continue }
+                self.frameStore.update(frame)
                 self.renderView.update(frame)
+            }
+        }
+        routeTask?.cancel()
+        routeTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                if !self.canUsePCMRoute {
+                    let reason = self.coordinator.activeProviderID == .localMedia
+                        ? "Start local file playback to analyze post-EQ PCM."
+                        : "The active playback provider does not expose decoded PCM."
+                    self.frameStore.unavailable(reason)
+                    self.renderView.update(.unavailable(reason))
+                } else if !self.coordinator.state.isPlaying {
+                    self.frameStore.update(.silent)
+                    self.renderView.update(.silent)
+                }
+                try? await Task.sleep(for: .milliseconds(250))
             }
         }
     }
 
     private func stop() {
         framesTask?.cancel(); framesTask = nil
-        Task { await source.stop() }
+        routeTask?.cancel(); routeTask = nil
+    }
+
+    private var canUsePCMRoute: Bool {
+        coordinator.activeProviderID == .localMedia && coordinator.capabilities.contains(.pcmAudio)
+    }
+}
+
+extension VisualizationAudioData {
+    var analysisFrame: VisualizationAnalysisFrame? {
+        switch self {
+        case let .analysis(frame): frame
+        case let .simulated(frame): VisualizationAnalysisFrame(bands: frame.bands, waveform: frame.waveform)
+        default: nil
+        }
     }
 }
