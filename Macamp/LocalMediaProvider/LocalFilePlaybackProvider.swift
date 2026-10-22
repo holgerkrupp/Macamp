@@ -64,19 +64,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         audioEngine.attach(equalizer)
         audioEngine.connect(audioPlayerNode, to: equalizer, format: nil)
         audioEngine.connect(equalizer, to: audioEngine.mainMixerNode, format: nil)
-        for (index, band) in equalizer.bands.enumerated() {
-            band.filterType = .parametric
-            band.frequency = EqualizerBand.winamp10[index].centerFrequency
-            band.bandwidth = 1
-            band.gain = 0
-            band.bypass = false
-        }
-        equalizer.bypass = true
-        equalizer.globalGain = effectState.preampGain
-        for (index, band) in equalizer.bands.enumerated() {
-            band.gain = effectState.gain(for: EqualizerBand.winamp10[index])
-        }
-        equalizer.bypass = !effectState.isEnabled
+        LocalFileEqualizerDSP.configure(equalizer, state: effectState)
     }
 
     deinit {
