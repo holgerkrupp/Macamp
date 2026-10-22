@@ -7,13 +7,21 @@ import Observation
 final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSessionRestoring, AudioEffectController {
     let id: PlaybackProviderID = .localMedia
     let displayName = "Local Files"
-    let capabilities: PlaybackCapabilities = [
+    private let baseCapabilities: PlaybackCapabilities = [
         .playback, .pause, .explicitStop, .seek, .previous, .next,
         .queueReading, .queueEditing, .shuffle, .repeat, .applicationVolume,
-        .playlists, .localMetadata, .artwork, .backgroundPlayback, .nativeEqualizer
+        .playlists, .localMetadata, .artwork, .backgroundPlayback
     ]
-    let effectCapabilities: AudioEffectCapabilities = [.enable, .preamp, .equalizerBands]
-    private(set) var effectState = AudioEffectState()
+    var capabilities: PlaybackCapabilities {
+        isCurrentRouteProcessed ? baseCapabilities.union([.nativeEqualizer, .pcmAudio]) : baseCapabilities
+    }
+    var effectCapabilities: AudioEffectCapabilities {
+        isCurrentRouteProcessed ? [.enable, .preamp, .equalizerBands] : []
+    }
+    var effectUnavailableReason: String? {
+        isCurrentRouteProcessed ? nil : "Equalizer unavailable until a local file uses the decoded audio engine. Remote streams use AVPlayer and bypass the DSP."
+    }
+    private(set) var effectState: AudioEffectState
 
     private(set) var authenticationState: ProviderAuthenticationState = .authorized
     private(set) var state = PlaybackState(status: .stopped, providerID: .localMedia)
@@ -31,19 +39,25 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     @ObservationIgnored private var usesAudioEngine = false
     @ObservationIgnored private let bookmarkStore: LocalMediaBookmarkStore
     @ObservationIgnored private let sessionStore: PlaybackSessionStore
+    @ObservationIgnored private let analysisSource: LocalPCMAudioAnalysisSource?
     @ObservationIgnored private var locations: [PlaybackItemID: URL] = [:]
     @ObservationIgnored private var continuations: [UUID: AsyncStream<ProviderSnapshot>.Continuation] = [:]
     @ObservationIgnored private var progressTask: Task<Void, Never>?
     @ObservationIgnored private var scopedURLs: [URL] = []
     @ObservationIgnored private var didRestoreBookmarks = false
     @ObservationIgnored private var handledCurrentEnd = false
+    @ObservationIgnored private var hasAnalysisTap = false
 
     init(
         bookmarkStore: LocalMediaBookmarkStore = LocalMediaBookmarkStore(),
-        sessionStore: PlaybackSessionStore = PlaybackSessionStore()
+        sessionStore: PlaybackSessionStore = PlaybackSessionStore(),
+        settingsStore: SettingsStore = SettingsStore(),
+        analysisSource: LocalPCMAudioAnalysisSource? = nil
     ) {
         self.bookmarkStore = bookmarkStore
         self.sessionStore = sessionStore
+        self.analysisSource = analysisSource
+        effectState = settingsStore.equalizerState
         player.volume = 1
         audioPlayerNode.volume = 1
         audioEngine.attach(audioPlayerNode)
@@ -58,9 +72,17 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
             band.bypass = false
         }
         equalizer.bypass = true
+        equalizer.globalGain = effectState.preampGain
+        for (index, band) in equalizer.bands.enumerated() {
+            band.gain = effectState.gain(for: EqualizerBand.winamp10[index])
+        }
+        equalizer.bypass = !effectState.isEnabled
     }
 
-    deinit { progressTask?.cancel() }
+    deinit {
+        progressTask?.cancel()
+        if hasAnalysisTap { equalizer.removeTap(onBus: 0) }
+    }
 
     func snapshots() -> AsyncStream<ProviderSnapshot> {
         let id = UUID()
@@ -296,12 +318,14 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     }
 
     func setEnabled(_ enabled: Bool) async throws {
+        try requireAudioEngineRoute()
         effectState.isEnabled = enabled
         equalizer.bypass = !enabled
         publish()
     }
 
     func setPreampGain(_ value: Float) async throws {
+        try requireAudioEngineRoute()
         let gain = min(max(value, -12), 12)
         effectState.preampGain = gain
         equalizer.globalGain = gain
@@ -309,17 +333,20 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     }
 
     func setBandGain(_ value: Float, band: EqualizerBand) async throws {
+        try requireAudioEngineRoute()
         guard let index = EqualizerBand.winamp10.firstIndex(of: band) else {
             throw ProviderError.unsupported("that equalizer band")
         }
         let gain = min(max(value, -12), 12)
-        effectState.bandGains[band] = gain
+        effectState.setGain(gain, for: band)
         equalizer.bands[index].gain = gain
-        if !effectState.isEnabled {
-            effectState.isEnabled = true
-            equalizer.bypass = false
-        }
         publish()
+    }
+
+    private func requireAudioEngineRoute() throws {
+        guard isCurrentRouteProcessed else {
+            throw ProviderError.unsupported("equalizer for this source")
+        }
     }
 
     func setShuffleMode(_ mode: ShuffleMode) async throws {
@@ -338,13 +365,15 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         }
         audioPlayerNode.stop()
         player.pause()
-        if url.isFileURL {
+        if url.isFileURL, item.mediaKind != .radioStation {
             let file = try AVAudioFile(forReading: url)
             audioFile = file
             usesAudioEngine = true
             player.replaceCurrentItem(with: nil)
+            installAnalysisTapIfNeeded()
             try scheduleAudioFile(from: 0, autoplay: autoplay)
         } else {
+            removeAnalysisTapIfNeeded()
             audioFile = nil
             usesAudioEngine = false
             player.replaceCurrentItem(with: AVPlayerItem(url: url))
@@ -500,6 +529,20 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         if autoplay, frameCount > 0 { audioPlayerNode.play() }
     }
 
+    private func installAnalysisTapIfNeeded() {
+        guard !hasAnalysisTap, let analysisSource else { return }
+        equalizer.installTap(onBus: 0, bufferSize: 2_048, format: nil) { buffer, _ in
+            analysisSource.append(buffer)
+        }
+        hasAnalysisTap = true
+    }
+
+    private func removeAnalysisTapIfNeeded() {
+        guard hasAnalysisTap else { return }
+        equalizer.removeTap(onBus: 0)
+        hasAnalysisTap = false
+    }
+
     private func beginAccessing(_ url: URL) {
         let normalized = url.standardizedFileURL
         guard normalized.isFileURL, !scopedURLs.contains(normalized) else { return }
@@ -509,6 +552,10 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
 
     private var snapshot: ProviderSnapshot {
         ProviderSnapshot(authenticationState: authenticationState, state: state, queue: queue)
+    }
+
+    private var isCurrentRouteProcessed: Bool {
+        usesAudioEngine && audioFile != nil && state.currentItem != nil
     }
 
     private func publish() {

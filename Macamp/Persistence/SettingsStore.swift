@@ -19,9 +19,11 @@ final class SettingsStore {
         static let playerLogicalFrame = "classicPlayerLogicalFrame"
         static let equalizerLogicalFrame = "classicEqualizerLogicalFrame"
         static let playlistLogicalFrame = "classicPlaylistLogicalFrame"
+        static let equalizerState = "equalizerState"
     }
 
     private let defaults: UserDefaults
+    private var storedEqualizerState = AudioEffectState()
     var activeProviderID: String { didSet { defaults.set(activeProviderID, forKey: Keys.provider) } }
     var skinScale: Int { didSet { defaults.set(skinScale, forKey: Keys.skinScale) } }
     var showPlayerOnLaunch: Bool { didSet { defaults.set(showPlayerOnLaunch, forKey: Keys.playerOnLaunch) } }
@@ -31,6 +33,17 @@ final class SettingsStore {
     var visualizationFrameRate: Int { didSet { defaults.set(visualizationFrameRate, forKey: Keys.frameRate) } }
     var visualizationIntensity: Double { didSet { defaults.set(visualizationIntensity, forKey: Keys.intensity) } }
     var selectedVisualization: String { didSet { defaults.set(selectedVisualization, forKey: Keys.visualization) } }
+    var equalizerState: AudioEffectState {
+        get { storedEqualizerState }
+        set {
+            var validated = newValue
+            validated.validate()
+            storedEqualizerState = validated
+            if let data = try? JSONEncoder().encode(validated) {
+                defaults.set(data, forKey: Keys.equalizerState)
+            }
+        }
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -43,6 +56,12 @@ final class SettingsStore {
         visualizationFrameRate = defaults.object(forKey: Keys.frameRate) as? Int ?? 30
         visualizationIntensity = defaults.object(forKey: Keys.intensity) as? Double ?? 0.7
         selectedVisualization = defaults.string(forKey: Keys.visualization) ?? "spectrum"
+        if let data = defaults.data(forKey: Keys.equalizerState),
+           let restored = try? JSONDecoder().decode(AudioEffectState.self, from: data) {
+            var restored = restored
+            restored.validate()
+            storedEqualizerState = restored
+        }
     }
 
     func savePlayerFrame(_ frame: CGRect) { defaults.set(NSStringFromRect(frame), forKey: Keys.playerFrame) }
