@@ -602,11 +602,14 @@ private struct SkinPlaylistView: View {
 /// Winamp pixels and let WinampSkinWindowHost perform the screen conversion.
 @MainActor
 private final class ClassicEqualizerSurface: NSView {
+    private enum SliderTarget { case preamp, band(Int) }
     private let coordinator: PlaybackCoordinator
     private let skinStore: SkinLibraryStore
     weak var windowHost: WinampSkinWindowHost?
     var isActive = true
     private let bands = EqualizerBand.winamp10
+    private var draggingSlider: SliderTarget?
+    private var dragThumbOffset: CGFloat = 0
 
     override var isFlipped: Bool { true }
 
@@ -651,6 +654,10 @@ private final class ClassicEqualizerSurface: NSView {
         _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: onX, y: 119, width: 26, height: 12), in: CGRect(x: 14, y: 18, width: 26, height: 12))
         _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: 36, y: 119, width: 32, height: 12), in: CGRect(x: 40, y: 18, width: 32, height: 12))
         _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: 224, y: 164, width: 44, height: 12), in: CGRect(x: 217, y: 18, width: 44, height: 12))
+        // AUTO is reserved for Winamp's per-track preset matching. It is shown
+        // disabled until that behavior is implemented.
+        NSColor(calibratedWhite: 0.2, alpha: 0.45).setFill()
+        CGRect(x: 40, y: 18, width: 32, height: 12).fill()
 
         _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: 13, y: 164, width: 209, height: 129), in: CGRect(x: 13, y: 38, width: 209, height: 129))
         drawSliderThumb(gain: coordinator.audioEffectState.preampGain, at: CGPoint(x: 21, y: 38))
@@ -660,6 +667,15 @@ private final class ClassicEqualizerSurface: NSView {
         }
         _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: 0, y: 294, width: 113, height: 19), in: CGRect(x: 86, y: 17, width: 113, height: 19))
         drawGraph()
+        if !coordinator.audioEffectCapabilities.contains(.equalizerBands) {
+            NSColor(calibratedWhite: 0.08, alpha: 0.68).setFill()
+            CGRect(x: 13, y: 38, width: 209, height: 63).fill()
+            let reason = coordinator.audioEffectUnavailableReason ?? "Equalizer unavailable for this source."
+            (reason as NSString).draw(
+                in: CGRect(x: 20, y: 60, width: 195, height: 32),
+                withAttributes: [.font: NSFont.systemFont(ofSize: 10, weight: .medium), .foregroundColor: NSColor.white]
+            )
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -674,14 +690,17 @@ private final class ClassicEqualizerSurface: NSView {
             return
         }
         if point.x >= 14, point.x < 40, point.y >= 18, point.y < 30 {
+            guard coordinator.audioEffectCapabilities.contains(.enable) else { return }
             Task { await coordinator.setEqualizerEnabled(!coordinator.audioEffectState.isEnabled); needsDisplay = true }
             return
         }
         if point.x >= 40, point.x < 72, point.y >= 18, point.y < 30 {
-            Task { await coordinator.resetEqualizer(); needsDisplay = true }
+            // Winamp's AUTO button selects per-track presets; it is not Reset.
+            // Keep it inert until auto-preset matching is implemented.
             return
         }
         if point.x >= 217, point.x < 261, point.y >= 18, point.y < 31 {
+            guard coordinator.audioEffectCapabilities.contains(.equalizerBands) else { return }
             if event.modifierFlags.contains(.option) {
                 saveEQPreset()
             } else {
@@ -689,18 +708,61 @@ private final class ClassicEqualizerSurface: NSView {
             }
             return
         }
-        if point.x >= 21, point.x < 32, point.y >= 38, point.y < 101 {
-            let gain = gain(at: point.y)
-            Task { await coordinator.setPreampGain(Float(gain)); needsDisplay = true }
+        guard coordinator.audioEffectCapabilities.contains(.equalizerBands) else { return }
+        if point.x >= 21, point.x < 32, point.y >= 38, point.y <= 101,
+           coordinator.audioEffectCapabilities.contains(.preamp) {
+            beginSliderDrag(.preamp, point: point)
             return
         }
         for index in bands.indices {
             let x = 78 + CGFloat(index * 18)
-            guard point.x >= x, point.x < x + 11, point.y >= 38, point.y < 101 else { continue }
-            let gain = gain(at: point.y)
-            Task { await coordinator.setEqualizerBand(index: index, gain: Float(gain)); needsDisplay = true }
+            guard point.x >= x, point.x < x + 11, point.y >= 38, point.y <= 101 else { continue }
+            beginSliderDrag(.band(index), point: point)
             return
         }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard draggingSlider != nil else { return }
+        updateDraggedSlider(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard draggingSlider != nil else { return }
+        updateDraggedSlider(at: convert(event.locationInWindow, from: nil))
+        draggingSlider = nil
+        needsDisplay = true
+    }
+
+    private func beginSliderDrag(_ target: SliderTarget, point: CGPoint) {
+        let thumbY: CGFloat
+        switch target {
+        case .preamp: thumbY = sliderY(for: coordinator.audioEffectState.preampGain)
+        case .band(let index): thumbY = sliderY(for: coordinator.audioEffectState.bandGains[bands[index]] ?? 0)
+        }
+        // Keep the point within the thumb as the pointer moves so grabbing its
+        // edge does not cause a jump. Clicking the track centers the thumb.
+        dragThumbOffset = point.y >= thumbY && point.y <= thumbY + 11 ? point.y - thumbY : 5.5
+        draggingSlider = target
+        updateDraggedSlider(at: point)
+    }
+
+    private func updateDraggedSlider(at point: CGPoint) {
+        guard let target = draggingSlider else { return }
+        let gain = gain(at: point.y - dragThumbOffset)
+        Task { [weak self] in
+            guard let self else { return }
+            switch target {
+            case .preamp: await coordinator.setPreampGain(Float(gain))
+            case .band(let index): await coordinator.setEqualizerBand(index: index, gain: Float(gain))
+            }
+            needsDisplay = true
+        }
+    }
+
+    private func sliderY(for gain: Float) -> CGFloat {
+        let fraction = max(0, min(1, (Double(gain) + 12) / 24))
+        return 38 + CGFloat((1 - fraction) * 51)
     }
 
     private func gain(at y: CGFloat) -> Double {
@@ -788,6 +850,8 @@ private final class ClassicEqualizerSurface: NSView {
 private struct SkinEqualizerView: View {
     @Bindable var coordinator: PlaybackCoordinator
     private let bands = ["60", "170", "310", "600", "1K", "3K", "6K", "12K", "14K", "16K"]
+    private var bandsAvailable: Bool { coordinator.audioEffectCapabilities.contains(.equalizerBands) }
+    private var unavailableReason: String { coordinator.audioEffectUnavailableReason ?? "Equalizer unavailable for this source." }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -798,12 +862,12 @@ private struct SkinEqualizerView: View {
                 }
                 Spacer()
                 Button("Reset") { Task { await coordinator.resetEqualizer() } }
-                    .disabled(!coordinator.audioEffectCapabilities.contains(.equalizerBands))
+                    .disabled(!bandsAvailable)
                 Toggle("On", isOn: Binding(
                     get: { coordinator.audioEffectState.isEnabled },
                     set: { value in Task { await coordinator.setEqualizerEnabled(value) } }
                 ))
-                .disabled(!coordinator.audioEffectCapabilities.contains(.enable))
+                .disabled(!coordinator.audioEffectCapabilities.contains(.enable) || !bandsAvailable)
             }
 
             HStack(alignment: .bottom, spacing: 9) {
@@ -819,7 +883,7 @@ private struct SkinEqualizerView: View {
                         ), in: -12...12)
                             .rotationEffect(.degrees(-90))
                             .frame(width: 18, height: 112)
-                            .disabled(!coordinator.audioEffectCapabilities.contains(.equalizerBands))
+                            .disabled(!bandsAvailable)
                         Text(band).font(.caption2.monospacedDigit())
                     }
                     .frame(maxWidth: .infinity)
@@ -827,10 +891,10 @@ private struct SkinEqualizerView: View {
             }
 
             Label(
-                coordinator.audioEffectCapabilities.contains(.equalizerBands)
+                bandsAvailable
                     ? "The bands process local-file audio in Macamp."
-                    : "Visual only: the active provider does not expose decoded audio for EQ processing.",
-                systemImage: coordinator.audioEffectCapabilities.contains(.equalizerBands) ? "checkmark.circle" : "info.circle"
+                    : unavailableReason,
+                systemImage: bandsAvailable ? "checkmark.circle" : "info.circle"
             )
             .font(.caption)
             .foregroundStyle(.secondary)

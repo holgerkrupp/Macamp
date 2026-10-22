@@ -50,6 +50,7 @@ final class SkinRendererView: NSView {
     private var lastMakiPlaybackState: Bool?
     private var pressedControl: SkinControlID?
     private var activeControl: SkinControlDefinition?
+    private var makiEQCommandCount = 0
     private var hoveredObject: HitObject?
     private var pressedObject: HitObject?
     private var balanceValue = 0.5
@@ -131,6 +132,7 @@ final class SkinRendererView: NSView {
         if skinStore.activeCatalog.format == .modern {
             updateModernWindowRegion()
             drawModernScene()
+            drawModernEQUnavailableNotice()
         } else if let image = skinStore.activeCatalog.mainImage {
             NSGraphicsContext.current?.imageInterpolation = .none
             image.draw(in: CGRect(origin: .zero, size: skinStore.activeCatalog.canvasSize), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
@@ -200,20 +202,33 @@ final class SkinRendererView: NSView {
 
     func injectMouseDrag(at point: CGPoint) {
         guard let control = activeControl, control.orientation != nil else { return }
+        if case .setEqualizerBand = control.action,
+           !coordinator.audioEffectCapabilities.contains(.equalizerBands) { return }
         if let elementID = control.elementID {
             let frame = effectiveFrame(for: control)
             let value = Int((sliderValueFrom(point, frame: frame, orientation: control.orientation) * 255).rounded())
-            if let handle = pressedObject?.handle {
-                _ = makiRuntime?.dispatchSliderPosition(receiver: handle, value: value, posted: true)
-            } else {
-                _ = makiRuntime?.dispatchSliderPosition(objectID: elementID, value: value, posted: true)
-            }
+            let handled = dispatchSliderPosition(control: control, elementID: elementID, value: value, posted: true)
+            if !handled { applyNativeSliderValue(control, fraction: Double(value) / 255) }
         }
     }
 
     func injectMouseUp(at point: CGPoint) {
+        if let control = activeControl, case .setEqualizerBand = control.action,
+           !coordinator.audioEffectCapabilities.contains(.equalizerBands) {
+            pressedControl = nil
+            pressedObject = nil
+            activeControl = nil
+            needsDisplay = true
+            return
+        }
         let object = hitObject(at: point)
         let makiHandled = dispatchMouseUp(to: object, at: point)
+        if let control = activeControl, control.orientation != nil, let elementID = control.elementID {
+            let fraction = sliderValueFrom(point, frame: effectiveFrame(for: control), orientation: control.orientation)
+            let value = Int((fraction * 255).rounded())
+            let handled = dispatchSliderPosition(control: control, elementID: elementID, value: value, final: true)
+            if !handled { applyNativeSliderValue(control, fraction: fraction) }
+        }
         activatePressedControl(ifReleasedAt: point, makiHandled: makiHandled)
         pressedControl = nil
         pressedObject = nil
@@ -385,6 +400,22 @@ final class SkinRendererView: NSView {
             pressedObjectID: pressedObject?.id,
             hoveredObjectID: hoveredObject?.id,
             isActive: makiRuntime?.isActivated(node.handle) ?? false
+        )
+    }
+
+    private func drawModernEQUnavailableNotice() {
+        guard !coordinator.audioEffectCapabilities.contains(.equalizerBands) else { return }
+        let frames = skinStore.activeCatalog.controls
+            .filter { $0.action == .setEqualizerBand && isElementVisible($0.elementID, initiallyVisible: $0.initiallyVisible) }
+            .map(effectiveFrame(for:))
+        guard let first = frames.first else { return }
+        let frame = frames.dropFirst().reduce(first) { $0.union($1) }
+        NSColor(calibratedWhite: 0.05, alpha: 0.86).setFill()
+        frame.fill()
+        let reason = coordinator.audioEffectUnavailableReason ?? "Equalizer unavailable for this source."
+        (reason as NSString).draw(
+            in: frame.insetBy(dx: 4, dy: 4),
+            withAttributes: [.font: NSFont.systemFont(ofSize: 10, weight: .medium), .foregroundColor: NSColor.white]
         )
     }
 
@@ -562,22 +593,35 @@ final class SkinRendererView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         guard let control = activeControl, control.orientation != nil else { return }
+        if case .setEqualizerBand = control.action,
+           !coordinator.audioEffectCapabilities.contains(.equalizerBands) { return }
         let point = logical(convert(event.locationInWindow, from: nil))
         let frame = effectiveFrame(for: control)
         if let elementID = control.elementID {
             let value = Int((sliderValueFrom(point, frame: frame, orientation: control.orientation) * 255).rounded())
-            if let handle = pressedObject?.handle {
-                _ = makiRuntime?.dispatchSliderPosition(receiver: handle, value: value, posted: true)
-            } else {
-                _ = makiRuntime?.dispatchSliderPosition(objectID: elementID, value: value, posted: true)
-            }
+            let handled = dispatchSliderPosition(control: control, elementID: elementID, value: value, posted: true)
+            if !handled { applyNativeSliderValue(control, fraction: Double(value) / 255) }
         }
     }
 
     override func mouseUp(with event: NSEvent) {
         let point = logical(convert(event.locationInWindow, from: nil))
+        if let control = activeControl, case .setEqualizerBand = control.action,
+           !coordinator.audioEffectCapabilities.contains(.equalizerBands) {
+            pressedControl = nil
+            pressedObject = nil
+            activeControl = nil
+            needsDisplay = true
+            return
+        }
         let object = hitObject(at: point)
         let makiHandled = dispatchMouseUp(to: object, at: point)
+        if let control = activeControl, control.orientation != nil, let elementID = control.elementID {
+            let fraction = sliderValueFrom(point, frame: effectiveFrame(for: control), orientation: control.orientation)
+            let value = Int((fraction * 255).rounded())
+            let handled = dispatchSliderPosition(control: control, elementID: elementID, value: value, final: true)
+            if !handled { applyNativeSliderValue(control, fraction: fraction) }
+        }
         activatePressedControl(ifReleasedAt: point, makiHandled: makiHandled)
         pressedControl = nil
         pressedObject = nil
@@ -609,10 +653,9 @@ final class SkinRendererView: NSView {
             balanceValue = horizontalFraction(point, frame: frame)
             needsDisplay = true
         case .setEqualizerBand:
-            guard let parameter = control.parameter else { break }
-            let fraction = min(max((point.y - frame.minY) / max(1, frame.height), 0), 1)
-            await coordinator.setEqualizerBand(index: max(0, parameter - 1), gain: Float(12 - fraction * 24))
-            needsDisplay = true
+            // EQ controls are applied on each slider position event and on
+            // final release by the shared native/MAKI slider path.
+            break
         case .resetEqualizer:
             await coordinator.resetEqualizer()
             needsDisplay = true
@@ -630,6 +673,36 @@ final class SkinRendererView: NSView {
         case .windowshade: break
         case .none, .scripted: break
         }
+    }
+
+    private func applyNativeSliderValue(_ control: SkinControlDefinition, fraction: Double) {
+        guard case .setEqualizerBand = control.action,
+              coordinator.audioEffectCapabilities.contains(.equalizerBands),
+              let parameter = control.parameter else { return }
+        let gain = Float(12 - min(max(fraction, 0), 1) * 24)
+        Task { await coordinator.setEqualizerBand(index: parameter - 1, gain: gain); needsDisplay = true }
+    }
+
+    private func dispatchSliderPosition(
+        control: SkinControlDefinition,
+        elementID: String,
+        value: Int,
+        final: Bool = false,
+        posted: Bool = false
+    ) -> Bool {
+        let previousEQCommandCount = makiEQCommandCount
+        let handled: Bool
+        if let handle = pressedObject?.handle {
+            handled = makiRuntime?.dispatchSliderPosition(receiver: handle, value: value, final: final, posted: posted) ?? false
+        } else {
+            handled = makiRuntime?.dispatchSliderPosition(objectID: elementID, value: value, final: final, posted: posted) ?? false
+        }
+        if case .setEqualizerBand = control.action {
+            // Event handlers often only animate the slider thumb. Treat MAKI
+            // as authoritative only when it actually calls setEqBand.
+            return makiEQCommandCount != previousEQCommandCount
+        }
+        return handled
     }
 
     private func drawTransportControls() {
@@ -1185,29 +1258,37 @@ extension SkinRendererView: MakiRuntimeHost {
     }
 
     func makiEQBandChanged(index: Int, value: Int) {
-        let normalizedIndex = EqualizerBand.winamp10.indices.contains(index) ? index : index - 1
-        guard EqualizerBand.winamp10.indices.contains(normalizedIndex) else { return }
-        let gain = Float(12 - Double(min(max(value, 0), 255)) / 255 * 24)
-        Task { await coordinator.setEqualizerBand(index: normalizedIndex, gain: gain) }
+        guard EqualizerBand.winamp10.indices.contains(index),
+              coordinator.audioEffectCapabilities.contains(.equalizerBands) else { return }
+        makiEQCommandCount += 1
+        let clampedValue = min(max(value, 0), 255)
+        let gain = Float(12 - Double(clampedValue) / 255 * 24)
+        Task { await coordinator.setEqualizerBand(index: index, gain: gain) }
     }
 
     func makiEQBandValue(index: Int) -> Int {
-        let normalizedIndex = EqualizerBand.winamp10.indices.contains(index) ? index : index - 1
-        guard EqualizerBand.winamp10.indices.contains(normalizedIndex),
-              let gain = coordinator.audioEffectState.bandGains[EqualizerBand.winamp10[normalizedIndex]] else { return 128 }
-        return Int(((Double(gain) + 12) / 24 * 255).rounded())
+        guard EqualizerBand.winamp10.indices.contains(index),
+              let gain = coordinator.audioEffectState.bandGains[EqualizerBand.winamp10[index]] else { return 128 }
+        return Int(((12 - min(max(Double(gain), -12), 12)) / 24 * 255).rounded())
     }
 
     func makiEQPreampValue() -> Int {
-        Int(((Double(coordinator.audioEffectState.preampGain) + 12) / 24 * 255).rounded())
+        Int(((12 - min(max(Double(coordinator.audioEffectState.preampGain), -12), 12)) / 24 * 255).rounded())
     }
 
-    func makiEQEnabled() -> Bool { coordinator.audioEffectState.isEnabled }
+    func makiEQEnabled() -> Bool {
+        coordinator.audioEffectCapabilities.contains(.enable) && coordinator.audioEffectState.isEnabled
+    }
 
-    func makiEQEnabledChanged(_ enabled: Bool) { Task { await coordinator.setEqualizerEnabled(enabled) } }
+    func makiEQEnabledChanged(_ enabled: Bool) {
+        guard coordinator.audioEffectCapabilities.contains(.enable) else { return }
+        Task { await coordinator.setEqualizerEnabled(enabled) }
+    }
 
     func makiEQPreampChanged(value: Int) {
-        let gain = Float(Double(min(max(value, 0), 255)) / 255 * 24 - 12)
+        guard coordinator.audioEffectCapabilities.contains(.preamp) else { return }
+        makiEQCommandCount += 1
+        let gain = Float(12 - Double(min(max(value, 0), 255)) / 255 * 24)
         Task { await coordinator.setPreampGain(gain) }
     }
 
