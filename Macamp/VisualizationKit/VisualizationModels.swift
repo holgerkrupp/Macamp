@@ -13,11 +13,18 @@ struct SpectrumFrame: Equatable, Sendable { var magnitudes: [Float] }
 struct WaveformFrame: Equatable, Sendable { var samples: [Float] }
 struct PCMFrame: @unchecked Sendable { var samples: [Float]; var sampleRate: Double }
 
+struct VisualizationAnalysisFrame: Equatable, Sendable {
+    var bands: [Float]
+    var waveform: [Float]
+}
+
 enum VisualizationAudioData: Sendable {
     case pcm(PCMFrame)
     case spectrum(SpectrumFrame)
     case waveform(WaveformFrame)
     case simulated(SimulatedFrame)
+    case analysis(VisualizationAnalysisFrame)
+    case unavailable(String)
     case silent
 }
 

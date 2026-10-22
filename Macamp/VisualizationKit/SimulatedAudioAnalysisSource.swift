@@ -1,4 +1,6 @@
 import Foundation
+import AVFoundation
+import Synchronization
 
 @MainActor
 final class SimulatedAudioAnalysisSource: AudioAnalysisSource {
@@ -64,11 +66,102 @@ final class SimulatedAudioAnalysisSource: AudioAnalysisSource {
     }
 }
 
-/// Future local playback feeds decoded buffers here. It deliberately does not capture
-/// microphone or system audio and drops frames rather than blocking an audio callback.
+/// Accepts only decoded local playback buffers from the app's audio engine. The tap
+/// callback writes into a bounded SPSC ring and never waits for the renderer.
 final class LocalPCMAudioAnalysisSource: AudioAnalysisSource, @unchecked Sendable {
     let mode: AudioAnalysisMode = .pcm
-    @MainActor func start() async throws { }
-    @MainActor func stop() async { }
-    @MainActor func frames() -> AsyncStream<VisualizationAudioData> { AsyncStream { $0.finish() } }
+
+    private static let slotCount = 4
+    private static let maximumSamplesPerSlot = 8_192
+    private let slots: [Slot]
+    private let writeIndex = Atomic<Int>(0)
+    private let readIndex = Atomic<Int>(0)
+    @MainActor private var task: Task<Void, Never>?
+    @MainActor private var continuations: [UUID: AsyncStream<VisualizationAudioData>.Continuation] = [:]
+    @MainActor private var frameRate = 30
+
+    private final class Slot: @unchecked Sendable {
+        let samples = UnsafeMutablePointer<Float>.allocate(capacity: LocalPCMAudioAnalysisSource.maximumSamplesPerSlot)
+        var count = 0
+        var sampleRate = 0.0
+        deinit { samples.deallocate() }
+    }
+
+    init() { slots = (0..<Self.slotCount).map { _ in Slot() } }
+    /// Called directly by the post-EQ AVAudioNode tap. AVAudioPCMBuffer remains owned
+    /// by AVFoundation; the samples are copied before this call returns.
+    func append(_ buffer: AVAudioPCMBuffer) {
+        guard let channels = buffer.floatChannelData else { return }
+        append(channelData: channels, channelCount: Int(buffer.format.channelCount),
+               frameCount: Int(buffer.frameLength), sampleRate: buffer.format.sampleRate)
+    }
+
+    /// Low-level tap ingress, exposed so other decoded-audio callbacks can use the
+    /// same bounded handoff without creating an intermediate array.
+    func append(
+        channelData: UnsafePointer<UnsafeMutablePointer<Float>>,
+        channelCount: Int,
+        frameCount: Int,
+        sampleRate: Double
+    ) {
+        guard channelCount > 0, frameCount > 0, sampleRate.isFinite, sampleRate > 0 else { return }
+        let write = writeIndex.load(ordering: .relaxed)
+        let read = readIndex.load(ordering: .acquiring)
+        guard write - read < Self.slotCount else { return } // Drop newest when full.
+        let slot = slots[write % Self.slotCount]
+        let count = min(frameCount, Self.maximumSamplesPerSlot)
+        for index in 0..<count {
+            var mono: Float = 0
+            for channel in 0..<channelCount { mono += channelData[channel][index] }
+            slot.samples[index] = mono / Float(channelCount)
+        }
+        slot.count = count
+        slot.sampleRate = sampleRate
+        writeIndex.store(write + 1, ordering: .releasing)
+    }
+
+    @MainActor func start() async throws {
+        guard task == nil else { return }
+        task = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                if let frame = self.takeLatestFrame() {
+                    self.continuations.values.forEach { $0.yield(.analysis(VisualizationPCMAnalyzer.analyze(frame))) }
+                }
+                try? await Task.sleep(for: .milliseconds(max(16, 1_000 / self.frameRate)))
+            }
+        }
+    }
+
+    @MainActor func stop() async {
+        task?.cancel()
+        task = nil
+        continuations.values.forEach { $0.yield(.silent) }
+    }
+
+    @MainActor func frames() -> AsyncStream<VisualizationAudioData> {
+        let id = UUID()
+        let pair = AsyncStream<VisualizationAudioData>.makeStream(bufferingPolicy: .bufferingNewest(2))
+        continuations[id] = pair.continuation
+        pair.continuation.onTermination = { [weak self] _ in
+            Task { @MainActor in self?.continuations[id] = nil }
+        }
+        return pair.stream
+    }
+
+    @MainActor func configure(frameRate: Int) { self.frameRate = min(max(frameRate, 15), 60) }
+
+    private func takeLatestFrame() -> PCMFrame? {
+        var read = readIndex.load(ordering: .relaxed)
+        let write = writeIndex.load(ordering: .acquiring)
+        guard read < write else { return nil }
+        // Drain queued frames and publish the newest complete one.
+        let latest = write - 1
+        let slot = slots[latest % Self.slotCount]
+        let samples = Array(UnsafeBufferPointer(start: slot.samples, count: slot.count))
+        let frame = PCMFrame(samples: samples, sampleRate: slot.sampleRate)
+        read = write
+        readIndex.store(read, ordering: .releasing)
+        return frame
+    }
 }

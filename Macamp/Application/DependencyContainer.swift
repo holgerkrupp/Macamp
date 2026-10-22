@@ -15,11 +15,14 @@ final class DependencyContainer {
     let tidal: TidalPlaybackProvider
     let soundCloud: SoundCloudPlaybackProvider
     let youtube: YouTubePlaybackProvider
-    let analysis: SimulatedAudioAnalysisSource
+    let localPCMAnalysis = LocalPCMAudioAnalysisSource()
+    let visualizationFrames = VisualizationFrameStore()
 
-    @ObservationIgnored lazy var visualizations = VisualizationWindowController(source: analysis, settings: settings)
+    @ObservationIgnored lazy var visualizations = VisualizationWindowController(
+        source: localPCMAnalysis, coordinator: playback, frameStore: visualizationFrames, settings: settings
+    )
     @ObservationIgnored lazy var classicPlayer = SkinWindowController(
-        coordinator: playback, skinStore: skins, settings: settings,
+        coordinator: playback, skinStore: skins, settings: settings, visualizationFrames: visualizationFrames,
         openMedia: { [weak self] in
             let urls = LocalMediaImportPanel.chooseFilesAndPlaylists()
             guard !urls.isEmpty else { return }
@@ -30,10 +33,9 @@ final class DependencyContainer {
 
     init() {
         let sessionStore = PlaybackSessionStore()
-        playback = PlaybackCoordinator(sessionStore: sessionStore)
-        localMedia = LocalFilePlaybackProvider(sessionStore: sessionStore)
+        playback = PlaybackCoordinator(sessionStore: sessionStore, settingsStore: settings)
+        localMedia = LocalFilePlaybackProvider(sessionStore: sessionStore, settingsStore: settings, analysisSource: localPCMAnalysis)
         let externalConfiguration = ExternalProviderConfiguration.environment
-        analysis = SimulatedAudioAnalysisSource(coordinator: playback)
         spotify = SpotifyPlaybackProvider(configuration: externalConfiguration)
         tidal = TidalPlaybackProvider(configuration: externalConfiguration)
         soundCloud = SoundCloudPlaybackProvider(configuration: externalConfiguration)
@@ -57,6 +59,7 @@ final class DependencyContainer {
         let active = providerRegistry.isAvailable(selected) ? selected : .appleMusic
         if !providerRegistry.isAvailable(selected) { settings.activeProviderID = active.rawValue }
         playback.activate(active)
+        visualizationFrames.start(source: localPCMAnalysis, coordinator: playback)
     }
 
     private func register(_ provider: any PlaybackProvider, descriptor: ProviderDescriptor, configured: Bool) {

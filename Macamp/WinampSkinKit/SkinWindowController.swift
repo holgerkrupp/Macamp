@@ -14,6 +14,7 @@ final class SkinWindowController: NSWindowController {
         coordinator: PlaybackCoordinator,
         skinStore: SkinLibraryStore,
         settings: SettingsStore,
+        visualizationFrames: VisualizationFrameStore,
         openMedia: @escaping () -> Void,
         visualizationToggle: @escaping () -> Void
     ) {
@@ -27,6 +28,7 @@ final class SkinWindowController: NSWindowController {
             coordinator: coordinator,
             skinStore: skinStore,
             settings: settings,
+            visualizationFrames: visualizationFrames,
             openMedia: openMedia,
             playlistToggle: { [weak auxiliaryWindows] in auxiliaryWindows?.togglePlaylist() },
             equalizerToggle: { [weak auxiliaryWindows] in auxiliaryWindows?.toggleEqualizer() },

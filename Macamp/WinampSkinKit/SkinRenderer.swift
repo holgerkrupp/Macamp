@@ -34,6 +34,7 @@ final class SkinRendererView: NSView {
     private let coordinator: PlaybackCoordinator
     private let skinStore: SkinLibraryStore
     private let settings: SettingsStore
+    private let visualizationFrames: VisualizationFrameStore
     private let openMedia: () -> Void
     private let playlistToggle: () -> Void
     private let equalizerToggle: () -> Void
@@ -63,6 +64,7 @@ final class SkinRendererView: NSView {
         coordinator: PlaybackCoordinator,
         skinStore: SkinLibraryStore,
         settings: SettingsStore,
+        visualizationFrames: VisualizationFrameStore,
         openMedia: @escaping () -> Void,
         playlistToggle: @escaping () -> Void,
         equalizerToggle: @escaping () -> Void,
@@ -72,6 +74,7 @@ final class SkinRendererView: NSView {
         self.coordinator = coordinator
         self.skinStore = skinStore
         self.settings = settings
+        self.visualizationFrames = visualizationFrames
         self.openMedia = openMedia
         self.playlistToggle = playlistToggle
         self.equalizerToggle = equalizerToggle
@@ -391,7 +394,7 @@ final class SkinRendererView: NSView {
         NSBezierPath(rect: frame).addClip()
         switch role {
         case "albumArt": drawAlbumArt(in: frame)
-        case "visualization": drawSimulatedVisualization(in: frame)
+        case "visualization": drawSharedVisualization(in: frame, colors: nil)
         case "playlist": drawPlaylist(in: frame)
         default: break
         }
@@ -509,18 +512,26 @@ final class SkinRendererView: NSView {
         needsDisplay = true
     }
 
-    private func drawSimulatedVisualization(in frame: CGRect) {
+    private func drawSharedVisualization(in frame: CGRect, colors: [NSColor]?) {
         NSColor(calibratedWhite: 0.01, alpha: 0.72).setFill()
         frame.fill()
+        guard let analysis = visualizationFrames.data.analysisFrame else {
+            let text = "NO PCM"
+            text.draw(in: frame, withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: max(6, min(9, frame.height * 0.4)), weight: .medium), .foregroundColor: NSColor.secondaryLabelColor])
+            return
+        }
+        let bands = analysis.bands
+        guard !bands.isEmpty else { return }
         let barCount = max(8, min(32, Int(frame.width / 7)))
         let spacing = max(1, frame.width / CGFloat(barCount * 3))
         let barWidth = max(1, (frame.width - spacing * CGFloat(barCount + 1)) / CGFloat(barCount))
-        let phase = coordinator.state.elapsed.secondsValue * (coordinator.state.isPlaying ? 2.2 : 0.25)
         for index in 0..<barCount {
-            let harmonic = sin(Double(index) * 0.73 + phase) * 0.28 + sin(Double(index) * 0.19 - phase * 0.7) * 0.17
-            let level = min(max(0.12 + harmonic + Double(index % 5) * 0.08, 0.06), 0.94)
+            let bandIndex = min(bands.count - 1, index * bands.count / barCount)
+            let level = min(max(Double(bands[bandIndex]), 0), 1)
             let height = frame.height * CGFloat(level)
-            NSColor(calibratedRed: 0.25, green: 1, blue: 0.4, alpha: 0.82).setFill()
+            let color = colors.flatMap { $0.isEmpty ? nil : $0[index % $0.count] }
+                ?? NSColor(calibratedRed: 0.25, green: 1, blue: 0.4, alpha: 0.82)
+            color.setFill()
             CGRect(
                 x: frame.minX + spacing + CGFloat(index) * (barWidth + spacing),
                 y: frame.maxY - height,
@@ -847,13 +858,16 @@ final class SkinRendererView: NSView {
         } else {
             colors = [NSColor.systemGreen]
         }
+        guard let analysis = visualizationFrames.data.analysisFrame, !analysis.bands.isEmpty else {
+            "NO PCM".draw(in: frame, withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 6, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor])
+            return
+        }
         let barCount = 12
         let spacing = CGFloat(2)
         let barWidth = max(1, (frame.width - spacing * CGFloat(barCount + 1)) / CGFloat(barCount))
-        let phase = coordinator.state.elapsed.secondsValue * (coordinator.state.isPlaying ? 2.2 : 0.25)
         for index in 0..<barCount {
-            let harmonic = sin(Double(index) * 0.73 + phase) * 0.28 + sin(Double(index) * 0.19 - phase * 0.7) * 0.17
-            let level = min(max(0.12 + harmonic + Double(index % 5) * 0.08, 0.06), 0.94)
+            let bandIndex = min(analysis.bands.count - 1, index * analysis.bands.count / barCount)
+            let level = min(max(Double(analysis.bands[bandIndex]), 0), 1)
             let height = frame.height * CGFloat(level)
             colors[index % max(1, colors.count)].setFill()
             CGRect(x: frame.minX + spacing + CGFloat(index) * (barWidth + spacing), y: frame.maxY - height, width: barWidth, height: height).fill()
