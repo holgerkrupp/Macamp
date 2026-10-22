@@ -31,11 +31,12 @@ enum VisualizationPCMAnalyzer {
                 windowed.withUnsafeBufferPointer { source in
                     guard let sourceBase = source.baseAddress else { return }
                     sourceBase.withMemoryRebound(to: DSPComplex.self, capacity: transformSize / 2) { complex in
-                        vDSP_ctoz(complex, 1, &split, 1, vDSP_Length(transformSize / 2))
+                        vDSP_ctoz(complex, 2, &split, 1, vDSP_Length(transformSize / 2))
                     }
                 }
                 vDSP_fft_zrip(fftSetup, &split, 1, fftLog2, FFTDirection(FFT_FORWARD))
                 vDSP_zvmags(&split, 1, &magnitudes, 1, vDSP_Length(transformSize / 2))
+                magnitudes[0] = 0 // The packed real FFT stores DC and Nyquist together here.
             }
         }
 
@@ -45,9 +46,8 @@ enum VisualizationPCMAnalyzer {
         let bands = (0..<bandCount).map { band -> Float in
             let lower = max(1, Int(pow(Double(usableBins), Double(band) / Double(bandCount))))
             let upper = min(usableBins, max(lower + 1, Int(pow(Double(usableBins), Double(band + 1) / Double(bandCount)))))
-            let slice = magnitudes[lower..<upper]
-            let mean = slice.reduce(Float.zero, +) / Float(max(1, slice.count))
-            return min(1, sqrt(max(0, mean)) * 0.018)
+            let peakPower = magnitudes[lower..<upper].max() ?? 0
+            return min(1, sqrt(max(0, peakPower)) * (4 / Float(transformSize)))
         }
         let waveform = (0..<waveformCount).map { index -> Float in
             let sampleIndex = min(samples.count - 1, index * (samples.count - 1) / (waveformCount - 1))
