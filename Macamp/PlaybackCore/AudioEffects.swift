@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 struct AudioEffectCapabilities: OptionSet, Sendable {
@@ -80,4 +81,21 @@ final class UnsupportedAudioEffectController: AudioEffectController {
     func setEnabled(_ enabled: Bool) async throws { throw ProviderError.unsupported("audio effects") }
     func setPreampGain(_ value: Float) async throws { throw ProviderError.unsupported("preamp gain") }
     func setBandGain(_ value: Float, band: EqualizerBand) async throws { throw ProviderError.unsupported("equalizer bands") }
+}
+
+/// Applies the app's production Winamp-style band layout and state to the
+/// AVAudioUnitEQ used for decoded local playback.
+enum LocalFileEqualizerDSP {
+    static func configure(_ equalizer: AVAudioUnitEQ, state: AudioEffectState) {
+        precondition(equalizer.bands.count == EqualizerBand.winamp10.count)
+        for (index, band) in equalizer.bands.enumerated() {
+            band.filterType = .parametric
+            band.frequency = EqualizerBand.winamp10[index].centerFrequency
+            band.bandwidth = 1
+            band.gain = state.gain(for: EqualizerBand.winamp10[index])
+            band.bypass = false
+        }
+        equalizer.globalGain = state.preampGain
+        equalizer.bypass = !state.isEnabled
+    }
 }
