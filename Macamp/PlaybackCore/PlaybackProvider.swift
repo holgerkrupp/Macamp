@@ -33,6 +33,12 @@ protocol PlaybackProvider: AnyObject {
 protocol QueueEditingPlaybackProvider: PlaybackProvider {
     func removeQueueItems(at offsets: IndexSet) async throws
     func clearQueue() async throws
+    func addQueueItems(_ items: [PlaybackItem], placement: QueueInsertionPlacement) async throws
+}
+
+enum QueueInsertionPlacement: Sendable {
+    case append
+    case next
 }
 
 /// Providers may opt into restoring a previously persisted queue. The
@@ -47,6 +53,13 @@ protocol PlaybackSessionRestoring: PlaybackProvider {
 protocol MusicDiscoveryProvider: PlaybackProvider {
     func search(_ term: String) async throws -> MusicSearchResults
     func library() async throws -> MusicLibrarySnapshot
+    func items(in collection: PlaybackCollection) async throws -> [PlaybackItem]
+}
+
+extension MusicDiscoveryProvider {
+    func items(in collection: PlaybackCollection) async throws -> [PlaybackItem] {
+        throw ProviderError.unsupported("browsing tracks in this provider collection")
+    }
 }
 
 struct MusicSearchResults: Equatable, Sendable {

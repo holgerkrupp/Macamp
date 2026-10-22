@@ -6,7 +6,7 @@ import Testing
 @MainActor
 struct VisualizationTests {
     @Test func simulatedFramesAreDeterministic() {
-        let coordinator = PlaybackCoordinator()
+        let coordinator = PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore())
         let source = SimulatedAudioAnalysisSource(coordinator: coordinator)
         #expect(source.frame(at: 42, seed: 99) == source.frame(at: 42, seed: 99))
         #expect(source.frame(at: 43, seed: 99) != source.frame(at: 42, seed: 99))

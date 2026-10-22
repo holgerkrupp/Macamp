@@ -3,10 +3,11 @@ import Foundation
 @MainActor
 final class LocalMediaBookmarkStore {
     private let defaults: UserDefaults
-    private let key = "localMediaSecurityScopedBookmarks"
+    private let key: String
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, key: String = "localMediaSecurityScopedBookmarks") {
         self.defaults = defaults
+        self.key = key
     }
 
     func add(_ url: URL) throws {

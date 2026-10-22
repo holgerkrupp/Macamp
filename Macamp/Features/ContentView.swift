@@ -204,8 +204,13 @@ struct QueueView: View {
     let dependencies: DependencyContainer
     var body: some View {
         List(Array(dependencies.playback.queue.items.enumerated()), id: \.element.id) { index, item in
-            TrackRow(item: item, isCurrent: index == dependencies.playback.queue.currentIndex) {
-                Task { await dependencies.playback.play(items: dependencies.playback.queue.items, startingAt: index) }
+            TrackRow(
+                item: item,
+                isCurrent: index == dependencies.playback.queue.currentIndex,
+                sourceLabel: dependencies.playback.providerDisplayName(for: item.providerID),
+                statusLabel: dependencies.playback.availabilityLabel(for: item)
+            ) {
+                Task { await dependencies.playback.playQueueEntry(at: index) }
             }
         }.overlay { if dependencies.playback.queue.items.isEmpty { ContentUnavailableView("Queue is empty", systemImage: "list.number") } }
         .navigationTitle("Queue")
@@ -215,15 +220,31 @@ struct QueueView: View {
 struct TrackRow: View {
     let item: PlaybackItem
     var isCurrent = false
+    var sourceLabel: String? = nil
+    var statusLabel: String? = nil
     let play: () -> Void
     var body: some View {
         HStack {
             ArtworkView(reference: item.artwork).frame(width: 42, height: 42).clipShape(RoundedRectangle(cornerRadius: 5))
-            VStack(alignment: .leading) { Text(item.title).fontWeight(isCurrent ? .semibold : .regular); Text(item.artist ?? "Unknown artist").font(.caption).foregroundStyle(.secondary) }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title).fontWeight(isCurrent ? .semibold : .regular).lineLimit(1)
+                Text([item.artist ?? "Unknown artist", sourceLabel].compactMap { $0 }.joined(separator: " · "))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if let statusLabel { Text(statusLabel).font(.caption2).foregroundStyle(statusColor).lineLimit(1) }
+            }
             Spacer()
             if let duration = item.duration { Text(format(duration)).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
             Button(action: play) { Image(systemName: "play.fill") }.buttonStyle(.plain).accessibilityLabel("Play \(item.title)")
         }.contentShape(Rectangle()).onTapGesture(count: 2, perform: play)
+    }
+    private var statusColor: Color {
+        switch statusLabel {
+        case "Playing now": .green
+        case "Requires connection/device": .orange
+        case "Requires file access": .orange
+        case "Unsupported by provider policy": .red
+        default: .secondary
+        }
     }
     private func format(_ duration: Duration) -> String { let value = Int(duration.secondsValue); return String(format: "%d:%02d", value / 60, value % 60) }
 }

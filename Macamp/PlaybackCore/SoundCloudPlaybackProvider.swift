@@ -145,6 +145,18 @@ final class SoundCloudPlaybackProvider: ExternalPlaybackProviderBase, MusicDisco
         return MusicLibrarySnapshot(songs: likes, playlists: playlists)
     }
 
+    func items(in collection: PlaybackCollection) async throws -> [PlaybackItem] {
+        guard collection.providerID == id, collection.kind == .playlist else {
+            throw ProviderError.unsupported("adding tracks from this SoundCloud collection")
+        }
+        let data = try await request(path: "/playlists/\(collection.id)")
+        let playlist = try JSONDecoder().decode(SoundCloudPlaylist.self, from: data)
+        guard let tracks = playlist.tracks else {
+            throw ProviderError(code: .itemUnavailable, message: "SoundCloud returned this playlist without track entries. You can add individual tracks from search.")
+        }
+        return tracks.map(mapTrack)
+    }
+
     private func resolveStreamURL(for trackID: String) async throws -> URL {
         var request = URLRequest(url: baseURL.appending(path: "/tracks/\(trackID)/stream"))
         request.httpMethod = "GET"
@@ -198,7 +210,14 @@ final class SoundCloudPlaybackProvider: ExternalPlaybackProviderBase, MusicDisco
 
 fileprivate struct SoundCloudUser: Decodable { var id: Int; var username: String }
 fileprivate struct SoundCloudLike: Decodable { var track: SoundCloudTrack? }
-fileprivate struct SoundCloudPlaylist: Decodable { var id: Int; var title: String; var artworkURL: String?; var permalinkURL: String?; enum CodingKeys: String, CodingKey { case id, title, artworkURL = "artwork_url", permalinkURL = "permalink_url" } }
+fileprivate struct SoundCloudPlaylist: Decodable {
+    var id: Int
+    var title: String
+    var artworkURL: String?
+    var permalinkURL: String?
+    var tracks: [SoundCloudTrack]?
+    enum CodingKeys: String, CodingKey { case id, title, artworkURL = "artwork_url", permalinkURL = "permalink_url", tracks }
+}
 fileprivate struct SoundCloudTrack: Decodable {
     var id: Int; var title: String; var duration: Int?; var artworkURL: String?; var permalinkURL: String?; var user: SoundCloudUser?
     enum CodingKeys: String, CodingKey { case id, title, duration, artworkURL = "artwork_url", permalinkURL = "permalink_url", user }

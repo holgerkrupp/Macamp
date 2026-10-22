@@ -20,6 +20,7 @@ final class SpotifyPlaybackProvider: ExternalPlaybackProviderBase, MusicDiscover
     private let baseURL = URL(string: "https://api.spotify.com/v1")!
 
     var isConfigured: Bool { oauth != nil }
+    var hasPlayableDevice: Bool { isPremium && devices.contains(where: { $0.isActive && !$0.isRestricted }) }
 
     init(configuration: ExternalProviderConfiguration, transport: any ProviderHTTPTransport = URLSessionProviderHTTPTransport()) {
         self.transport = transport
@@ -163,6 +164,18 @@ final class SpotifyPlaybackProvider: ExternalPlaybackProviderBase, MusicDiscover
         return MusicLibrarySnapshot(songs: tracks, playlists: playlists)
     }
 
+    func items(in collection: PlaybackCollection) async throws -> [PlaybackItem] {
+        guard collection.providerID == id else { throw ProviderError(code: .itemUnavailable, message: "That collection belongs to a different provider.") }
+        let path: String
+        switch collection.kind {
+        case .album: path = "/albums/\(collection.id)/tracks"
+        case .playlist: path = "/playlists/\(collection.id)/tracks"
+        default: throw ProviderError.unsupported("adding tracks from this Spotify collection")
+        }
+        let data = try await request(path: path, query: [URLQueryItem(name: "limit", value: "100")])
+        return try SpotifyMapper.collectionTracks(data: data)
+    }
+
     func transferPlayback(to deviceID: String, play: Bool = false) async throws {
         let body = try JSONSerialization.data(withJSONObject: ["device_ids": [deviceID], "play": play])
         try await performNoContent(path: "/me/player", method: "PUT", body: body)
@@ -183,6 +196,7 @@ final class SpotifyPlaybackProvider: ExternalPlaybackProviderBase, MusicDiscover
         isPremium = profile.product?.lowercased() == "premium"
         authenticationState = .authorized
         state.status = .stopped
+        _ = try? await refreshDevices()
         publish()
     }
 
@@ -303,10 +317,17 @@ fileprivate enum SpotifyMapper {
 
     static func savedTracks(data: Data) throws -> [PlaybackItem] { try JSONDecoder().decode(SavedTrackResponse.self, from: data).items.map { item($0.track) } }
     static func playlists(data: Data) throws -> [PlaybackCollection] { try JSONDecoder().decode(PlaylistResponse.self, from: data).items.map { PlaybackCollection(id: $0.id, providerID: .spotify, title: $0.name, subtitle: $0.owner?.displayName, artwork: $0.images.first.flatMap { URL(string: $0.url) }.map(ArtworkReference.remote), kind: .playlist) } }
+    static func collectionTracks(data: Data) throws -> [PlaybackItem] {
+        if let tracks = try? JSONDecoder().decode(SpotifyTrackPage.self, from: data) { return tracks.items.map(item) }
+        return try JSONDecoder().decode(SpotifyPlaylistTrackPage.self, from: data).items.compactMap(\.track).map(item)
+    }
 }
 
 private struct SearchResponse: Decodable { var tracks: Page<SpotifyTrack>?; var albums: Page<SpotifyAlbum>?; var artists: Page<SpotifyArtist>?; var playlists: Page<SpotifyPlaylist>? }
 private struct Page<T: Decodable>: Decodable { var items: [T] }
+private struct SpotifyTrackPage: Decodable { var items: [SpotifyTrack] }
+private struct SpotifyPlaylistTrackPage: Decodable { var items: [SpotifyPlaylistTrack] }
+private struct SpotifyPlaylistTrack: Decodable { var track: SpotifyTrack? }
 private struct SavedTrackResponse: Decodable { var items: [SavedTrack] }
 private struct SavedTrack: Decodable { var track: SpotifyTrack }
 private struct PlaylistResponse: Decodable { var items: [SpotifyPlaylist] }

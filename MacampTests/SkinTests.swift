@@ -183,7 +183,7 @@ struct SkinTests {
         #expect(skins.lastError == nil)
 
         let view = SkinRendererView(
-            coordinator: PlaybackCoordinator(),
+            coordinator: PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore()),
             skinStore: skins,
             settings: SettingsStore(defaults: defaults),
             openMedia: {},
@@ -591,7 +591,7 @@ struct SkinTests {
         #expect(skins.lastError == nil)
 
         let view = SkinRendererView(
-            coordinator: PlaybackCoordinator(),
+            coordinator: PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore()),
             skinStore: skins,
             settings: SettingsStore(defaults: defaults),
             openMedia: {},
@@ -1772,7 +1772,7 @@ struct SkinTests {
         let settings = SettingsStore(defaults: defaults)
         let skins = SkinLibraryStore(defaults: defaults, root: temporaryRoot)
         let view = SkinRendererView(
-            coordinator: PlaybackCoordinator(),
+            coordinator: PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore()),
             skinStore: skins,
             settings: settings,
             openMedia: {},
@@ -1833,7 +1833,7 @@ struct SkinTests {
         await skins.importSkin(from: source)
         #expect(skins.lastError == nil)
 
-        let coordinator = PlaybackCoordinator()
+        let coordinator = PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore())
         let provider = MockPlaybackProvider()
         coordinator.register(provider)
         var item = PlaybackItem(
@@ -1925,7 +1925,7 @@ struct SkinTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let skins = SkinLibraryStore(defaults: defaults, root: root)
         await skins.importSkin(from: source)
-        let view = SkinRendererView(coordinator: PlaybackCoordinator(), skinStore: skins, settings: SettingsStore(defaults: defaults), openMedia: {}, playlistToggle: {}, equalizerToggle: {}, visualizationToggle: {})
+        let view = SkinRendererView(coordinator: PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore()), skinStore: skins, settings: SettingsStore(defaults: defaults), openMedia: {}, playlistToggle: {}, equalizerToggle: {}, visualizationToggle: {})
         #expect(view.injectMouseDown(at: CGPoint(x: 24, y: 16)) == "scriptonly")
         view.injectMouseUp(at: CGPoint(x: 24, y: 16))
     }
@@ -1935,7 +1935,7 @@ struct SkinTests {
         let defaults = try #require(UserDefaults(suiteName: defaultsName))
         defer { defaults.removePersistentDomain(forName: defaultsName) }
         let settings = SettingsStore(defaults: defaults)
-        let coordinator = PlaybackCoordinator(settingsStore: settings)
+        let coordinator = PlaybackCoordinator(settingsStore: settings, playlistStore: makeIsolatedUnifiedPlaylistStore())
         let provider = SkinTestEQPlaybackProvider()
         coordinator.register(provider)
         let source = try temporarySkin(entries: [("skin.xml", Data("""
@@ -1970,7 +1970,7 @@ struct SkinTests {
         let defaults = try #require(UserDefaults(suiteName: defaultsName))
         defer { defaults.removePersistentDomain(forName: defaultsName) }
         let settings = SettingsStore(defaults: defaults)
-        let coordinator = PlaybackCoordinator(settingsStore: settings)
+        let coordinator = PlaybackCoordinator(settingsStore: settings, playlistStore: makeIsolatedUnifiedPlaylistStore())
         coordinator.register(SkinTestEQPlaybackProvider())
         let source = try temporarySkin(entries: [("skin.xml", Data("""
         <WinampAbstractionLayer><container id="main" default_visible="1"><layout id="normal" w="80" h="40" /></container></WinampAbstractionLayer>

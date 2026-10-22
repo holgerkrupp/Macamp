@@ -147,6 +147,25 @@ final class YouTubePlaybackProvider: ExternalPlaybackProviderBase, MusicDiscover
         })
     }
 
+    func items(in collection: PlaybackCollection) async throws -> [PlaybackItem] {
+        guard collection.providerID == id, collection.kind == .playlist else {
+            throw ProviderError.unsupported("adding tracks from this YouTube collection")
+        }
+        let data = try await request(path: "/playlistItems", query: [
+            URLQueryItem(name: "part", value: "snippet"), URLQueryItem(name: "playlistId", value: collection.id),
+            URLQueryItem(name: "maxResults", value: "50")
+        ])
+        let response = try JSONDecoder().decode(PlaylistItemsResponse.self, from: data)
+        return response.items.compactMap { entry in
+            guard let id = entry.snippet.resourceID.videoID else { return nil }
+            return PlaybackItem(id: PlaybackItemID(rawValue: id), providerID: .youtube, providerItemID: id,
+                                title: entry.snippet.title, artist: entry.snippet.channelTitle,
+                                artwork: URL(string: entry.snippet.thumbnails.default.url).map(ArtworkReference.remote),
+                                mediaKind: .song, isExplicit: false,
+                                sourceURL: URL(string: "https://www.youtube.com/watch?v=\(id)"), attribution: "YouTube")
+        }
+    }
+
     private func request(path: String, query: [URLQueryItem], bearer: String? = nil) async throws -> Data {
         guard let apiKey else { throw ProviderError(code: .providerUnavailable, message: "YouTube Data API is not configured.") }
         var components = URLComponents(url: baseURL.appending(path: path), resolvingAgainstBaseURL: false)
@@ -253,5 +272,14 @@ private struct SearchID: Decodable { var videoID: String?; var playlistID: Strin
 private struct SearchSnippet: Decodable { var title: String; var channelTitle: String; var thumbnails: Thumbnails }
 private struct PlaylistResponse: Decodable { var items: [PlaylistItem] }
 private struct PlaylistItem: Decodable { var id: String; var snippet: SearchSnippet }
+private struct PlaylistItemsResponse: Decodable { var items: [PlaylistTrackEntry] }
+private struct PlaylistTrackEntry: Decodable { var snippet: PlaylistTrackSnippet }
+private struct PlaylistTrackSnippet: Decodable {
+    var title: String
+    var channelTitle: String
+    var thumbnails: Thumbnails
+    var resourceID: SearchID
+    enum CodingKeys: String, CodingKey { case title, channelTitle, thumbnails, resourceID = "resourceId" }
+}
 private struct Thumbnails: Decodable { var `default`: Thumbnail }
 private struct Thumbnail: Decodable { var url: String }

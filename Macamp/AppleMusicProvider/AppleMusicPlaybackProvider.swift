@@ -81,7 +81,17 @@ final class AppleMusicPlaybackProvider: MusicDiscoveryProvider {
     func pause() async throws { player.pause(); synchronize() }
     func stop() async throws { player.stop(); synchronize() }
 
-    func play(item: PlaybackItem) async throws { try await play(items: [item], startingAt: 0) }
+    func play(item: PlaybackItem) async throws {
+        if songsByID[item.providerItemID] == nil {
+            let query = [item.title, item.artist].compactMap { $0 }.joined(separator: " ")
+            let (results, songs) = try await catalogService.search(query)
+            songsByID.merge(songs) { _, new in new }
+            guard results.songs.contains(where: { $0.providerItemID == item.providerItemID }) else {
+                throw ProviderError(code: .itemUnavailable, message: "Apple Music could not resolve this saved catalogue item. It remains in the playlist so you can retry or remove it.")
+            }
+        }
+        try await play(items: [item], startingAt: 0)
+    }
 
     func play(items: [PlaybackItem], startingAt index: Int) async throws {
         try requireAuthorization()
@@ -124,6 +134,20 @@ final class AppleMusicPlaybackProvider: MusicDiscoveryProvider {
             songsByID.merge(songs) { _, new in new }
             return library
         } catch { throw map(error) }
+    }
+
+    func items(in collection: PlaybackCollection) async throws -> [PlaybackItem] {
+        guard collection.providerID == id, collection.kind == .album else {
+            throw ProviderError.unsupported("adding entries from Apple Music playlists; add tracks from search or your library instead")
+        }
+        let query = [collection.title, collection.subtitle].compactMap { $0 }.joined(separator: " ")
+        let (results, songs) = try await catalogService.search(query, limit: 100)
+        songsByID.merge(songs) { _, new in new }
+        let tracks = results.songs.filter { $0.albumTitle?.localizedCaseInsensitiveCompare(collection.title) == .orderedSame }
+        guard !tracks.isEmpty else {
+            throw ProviderError(code: .itemUnavailable, message: "Apple Music did not return tracks for this album. You can still add individual tracks from search.")
+        }
+        return tracks
     }
 
     private var snapshot: ProviderSnapshot { ProviderSnapshot(authenticationState: authenticationState, state: state, queue: queue) }
