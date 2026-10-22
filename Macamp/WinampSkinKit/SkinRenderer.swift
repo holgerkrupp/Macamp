@@ -65,7 +65,7 @@ final class SkinRendererView: NSView {
         coordinator: PlaybackCoordinator,
         skinStore: SkinLibraryStore,
         settings: SettingsStore,
-        visualizationFrames: VisualizationFrameStore,
+        visualizationFrames: VisualizationFrameStore = VisualizationFrameStore(),
         openMedia: @escaping () -> Void,
         playlistToggle: @escaping () -> Void,
         equalizerToggle: @escaping () -> Void,

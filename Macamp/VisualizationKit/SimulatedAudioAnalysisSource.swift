@@ -81,7 +81,7 @@ final class LocalPCMAudioAnalysisSource: AudioAnalysisSource, @unchecked Sendabl
     @MainActor private var frameRate = 30
 
     private final class Slot: @unchecked Sendable {
-        let samples = UnsafeMutablePointer<Float>.allocate(capacity: LocalPCMAudioAnalysisSource.maximumSamplesPerSlot)
+        nonisolated(unsafe) let samples = UnsafeMutablePointer<Float>.allocate(capacity: 8_192)
         var count = 0
         var sampleRate = 0.0
         deinit { samples.deallocate() }
