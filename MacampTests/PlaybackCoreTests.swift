@@ -32,7 +32,7 @@ struct PlaybackCoreTests {
     }
 
     @Test func providerSwitchingAndStatePropagation() async {
-        let coordinator = PlaybackCoordinator()
+        let coordinator = PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore())
         let first = MockPlaybackProvider()
         let second = TestPlaybackProvider(id: "second", capabilities: [.playback])
         coordinator.register(first)
@@ -46,7 +46,7 @@ struct PlaybackCoreTests {
     }
 
     @Test func unsupportedActionNeverReachesProvider() async {
-        let coordinator = PlaybackCoordinator()
+        let coordinator = PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore())
         let provider = TestPlaybackProvider(id: "limited", capabilities: [.playback])
         coordinator.register(provider)
         await coordinator.setVolume(0.4)
@@ -55,10 +55,12 @@ struct PlaybackCoreTests {
     }
 
     @Test func queueAppendPreservesCurrentPlaybackWithoutReplacementPlay() async {
-        let coordinator = PlaybackCoordinator()
+        let store = makePlaylistStore()
         let provider = TestPlaybackProvider(id: .localMedia, capabilities: [.playback, .queueEditing])
         let current = PlaybackItem(id: "current", providerID: provider.id, providerItemID: "current", title: "Current", mediaKind: .localFile, isExplicit: false)
         let existing = PlaybackItem(id: "existing", providerID: provider.id, providerItemID: "existing", title: "Existing", mediaKind: .localFile, isExplicit: false)
+        store.replace(with: [current], selecting: 0)
+        let coordinator = PlaybackCoordinator(playlistStore: store)
         provider.queue = PlaybackQueue(items: [current], currentIndex: 0)
         provider.state.currentItem = current
         provider.state.elapsed = .seconds(37)
@@ -69,15 +71,16 @@ struct PlaybackCoreTests {
         await coordinator.addQueueItems([existing], placement: .append)
 
         #expect(provider.replacementPlayCount == 0)
-        #expect(provider.queue.items.map(\.id) == [current.id, existing.id])
-        #expect(provider.queue.currentIndex == 0)
+        #expect(coordinator.queue.items.map(\.title) == ["Current", "Existing"])
+        #expect(coordinator.queue.currentIndex == 0)
+        #expect(provider.queue.items.map(\.id) == [current.id])
         #expect(provider.state.currentItem?.id == current.id)
         #expect(provider.state.status == .playing)
         #expect(provider.state.elapsed == .seconds(37))
     }
 
     @Test func emptyAppendImportDoesNotAutoplay() async {
-        let coordinator = PlaybackCoordinator()
+        let coordinator = PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore())
         let provider = TestPlaybackProvider(id: .localMedia, capabilities: [.playback, .queueEditing])
         coordinator.register(provider)
         let service = MediaImportService(playback: coordinator, localMedia: LocalFilePlaybackProvider())
@@ -110,9 +113,10 @@ struct PlaybackCoreTests {
         defer { defaults.removePersistentDomain(forName: defaultsName) }
         let local = LocalFilePlaybackProvider(
             bookmarkStore: LocalMediaBookmarkStore(defaults: defaults),
+            queueBookmarkStore: LocalMediaBookmarkStore(defaults: defaults, key: "queue-access"),
             sessionStore: PlaybackSessionStore(fileURL: storeURL)
         )
-        let coordinator = PlaybackCoordinator(sessionStore: PlaybackSessionStore(fileURL: storeURL))
+        let coordinator = PlaybackCoordinator(sessionStore: PlaybackSessionStore(fileURL: storeURL), playlistStore: makePlaylistStore())
         coordinator.register(external)
         coordinator.register(local)
         let service = MediaImportService(playback: coordinator, localMedia: local)
@@ -120,18 +124,19 @@ struct PlaybackCoreTests {
         let result = await service.importURLs([mediaURL], action: .appendToQueue)
 
         #expect(result.items.count == 1)
-        #expect(result.warnings.contains { $0.contains("Switch to Local Files") })
+        #expect(result.warnings.isEmpty)
         #expect(coordinator.activeProviderID == .spotify)
         #expect(external.queue.items.map(\.id) == [current.id])
         #expect(external.state.currentItem?.id == current.id)
         #expect(external.state.status == .playing)
         #expect(external.state.elapsed == .seconds(24))
         #expect(coordinator.state.currentItem?.id == current.id)
-        #expect(local.queue.items.map(\.id) == result.items.map(\.id))
+        #expect(local.queue.items.isEmpty)
+        #expect(coordinator.queue.items.map(\.providerItemID) == result.items.map(\.providerItemID))
     }
 
     @Test func providerSnapshotRefreshesRouteDependentEffectCapabilities() async {
-        let coordinator = PlaybackCoordinator()
+        let coordinator = PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore())
         let provider = LocalFilePlaybackProvider()
         coordinator.register(provider)
         #expect(!coordinator.capabilities.contains(.nativeEqualizer))
@@ -186,11 +191,13 @@ struct PlaybackCoreTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let provider = TestPlaybackProvider(id: "restorable", capabilities: [.playback])
         let store = PlaybackSessionStore(fileURL: root)
-        let coordinator = PlaybackCoordinator(sessionStore: store)
+        let playlistStore = makePlaylistStore()
+        let first = PlaybackItem(id: "first", providerID: "restorable", providerItemID: "1", title: "First", mediaKind: .song, isExplicit: false)
+        let second = PlaybackItem(id: "second", providerID: "restorable", providerItemID: "2", title: "Second", mediaKind: .song, isExplicit: false)
+        playlistStore.replace(with: [first, second], selecting: 1)
+        let coordinator = PlaybackCoordinator(sessionStore: store, playlistStore: playlistStore)
         coordinator.register(provider)
 
-        let first = PlaybackItem(id: "first", providerID: provider.id, providerItemID: "1", title: "First", mediaKind: .song, isExplicit: false)
-        let second = PlaybackItem(id: "second", providerID: provider.id, providerItemID: "2", title: "Second", mediaKind: .song, isExplicit: false)
         let session = PersistedPlaybackSession(
             providerID: provider.id,
             items: [PersistedQueueItem(item: first), PersistedQueueItem(item: second)],
@@ -207,6 +214,73 @@ struct PlaybackCoreTests {
         #expect(coordinator.queue.currentIndex == 1)
         #expect(coordinator.state.status == .paused)
         #expect(provider.playCount == 0)
+    }
+
+    @Test func mixedPlaylistAppendInsertAndReorderKeepDistinctOccurrences() {
+        let store = makePlaylistStore()
+        let local = PlaybackItem(id: "local-source", providerID: .localMedia, providerItemID: "file:///one.mp3", title: "Local", mediaKind: .localFile, isExplicit: false)
+        let apple = PlaybackItem(id: "apple-source", providerID: .appleMusic, providerItemID: "song-1", title: "Apple", mediaKind: .song, isExplicit: false)
+        let spotify = PlaybackItem(id: "spotify-source", providerID: .spotify, providerItemID: "track-1", title: "Spotify", mediaKind: .song, isExplicit: false)
+        store.append([local, apple, apple])
+        store.select(store.entries[0].id)
+        store.insertNext([spotify])
+
+        #expect(store.queue.items.map(\.title) == ["Local", "Spotify", "Apple", "Apple"])
+        #expect(store.entries[2].id != store.entries[3].id)
+        #expect(store.queue.items.map(\.providerID) == [.localMedia, .spotify, .appleMusic, .appleMusic])
+        store.move(fromOffsets: IndexSet(integer: 1), toOffset: 4)
+        #expect(store.queue.items.map(\.title) == ["Local", "Apple", "Apple", "Spotify"])
+        store.remove(at: IndexSet(integer: 2))
+        #expect(store.queue.items.map(\.title) == ["Local", "Apple", "Spotify"])
+        #expect(store.queue.currentItem?.title == "Local")
+    }
+
+    @Test func mixedPlaylistPlaybackHandsOffBetweenProvidersWithoutOverlap() async {
+        let store = makePlaylistStore()
+        let localItem = PlaybackItem(id: "local", providerID: .localMedia, providerItemID: "file:///local.mp3", title: "Local", mediaKind: .localFile, isExplicit: false)
+        let appleItem = PlaybackItem(id: "apple", providerID: .appleMusic, providerItemID: "catalogue-42", title: "Apple", mediaKind: .song, isExplicit: false)
+        store.append([localItem, appleItem, localItem])
+        let coordinator = PlaybackCoordinator(playlistStore: store)
+        let local = TestPlaybackProvider(id: .localMedia, capabilities: [.playback, .pause, .explicitStop, .shuffle, .repeat])
+        let apple = TestPlaybackProvider(id: .appleMusic, capabilities: [.playback, .pause, .explicitStop, .shuffle, .repeat])
+        coordinator.register(local)
+        coordinator.register(apple)
+
+        await coordinator.playQueueEntry(at: 0)
+        #expect(local.state.status == .playing)
+        #expect(apple.state.status == .stopped)
+        await coordinator.next()
+        #expect(coordinator.activeProviderID == .appleMusic)
+        #expect(coordinator.queue.currentIndex == 1)
+        #expect(local.state.status == .stopped)
+        #expect(apple.state.status == .playing)
+        await coordinator.next()
+        #expect(coordinator.activeProviderID == .localMedia)
+        #expect(coordinator.queue.currentIndex == 2)
+        #expect(apple.state.status == .stopped)
+        #expect(local.state.status == .playing)
+    }
+
+    @Test func unifiedPlaylistPersistsProviderReferencesWithoutEmbeddedArtworkPayloads() {
+        let suiteName = "MacampUnifiedPlaylistTest-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let storageKey = "playlist"
+        let store = UnifiedPlaylistStore(defaults: defaults, storageKey: storageKey)
+        let item = PlaybackItem(id: "apple", providerID: .appleMusic, providerItemID: "catalogue-123", title: "Persisted", artist: "Artist", mediaKind: .song, isExplicit: false)
+        let firstID = store.append([item])[0]
+        store.select(firstID)
+
+        let restored = UnifiedPlaylistStore(defaults: defaults, storageKey: storageKey)
+        #expect(restored.queue.currentItem?.providerID == .appleMusic)
+        #expect(restored.queue.currentItem?.providerItemID == "catalogue-123")
+        #expect(restored.queue.currentItem?.title == "Persisted")
+        #expect(restored.entries.first?.id == firstID)
+    }
+
+    private func makePlaylistStore() -> UnifiedPlaylistStore {
+        let suiteName = "MacampUnifiedPlaylistTest-\(UUID().uuidString)"
+        return UnifiedPlaylistStore(defaults: UserDefaults(suiteName: suiteName)!, storageKey: "playlist")
     }
 
     @Test func queueEditingProviderMutatesQueueWithoutChangingPlaybackContract() async throws {
@@ -288,6 +362,31 @@ struct PlaybackCoreTests {
             Issue.record("Unexpected error: \(error)")
         }
     }
+
+    @Test func unavailablePlaylistTargetDoesNotInterruptCurrentProvider() async {
+        let configuration = ExternalProviderConfiguration(
+            spotifyClientID: nil, spotifyRedirectURI: nil,
+            tidalClientID: nil, tidalClientSecret: nil,
+            soundCloudClientID: nil, soundCloudClientSecret: nil, soundCloudRedirectURI: nil,
+            youtubeAPIKey: nil, youtubeClientID: nil, youtubeRedirectURI: nil
+        )
+        let store = makePlaylistStore()
+        let localItem = PlaybackItem(id: "local", providerID: .localMedia, providerItemID: "file:///local.mp3", title: "Local", mediaKind: .localFile, isExplicit: false)
+        let youtubeItem = PlaybackItem(id: "youtube", providerID: .youtube, providerItemID: "video-1", title: "Video", mediaKind: .song, isExplicit: false)
+        store.append([localItem, youtubeItem])
+        let coordinator = PlaybackCoordinator(playlistStore: store)
+        let local = TestPlaybackProvider(id: .localMedia, capabilities: [.playback, .pause, .explicitStop])
+        coordinator.register(local)
+        coordinator.register(YouTubePlaybackProvider(configuration: configuration))
+
+        await coordinator.playQueueEntry(at: 0)
+        await coordinator.playQueueEntry(at: 1)
+
+        #expect(coordinator.activeProviderID == .localMedia)
+        #expect(local.state.status == .playing)
+        #expect(coordinator.queue.currentIndex == 0)
+        #expect(coordinator.state.lastError?.code == .policyRestriction)
+    }
 }
 
 @MainActor
@@ -316,7 +415,15 @@ private final class TestPlaybackProvider: PlaybackSessionRestoring, QueueEditing
     func play() async throws { playCount += 1; state.status = .playing; publish() }
     func pause() async throws { state.status = .paused; publish() }
     func stop() async throws { state.status = .stopped; publish() }
-    func play(item: PlaybackItem) async throws { try await play() }
+    func play(item: PlaybackItem) async throws {
+        playCount += 1
+        queue = PlaybackQueue(items: [item], currentIndex: 0)
+        state.currentItem = item
+        state.duration = item.duration
+        state.status = .playing
+        state.playbackRate = 1
+        publish()
+    }
     func play(items: [PlaybackItem], startingAt index: Int) async throws { replacementPlayCount += 1; try await play() }
     func seek(to position: Duration) async throws { }
     func skipToNext() async throws { }

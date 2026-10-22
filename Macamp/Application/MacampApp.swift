@@ -63,6 +63,7 @@ private final class ApplicationStartupCoordinator {
         dependencies.appleMusic.restoreAuthorization()
         await dependencies.skins.restoreLibrary()
         await dependencies.localMedia.restoreLibrary()
+        dependencies.localMedia.restoreQueueAccess()
         await dependencies.playback.restorePersistedSession()
         if dependencies.settings.showPlayerOnLaunch {
             dependencies.classicPlayer.show()
@@ -122,6 +123,8 @@ struct MacampCommands: Commands {
                 importURLs(ApplicationMediaImportPanel.choosePlaylists(), action: .appendToQueue)
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
+
+            Button("Add from Streaming Service…") { dependencies.showMusicCatalogPicker() }
 
             Divider()
 

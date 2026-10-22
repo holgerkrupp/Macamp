@@ -20,6 +20,9 @@ final class DependencyContainer {
     let localPCMAnalysis = LocalPCMAudioAnalysisSource()
     let visualizationFrames = VisualizationFrameStore()
 
+    @ObservationIgnored lazy var musicCatalogPicker = MusicCatalogPickerWindowController(dependencies: self)
+    func showMusicCatalogPicker() { musicCatalogPicker.show() }
+
     @ObservationIgnored lazy var visualizations = VisualizationWindowController(
         source: localPCMAnalysis, coordinator: playback, frameStore: visualizationFrames, settings: settings
     )
@@ -42,7 +45,8 @@ final class DependencyContainer {
         },
         importPlaylistURLs: { [weak self] urls, action in
             Task { await self?.importMediaURLs(urls, action: action) }
-        }
+        },
+        onAddFromService: { [weak self] in self?.showMusicCatalogPicker() }
     )
 
     init() {
@@ -99,6 +103,10 @@ final class DependencyContainer {
     }
 
     func requestSkinMediaImport(_ action: SkinAction) {
+        if action == .addFromService {
+            showMusicCatalogPicker()
+            return
+        }
         let importAction: MediaImportAction
         let panelKind: ClassicPlaylistImportKind
         switch action {

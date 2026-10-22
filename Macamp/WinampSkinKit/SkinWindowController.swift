@@ -20,7 +20,8 @@ final class SkinWindowController: NSWindowController {
         mediaAction: @escaping (SkinAction) -> Void = { _ in },
         onDroppedURLs: @escaping ([URL]) -> Void = { _ in },
         choosePlaylistURLs: @escaping (ClassicPlaylistImportKind) -> [URL] = { _ in [] },
-        importPlaylistURLs: @escaping ([URL], MediaImportAction) -> Void = { _, _ in }
+        importPlaylistURLs: @escaping ([URL], MediaImportAction) -> Void = { _, _ in },
+        onAddFromService: @escaping () -> Void = {}
     ) {
         self.settings = settings
         self.skinStore = skinStore
@@ -29,7 +30,8 @@ final class SkinWindowController: NSWindowController {
             skinStore: skinStore,
             settings: settings,
             choosePlaylistURLs: choosePlaylistURLs,
-            importPlaylistURLs: importPlaylistURLs
+            importPlaylistURLs: importPlaylistURLs,
+            onAddFromService: onAddFromService
         )
         self.auxiliaryWindows = auxiliaryWindows
         let scale = settings.skinScale
@@ -111,8 +113,10 @@ private final class SkinAuxiliaryWindowController: NSObject {
     private let settings: SettingsStore
     private let choosePlaylistURLs: (ClassicPlaylistImportKind) -> [URL]
     private let importPlaylistURLs: ([URL], MediaImportAction) -> Void
+    private let onAddFromService: () -> Void
     private var playlistHost: WinampSkinWindowHost?
     private var equalizerHost: WinampSkinWindowHost?
+    private var unifiedPlaylistWindow: NSWindow?
     private let docking = WindowDockingController()
     private let windowGroup = WinampSkinWindowGroup()
 
@@ -121,13 +125,15 @@ private final class SkinAuxiliaryWindowController: NSObject {
         skinStore: SkinLibraryStore,
         settings: SettingsStore,
         choosePlaylistURLs: @escaping (ClassicPlaylistImportKind) -> [URL],
-        importPlaylistURLs: @escaping ([URL], MediaImportAction) -> Void
+        importPlaylistURLs: @escaping ([URL], MediaImportAction) -> Void,
+        onAddFromService: @escaping () -> Void
     ) {
         self.coordinator = coordinator
         self.skinStore = skinStore
         self.settings = settings
         self.choosePlaylistURLs = choosePlaylistURLs
         self.importPlaylistURLs = importPlaylistURLs
+        self.onAddFromService = onAddFromService
     }
 
     func attachMainHost(_ host: WinampSkinWindowHost) {
@@ -142,9 +148,16 @@ private final class SkinAuxiliaryWindowController: NSObject {
     func hideClassicAuxiliaryWindows() {
         playlistHost?.window.orderOut(nil)
         equalizerHost?.window.orderOut(nil)
+        unifiedPlaylistWindow?.orderOut(nil)
     }
 
     func togglePlaylist() {
+        if skinStore.activeCatalog.format == .modern {
+            let window = showUnifiedPlaylistWindow()
+            if window.isVisible { window.orderOut(nil) }
+            else { window.makeKeyAndOrderFront(nil); NSApp.activate() }
+            return
+        }
         if let playlistHost, playlistHost.window.isVisible {
             playlistHost.window.orderOut(nil)
             return
@@ -156,10 +169,37 @@ private final class SkinAuxiliaryWindowController: NSObject {
     }
 
     func showPlaylist() {
+        if skinStore.activeCatalog.format == .modern {
+            let window = showUnifiedPlaylistWindow()
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate()
+            return
+        }
         let host = playlistHost ?? makePlaylistHost()
         playlistHost = host
         windowGroup.add(host)
         present(host)
+    }
+
+    private func showUnifiedPlaylistWindow() -> NSWindow {
+        if let unifiedPlaylistWindow { return unifiedPlaylistWindow }
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 680, height: 520),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Macamp Playlist"
+        window.minSize = CGSize(width: 560, height: 380)
+        window.contentView = NSHostingView(rootView: UnifiedPlaylistEditorView(
+            playback: coordinator,
+            chooseURLs: choosePlaylistURLs,
+            importURLs: importPlaylistURLs,
+            addFromService: onAddFromService
+        ))
+        window.center()
+        unifiedPlaylistWindow = window
+        return window
     }
 
     private func makePlaylistHost() -> WinampSkinWindowHost {
@@ -175,7 +215,8 @@ private final class SkinAuxiliaryWindowController: NSObject {
             coordinator: coordinator,
             skinStore: skinStore,
             chooseURLs: choosePlaylistURLs,
-            importURLs: importPlaylistURLs
+            importURLs: importPlaylistURLs,
+            onAddFromService: onAddFromService
         )
         surface.windowHost = host
         host.setContentView(surface)
@@ -357,6 +398,7 @@ final class ClassicPlaylistSurface: NSView {
     private let skinStore: SkinLibraryStore
     private let chooseURLs: (ClassicPlaylistImportKind) -> [URL]
     private let importURLs: ([URL], MediaImportAction) -> Void
+    private let onAddFromService: () -> Void
     weak var windowHost: WinampSkinWindowHost?
     private var scrollOffset = 0
     private var rowHeight: CGFloat = 13
@@ -371,12 +413,14 @@ final class ClassicPlaylistSurface: NSView {
         coordinator: PlaybackCoordinator,
         skinStore: SkinLibraryStore,
         chooseURLs: @escaping (ClassicPlaylistImportKind) -> [URL] = { _ in [] },
-        importURLs: @escaping ([URL], MediaImportAction) -> Void = { _, _ in }
+        importURLs: @escaping ([URL], MediaImportAction) -> Void = { _, _ in },
+        onAddFromService: @escaping () -> Void = {}
     ) {
         self.coordinator = coordinator
         self.skinStore = skinStore
         self.chooseURLs = chooseURLs
         self.importURLs = importURLs
+        self.onAddFromService = onAddFromService
         super.init(frame: CGRect(origin: .zero, size: Self.defaultSize))
         wantsLayer = true
         autoresizingMask = [.width, .height]
@@ -472,7 +516,7 @@ final class ClassicPlaylistSurface: NSView {
         updateSelection(clicked: index, modifiers: event.modifierFlags)
         window?.makeFirstResponder(self)
         if event.clickCount > 1 {
-            Task { await coordinator.play(items: coordinator.queue.items, startingAt: index) }
+            Task { await coordinator.playQueueEntry(at: index) }
         }
         needsDisplay = true
     }
@@ -550,7 +594,7 @@ final class ClassicPlaylistSurface: NSView {
             let target = min(items.count - 1, max(0, current))
             selectedIndexes = IndexSet(integer: target)
             selectionAnchor = target
-            Task { await coordinator.play(items: items, startingAt: target) }
+            Task { await coordinator.playQueueEntry(at: target) }
         case 51, 117: removeSelectedItems()
         default:
             super.keyDown(with: event)
@@ -640,6 +684,7 @@ final class ClassicPlaylistSurface: NSView {
             addMenuItem("Add files…", tag: 100, to: menu)
             addMenuItem("Add folder…", tag: 101, to: menu)
             addMenuItem("Add playlist…", tag: 102, to: menu)
+            addMenuItem("Add from streaming service…", tag: 105, to: menu)
             menu.addItem(.separator())
             addMenuItem("Insert files next…", tag: 103, to: menu)
             addMenuItem("Add files to library…", tag: 104, to: menu)
@@ -653,6 +698,8 @@ final class ClassicPlaylistSurface: NSView {
         case .misc:
             addMenuItem("Play selected", tag: 400, to: menu, enabled: !selectedIndexes.isEmpty)
             addMenuItem("Remove duplicate tracks", tag: 401, to: menu, enabled: coordinator.queue.items.count > 1)
+            addMenuItem("Move selected up", tag: 402, to: menu, enabled: !selectedIndexes.isEmpty && selectedIndexes.first! > 0)
+            addMenuItem("Move selected down", tag: 403, to: menu, enabled: !selectedIndexes.isEmpty && selectedIndexes.last! < coordinator.queue.items.count - 1)
         case .list:
             addMenuItem("Load playlist…", tag: 102, to: menu)
             addMenuItem("Save playlist…", tag: 500, to: menu, enabled: !coordinator.queue.items.isEmpty)
@@ -671,6 +718,7 @@ final class ClassicPlaylistSurface: NSView {
         addMenuItem("Add files…", tag: 100, to: menu)
         addMenuItem("Add folder…", tag: 101, to: menu)
         addMenuItem("Add playlist…", tag: 102, to: menu)
+        addMenuItem("Add from streaming service…", tag: 105, to: menu)
         menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
     }
 
@@ -689,6 +737,7 @@ final class ClassicPlaylistSurface: NSView {
         case 102: add(kind: .playlist, action: .appendToQueue)
         case 103: add(kind: .files, action: .insertNext)
         case 104: add(kind: .files, action: .addToLibrary)
+        case 105: onAddFromService()
         case 200: removeSelectedItems()
         case 201:
             Task { await coordinator.clearQueue() }
@@ -705,18 +754,32 @@ final class ClassicPlaylistSurface: NSView {
             selectionAnchor = selectedIndexes.first
         case 400:
             guard let index = selectedIndexes.first else { return }
-            Task { await coordinator.play(items: coordinator.queue.items, startingAt: index) }
+            Task { await coordinator.playQueueEntry(at: index) }
         case 401:
             let items = coordinator.queue.items
             var seen = Set<String>()
             let duplicates = IndexSet(items.enumerated().compactMap { index, item in
-                let key = item.sourceURL?.absoluteString ?? item.title.lowercased()
+                let key = "\(item.providerID.rawValue):\(item.providerItemID)"
                 return seen.insert(key).inserted ? nil : index
             })
             if !duplicates.isEmpty { Task { await coordinator.removeQueueItems(at: duplicates) } }
+        case 402: moveSelectedRows(direction: -1)
+        case 403: moveSelectedRows(direction: 1)
         case 500: saveCurrentPlaylist()
         default: break
         }
+        needsDisplay = true
+    }
+
+    private func moveSelectedRows(direction: Int) {
+        guard let first = selectedIndexes.first, let last = selectedIndexes.last else { return }
+        let itemIDs = Set(selectedIndexes.compactMap { index in
+            coordinator.queue.items.indices.contains(index) ? coordinator.queue.items[index].id : nil
+        })
+        let destination = direction < 0 ? max(0, first - 1) : min(coordinator.queue.items.count, last + 2)
+        coordinator.playlistStore.move(fromOffsets: selectedIndexes, toOffset: destination)
+        selectedIndexes = IndexSet(coordinator.queue.items.indices.filter { itemIDs.contains(coordinator.queue.items[$0].id) })
+        selectionAnchor = selectedIndexes.first
         needsDisplay = true
     }
 
@@ -725,8 +788,12 @@ final class ClassicPlaylistSurface: NSView {
         panel.allowedContentTypes = [UTType(filenameExtension: "m3u") ?? .plainText]
         panel.nameFieldStringValue = "Playlist.m3u"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let lines = coordinator.queue.items.map { item in
-            item.sourceURL?.isFileURL == true ? item.sourceURL!.path : item.sourceURL?.absoluteString ?? item.title
+        let lines = coordinator.queue.items.map { item -> String in
+            if item.providerID == .localMedia,
+               let url = item.sourceURL ?? URL(string: item.providerItemID) {
+                return url.isFileURL ? url.path : url.absoluteString
+            }
+            return item.sourceURL?.absoluteString ?? item.providerItemID
         }
         do { try ("#EXTM3U\n" + lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8) }
         catch { NSSound.beep() }
@@ -754,8 +821,12 @@ final class ClassicPlaylistSurface: NSView {
             let isSelected = selectedIndexes.contains(itemIndex)
             if isSelected { palette.selectedBackground.setFill(); row.fill() }
             let duration = items[itemIndex].duration.map { String(format: "%d:%02d", Int($0.secondsValue) / 60, Int($0.secondsValue) % 60) } ?? ""
-            let title = "\(itemIndex + 1). \(items[itemIndex].title)"
-            let text = duration.isEmpty ? title : "\(title)  \(duration)"
+            let item = items[itemIndex]
+            let title = "\(itemIndex + 1). \(item.title)"
+            let source = coordinator.providerDisplayName(for: item.providerID)
+            let status = coordinator.availabilityLabel(for: item)
+            let details = "\(source) · \(status)"
+            let text = "\(title)  \(duration)  [\(details)]"
             text.draw(in: row.insetBy(dx: 2, dy: 0), withAttributes: [
                 .font: NSFont.systemFont(ofSize: 9),
                 .foregroundColor: isCurrent ? palette.currentText : palette.normalText
@@ -828,7 +899,7 @@ private struct SkinPlaylistView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Playlist").font(.title2.bold())
-                    Text("\(coordinator.queue.items.count) tracks · \(coordinator.activeProviderName)")
+                    Text("\(coordinator.queue.items.count) tracks · mixed sources")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -846,7 +917,7 @@ private struct SkinPlaylistView: View {
             } else {
                 List(Array(coordinator.queue.items.enumerated()), id: \.offset) { index, item in
                     Button {
-                        Task { await coordinator.play(items: coordinator.queue.items, startingAt: index) }
+                        Task { await coordinator.playQueueEntry(at: index) }
                     } label: {
                         HStack {
                             Image(systemName: index == coordinator.queue.currentIndex ? "speaker.wave.2.fill" : "music.note")
@@ -855,6 +926,10 @@ private struct SkinPlaylistView: View {
                                 Text(item.title).lineLimit(1)
                                 Text(item.artist ?? item.albumTitle ?? "Unknown artist")
                                     .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                Text("\(coordinator.providerDisplayName(for: item.providerID)) · \(coordinator.availabilityLabel(for: item))")
+                                    .font(.caption2)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }

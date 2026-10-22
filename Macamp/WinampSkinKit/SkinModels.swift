@@ -5,7 +5,7 @@ import ImageIO
 enum SkinAction: String, Sendable, Equatable {
     case none, scripted
     case previous, play, pause, stop, next, open, seek, setVolume, setBalance
-    case addFiles, addFolder, addPlaylist
+    case addFiles, addFolder, addPlaylist, addFromService
     case setEqualizerBand, resetEqualizer
     case toggleShuffle, cycleRepeat, togglePlaylist, toggleEqualizer, toggleVisualization
     case windowshade, minimize, close

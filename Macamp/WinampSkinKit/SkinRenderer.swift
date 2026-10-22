@@ -210,6 +210,7 @@ final class SkinRendererView: NSView {
         addContextMenuItem("Add Files…", tag: 1, to: menu)
         addContextMenuItem("Add Folder…", tag: 2, to: menu)
         addContextMenuItem("Add Playlist…", tag: 3, to: menu)
+        addContextMenuItem("Add from Streaming Service…", tag: 5, to: menu)
         menu.addItem(.separator())
         addContextMenuItem("Show Playlist", tag: 4, to: menu)
         menu.popUp(positioning: nil, at: logical(convert(event.locationInWindow, from: nil)), in: self)
@@ -229,6 +230,7 @@ final class SkinRendererView: NSView {
         case 2: mediaAction(.addFolder)
         case 3: mediaAction(.addPlaylist)
         case 4: playlistToggle()
+        case 5: mediaAction(.addFromService)
         default: break
         }
     }
@@ -724,7 +726,7 @@ final class SkinRendererView: NSView {
         case .stop: await coordinator.stop()
         case .next: await coordinator.next()
         case .open: openMedia()
-        case .addFiles, .addFolder, .addPlaylist: mediaAction(control.action)
+        case .addFiles, .addFolder, .addPlaylist, .addFromService: mediaAction(control.action)
         case .seek:
             let fraction = (point.x - frame.minX) / frame.width
             if let duration = coordinator.state.duration { await coordinator.seek(to: .seconds(duration.secondsValue * fraction)) }

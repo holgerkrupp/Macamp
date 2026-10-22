@@ -4,6 +4,25 @@ import Foundation
 @MainActor
 protocol OAuthCallbackHandling: AnyObject {
     func handleOAuthCallback(_ url: URL) async
+    func matchesOAuthCallback(_ url: URL) -> Bool
+}
+
+extension OAuthCallbackHandling where Self: PlaybackProvider {
+    func matchesOAuthCallback(_ url: URL) -> Bool {
+        let configuration = ExternalProviderConfiguration.environment
+        let redirect: URL? = switch id {
+        case .spotify: configuration.spotifyRedirectURI
+        case .soundCloud: configuration.soundCloudRedirectURI
+        case .youtube: configuration.youtubeRedirectURI
+        case .tidal: URL(string: "macamp://oauth/tidal")
+        default: nil
+        }
+        guard let redirect,
+              url.scheme?.lowercased() == redirect.scheme?.lowercased(),
+              url.host?.lowercased() == redirect.host?.lowercased() else { return false }
+        return url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
+            == redirect.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
+    }
 }
 
 @MainActor

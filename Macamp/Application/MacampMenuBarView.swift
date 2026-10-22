@@ -46,6 +46,7 @@ struct MacampMenuBarView: View {
             Button("Add Playlist…") {
                 importURLs(ApplicationMediaImportPanel.choosePlaylists(), action: .appendToQueue)
             }
+            Button("Add from Streaming Service…") { dependencies.showMusicCatalogPicker() }
         }
 
         Divider()

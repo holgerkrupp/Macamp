@@ -40,11 +40,11 @@ final class MediaImportService {
         switch action {
         case .appendToQueue:
             guard await playback.addQueueItems(report.items, placement: .append, to: .localMedia) else {
-                return MediaImportResult(items: [], warnings: report.warnings + ["Could not add the imported items to the Local Files queue."])
+                return MediaImportResult(items: [], warnings: report.warnings + ["Could not add the imported items to the shared playlist."])
             }
         case .insertNext:
             guard await playback.addQueueItems(report.items, placement: .next, to: .localMedia) else {
-                return MediaImportResult(items: [], warnings: report.warnings + ["Could not insert the imported items into the Local Files queue."])
+                return MediaImportResult(items: [], warnings: report.warnings + ["Could not insert the imported items into the shared playlist."])
             }
         case .replaceAndPlay:
             playback.activate(.localMedia)
@@ -52,10 +52,8 @@ final class MediaImportService {
         case .addToLibrary:
             break
         }
-        var warnings = report.warnings
-        if playback.activeProviderID != .localMedia, action != .replaceAndPlay {
-            warnings.append("Added to the Local Files queue. Switch to Local Files to play it; current provider playback was left unchanged.")
-        }
-        return MediaImportResult(items: report.items, warnings: warnings)
+        // Append and insert operations target the app-owned mixed-source playlist.
+        // They never activate or interrupt the imported item's provider.
+        return MediaImportResult(items: report.items, warnings: report.warnings)
     }
 }

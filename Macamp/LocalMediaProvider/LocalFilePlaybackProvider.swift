@@ -38,6 +38,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     @ObservationIgnored private var scheduledStartFrame: AVAudioFramePosition = 0
     @ObservationIgnored private var usesAudioEngine = false
     @ObservationIgnored private let bookmarkStore: LocalMediaBookmarkStore
+    @ObservationIgnored private let queueBookmarkStore: LocalMediaBookmarkStore
     @ObservationIgnored private let sessionStore: PlaybackSessionStore
     @ObservationIgnored private let analysisSource: LocalPCMAudioAnalysisSource?
     @ObservationIgnored private var locations: [PlaybackItemID: URL] = [:]
@@ -50,11 +51,13 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
 
     init(
         bookmarkStore: LocalMediaBookmarkStore = LocalMediaBookmarkStore(),
+        queueBookmarkStore: LocalMediaBookmarkStore = LocalMediaBookmarkStore(key: "localMediaQueueAccessBookmarks.v1"),
         sessionStore: PlaybackSessionStore = PlaybackSessionStore(),
         settingsStore: SettingsStore = SettingsStore(),
         analysisSource: LocalPCMAudioAnalysisSource? = nil
     ) {
         self.bookmarkStore = bookmarkStore
+        self.queueBookmarkStore = queueBookmarkStore
         self.sessionStore = sessionStore
         self.analysisSource = analysisSource
         effectState = settingsStore.equalizerState
@@ -86,6 +89,12 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         let urls = bookmarkStore.resolveAll()
         guard !urls.isEmpty else { return }
         await importURLs(urls, persistBookmarks: false)
+    }
+
+    /// Restores access needed by local entries in the app-owned playlist without
+    /// promoting queue-only files into the user's Local Files library.
+    func restoreQueueAccess() {
+        for url in queueBookmarkStore.resolveAll() { beginAccessing(url) }
     }
 
     func restore(session: PersistedPlaybackSession) async throws {
@@ -133,7 +142,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
 
     @discardableResult
     func importURLs(_ urls: [URL], persistBookmarks: Bool = true) async -> [PlaybackItem] {
-        let report = await prepareImport(urls, persistBookmarks: persistBookmarks)
+        let report = await prepareImport(urls, persistBookmarks: persistBookmarks, isQueueOnly: false)
         for item in report.items where !libraryItems.contains(where: { $0.id == item.id }) {
             libraryItems.append(item)
         }
@@ -144,21 +153,36 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     /// Bookmark and location tracking still happen so the queued files remain
     /// playable and restorable after relaunch.
     func importQueueItems(from urls: [URL]) async -> LocalMediaImportReport {
-        await prepareImport(urls, persistBookmarks: true)
+        await prepareImport(urls, persistBookmarks: true, isQueueOnly: true)
     }
 
-    private func prepareImport(_ urls: [URL], persistBookmarks: Bool) async -> LocalMediaImportReport {
+    func canResolve(_ item: PlaybackItem) -> Bool {
+        guard item.providerID == id,
+              let url = locations[item.id] ?? item.sourceURL ?? URL(string: item.providerItemID) else { return false }
+        if !url.isFileURL { return ["http", "https"].contains(url.scheme?.lowercased() ?? "") }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    private func prepareImport(_ urls: [URL], persistBookmarks: Bool, isQueueOnly: Bool) async -> LocalMediaImportReport {
         guard !urls.isEmpty else { return LocalMediaImportReport(items: [], locations: [:], warnings: []) }
         isImporting = true
         defer { isImporting = false }
+        let accessBookmarkStore = isQueueOnly ? queueBookmarkStore : bookmarkStore
         for url in urls {
             beginAccessing(url)
             if persistBookmarks {
-                do { try bookmarkStore.add(url) }
+                do { try accessBookmarkStore.add(url) }
                 catch { importWarnings.append("Could not remember \(url.lastPathComponent): \(error.localizedDescription)") }
             }
         }
         let report = await LocalMediaImporter.importURLs(urls)
+        if persistBookmarks {
+            for url in Set(report.locations.values) where !urls.contains(url) {
+                beginAccessing(url)
+                do { try accessBookmarkStore.add(url) }
+                catch { importWarnings.append("Could not remember \(url.lastPathComponent): \(error.localizedDescription)") }
+            }
+        }
         locations.merge(report.locations) { _, replacement in replacement }
         importWarnings.append(contentsOf: report.warnings)
         importWarnings = Array(importWarnings.suffix(20))

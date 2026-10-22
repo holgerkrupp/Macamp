@@ -1325,6 +1325,10 @@ enum ModernSkinParser {
         // Import actions must be classified before the broad playlist
         // visibility check below. In particular, “Add Playlist” means import
         // a playlist file; it must never toggle the playlist window.
+        if value.contains("add from service") || value.contains("streaming service") || value.contains("music service") ||
+            value.contains("add streaming") || value.contains("pe_addservice") {
+            return (.open, .addFromService)
+        }
         if value.contains("addplaylist") || value.contains("add playlist") || value.contains("pe_addplaylist") {
             return (.playlist, .addPlaylist)
         }

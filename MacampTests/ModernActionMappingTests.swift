@@ -13,6 +13,7 @@ struct ModernActionMappingTests {
               <button id="add-files" action="PE_Add" tooltip="Add files to playlist" x="0" y="0" w="10" h="10" />
               <button id="add-folder" action="EJECT_DIR" tooltip="Open Folder..." x="12" y="0" w="10" h="10" />
               <button id="add-playlist" action="PE_AddPlaylist" tooltip="Add Playlist..." x="24" y="0" w="10" h="10" />
+              <button id="add-service" action="PE_AddService" tooltip="Add from Streaming Service..." x="30" y="0" w="10" h="10" />
               <button id="eject" action="EJECT" tooltip="Open file" x="36" y="0" w="10" h="10" />
               <button id="playlist-toggle" action="TOGGLE" param="guid:pl" tooltip="Playlist" x="48" y="0" w="10" h="10" />
               <button id="ambiguous-playlist" tooltip="Playlist" x="60" y="0" w="10" h="10" />
@@ -29,6 +30,7 @@ struct ModernActionMappingTests {
         #expect(actionByID["add-files"] == .addFiles)
         #expect(actionByID["add-folder"] == .addFolder)
         #expect(actionByID["add-playlist"] == .addPlaylist)
+        #expect(actionByID["add-service"] == .addFromService)
         #expect(actionByID["eject"] == .open)
         #expect(actionByID["playlist-toggle"] == .togglePlaylist)
         #expect(actionByID["ambiguous-playlist"] == .scripted)
