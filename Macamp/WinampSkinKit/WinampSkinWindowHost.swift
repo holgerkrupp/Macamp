@@ -10,10 +10,9 @@ enum WinampSkinWindowGeometry {
 
     static func screenFrame(for logicalFrame: CGRect, scale: CGFloat) -> CGRect {
         let size = screenSize(for: logicalFrame.size, scale: scale)
-        let scale = max(0.01, scale)
         return CGRect(
-            x: logicalFrame.minX * scale,
-            y: logicalFrame.minY * scale,
+            x: logicalFrame.minX,
+            y: logicalFrame.minY,
             width: size.width,
             height: size.height
         )
@@ -22,8 +21,8 @@ enum WinampSkinWindowGeometry {
     static func logicalFrame(for screenFrame: CGRect, scale: CGFloat) -> CGRect {
         let scale = max(0.01, scale)
         return CGRect(
-            x: screenFrame.minX / scale,
-            y: screenFrame.minY / scale,
+            x: screenFrame.minX,
+            y: screenFrame.minY,
             width: screenFrame.width / scale,
             height: screenFrame.height / scale
         )
@@ -83,6 +82,9 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
     var onShadeStateChange: ((Bool) -> Void)?
 
     private var windowMoveObservers: [UUID: () -> Void] = [:]
+    private var interactiveDragObservers: [UUID: (Bool, Bool) -> Void] = [:]
+    private var isPerformingInteractiveDrag = false
+    private var isApplyingGroupFrame = false
 
     var logicalFrame: CGRect {
         get { WinampSkinWindowGeometry.logicalFrame(for: window.frame, scale: scale) }
@@ -191,9 +193,35 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
     }
 
     func windowDidMove(_ notification: Notification) {
-        snapToVisibleScreenEdgesIfNeeded()
+        if !isPerformingInteractiveDrag, !isApplyingGroupFrame { snapToVisibleScreenEdgesIfNeeded() }
         onLogicalFrameChange?(logicalFrame)
         windowMoveObservers.values.forEach { $0() }
+    }
+
+    /// Runs AppKit's native drag while allowing attached windows to treat it
+    /// as one transaction and defer snapping/docking until mouse-up. Option
+    /// dragging explicitly detaches the source window before moving it.
+    func performDrag(with event: NSEvent) {
+        let explicitlyUndocking = event.modifierFlags.contains(.option)
+        beginInteractiveDrag(explicitlyUndocking: explicitlyUndocking)
+        window.performDrag(with: event)
+        endInteractiveDrag(explicitlyUndocking: explicitlyUndocking)
+    }
+
+    func beginInteractiveDrag(explicitlyUndocking: Bool = false) {
+        isPerformingInteractiveDrag = true
+        interactiveDragObservers.values.forEach { $0(true, explicitlyUndocking) }
+    }
+
+    func endInteractiveDrag(explicitlyUndocking: Bool = false) {
+        interactiveDragObservers.values.forEach { $0(false, explicitlyUndocking) }
+        isPerformingInteractiveDrag = false
+    }
+
+    fileprivate func setFrameFromGroup(_ frame: CGRect, display: Bool) {
+        isApplyingGroupFrame = true
+        window.setFrame(frame, display: display)
+        isApplyingGroupFrame = false
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -238,7 +266,11 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
         guard logicalSize.width > 0, logicalSize.height > 0, bounds.width > 0, bounds.height > 0 else { return }
         let scaleX = bounds.width / logicalSize.width
         let scaleY = bounds.height / logicalSize.height
-        var transform = CGAffineTransform(a: scaleX, b: 0, c: 0, d: -scaleY, tx: bounds.minX, ty: bounds.maxY)
+        // Modern region paths already use the flipped view's top-left logical
+        // coordinates. The content view's backing layer follows that same
+        // orientation, so applying a second vertical flip shifts regions such
+        // as HeadAMP's drawers downward and clips their top edges.
+        var transform = CGAffineTransform(a: scaleX, b: 0, c: 0, d: scaleY, tx: bounds.minX, ty: bounds.minY)
         let mask = CAShapeLayer()
         mask.fillRule = .nonZero
         mask.path = regionPath.cgPath.copy(using: &transform)
@@ -246,12 +278,12 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
         contentView.layer?.mask = mask
     }
 
-    private func snapToVisibleScreenEdgesIfNeeded() {
+    fileprivate func snapToVisibleScreenEdgesIfNeeded() {
         guard snapsToVisibleScreenEdges, screenSnapDistance >= 0, !window.isMiniaturized else { return }
         guard let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(window.frame) }) ?? NSScreen.main else { return }
         let visible = screen.visibleFrame
         var frame = window.frame
-        let distance = screenSnapDistance * scale
+        let distance = screenSnapDistance
         if abs(frame.minX - visible.minX) <= distance { frame.origin.x = visible.minX }
         if abs(frame.maxX - visible.maxX) <= distance { frame.origin.x = visible.maxX - frame.width }
         if abs(frame.minY - visible.minY) <= distance { frame.origin.y = visible.minY }
@@ -281,6 +313,17 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
     fileprivate func removeWindowMoveObserver(_ token: UUID) {
         windowMoveObservers.removeValue(forKey: token)
     }
+
+    @discardableResult
+    fileprivate func addInteractiveDragObserver(_ observer: @escaping (Bool, Bool) -> Void) -> UUID {
+        let token = UUID()
+        interactiveDragObservers[token] = observer
+        return token
+    }
+
+    fileprivate func removeInteractiveDragObserver(_ token: UUID) {
+        interactiveDragObservers.removeValue(forKey: token)
+    }
 }
 
 /// Tracks the actual docking graph between skin windows. Membership is only a
@@ -291,7 +334,8 @@ final class WinampSkinWindowGroup {
     private struct Member {
         weak var host: WinampSkinWindowHost?
         let observerToken: UUID
-        var lastLogicalOrigin: CGPoint
+        let dragObserverToken: UUID
+        var lastScreenOrigin: CGPoint
     }
 
     private struct DockEdge: Hashable {
@@ -304,6 +348,7 @@ final class WinampSkinWindowGroup {
 
     private var members: [ObjectIdentifier: Member] = [:]
     private var edges: Set<DockEdge> = []
+    private var dragStartOrigins: [ObjectIdentifier: [ObjectIdentifier: CGPoint]] = [:]
     private var isApplyingGroupMove = false
     private let snapDistance: CGFloat = 10
 
@@ -319,12 +364,18 @@ final class WinampSkinWindowGroup {
             guard let self, let host else { return }
             self.hostDidMove(host)
         }
-        members[key] = Member(host: host, observerToken: token, lastLogicalOrigin: host.logicalFrame.origin)
+        let dragToken = host.addInteractiveDragObserver { [weak self, weak host] dragging, explicitlyUndocking in
+            guard let self, let host else { return }
+            if dragging { self.hostWillBeginDragging(host, explicitlyUndocking: explicitlyUndocking) }
+            else { self.hostDidEndDragging(host) }
+        }
+        members[key] = Member(host: host, observerToken: token, dragObserverToken: dragToken, lastScreenOrigin: host.window.frame.origin)
     }
 
     func remove(_ host: WinampSkinWindowHost) {
         guard let member = members.removeValue(forKey: ObjectIdentifier(host)) else { return }
         host.removeWindowMoveObserver(member.observerToken)
+        host.removeInteractiveDragObserver(member.dragObserverToken)
         edges = edges.filter { !$0.contains(ObjectIdentifier(host)) }
     }
 
@@ -336,7 +387,7 @@ final class WinampSkinWindowGroup {
         }
     }
 
-    /// Creates a persistent relationship using the current logical frames.
+    /// Creates a persistent relationship using current display-space offsets.
     func dock(_ first: WinampSkinWindowHost, to second: WinampSkinWindowHost) {
         guard first !== second,
               members[ObjectIdentifier(first)] != nil,
@@ -344,8 +395,8 @@ final class WinampSkinWindowGroup {
         let firstID = ObjectIdentifier(first)
         let secondID = ObjectIdentifier(second)
         let edge = firstID.hashValue < secondID.hashValue
-            ? DockEdge(first: firstID, second: secondID, relativeOrigin: CGPoint(x: first.logicalFrame.minX - second.logicalFrame.minX, y: first.logicalFrame.minY - second.logicalFrame.minY))
-            : DockEdge(first: secondID, second: firstID, relativeOrigin: CGPoint(x: second.logicalFrame.minX - first.logicalFrame.minX, y: second.logicalFrame.minY - first.logicalFrame.minY))
+            ? DockEdge(first: firstID, second: secondID, relativeOrigin: CGPoint(x: first.window.frame.minX - second.window.frame.minX, y: first.window.frame.minY - second.window.frame.minY))
+            : DockEdge(first: secondID, second: firstID, relativeOrigin: CGPoint(x: second.window.frame.minX - first.window.frame.minX, y: second.window.frame.minY - first.window.frame.minY))
         edges = edges.filter { !($0.contains(firstID) && $0.contains(secondID)) }
         edges.insert(edge)
     }
@@ -367,35 +418,58 @@ final class WinampSkinWindowGroup {
     /// member window through AppKit.
     func move(_ host: WinampSkinWindowHost, toLogicalOrigin origin: CGPoint, display: Bool = false) {
         guard members[ObjectIdentifier(host)] != nil else { return }
-        let delta = CGPoint(x: origin.x - host.logicalFrame.minX, y: origin.y - host.logicalFrame.minY)
-        apply(delta: delta, display: display, from: host)
+        let target = WinampSkinWindowGeometry.screenFrame(for: CGRect(origin: origin, size: host.logicalFrame.size), scale: host.scale).origin
+        let delta = CGPoint(x: target.x - host.window.frame.minX, y: target.y - host.window.frame.minY)
+        apply(screenDelta: delta, display: display, from: host, sourceAlreadyMoved: false)
     }
 
     private func hostDidMove(_ host: WinampSkinWindowHost) {
         guard !isApplyingGroupMove, let member = members[ObjectIdentifier(host)] else { return }
-        let currentOrigin = host.logicalFrame.origin
+        let currentOrigin = host.window.frame.origin
         let delta = CGPoint(
-            x: currentOrigin.x - member.lastLogicalOrigin.x,
-            y: currentOrigin.y - member.lastLogicalOrigin.y
+            x: currentOrigin.x - member.lastScreenOrigin.x,
+            y: currentOrigin.y - member.lastScreenOrigin.y
         )
         guard delta.x != 0 || delta.y != 0 else { return }
 
         let hostID = ObjectIdentifier(host)
-        let connected = edges.filter { $0.contains(hostID) }
-        if !connected.isEmpty, max(abs(delta.x), abs(delta.y)) > snapDistance {
-            // A large first jump is a deliberate pull-away rather than the
-            // small movement produced while dragging a connected cluster.
-            undock(host)
-        }
+        members[hostID]?.lastScreenOrigin = currentOrigin
         if edges.contains(where: { $0.contains(hostID) }) {
-            apply(delta: delta, display: false, from: host)
-        } else {
-            tryAutoDock(host)
-            members[hostID]?.lastLogicalOrigin = host.logicalFrame.origin
+            let snapshot = dragStartOrigins[hostID]
+            let dragDelta: CGPoint
+            if let start = snapshot?[hostID] {
+                dragDelta = CGPoint(x: currentOrigin.x - start.x, y: currentOrigin.y - start.y)
+            } else {
+                dragDelta = delta
+            }
+            apply(screenDelta: dragDelta, display: snapshot != nil, from: host, sourceAlreadyMoved: true, startOrigins: snapshot)
         }
     }
 
-    private func apply(delta: CGPoint, display: Bool, from source: WinampSkinWindowHost) {
+    private func hostWillBeginDragging(_ host: WinampSkinWindowHost, explicitlyUndocking: Bool) {
+        if explicitlyUndocking { undock(host) }
+        let id = ObjectIdentifier(host)
+        let component = connectedComponent(containing: host)
+        dragStartOrigins[id] = Dictionary(uniqueKeysWithValues: component.compactMap { key in
+            members[key]?.host.map { (key, $0.window.frame.origin) }
+        })
+    }
+
+    private func hostDidEndDragging(_ host: WinampSkinWindowHost) {
+        let id = ObjectIdentifier(host)
+        host.snapToVisibleScreenEdgesIfNeeded()
+        if edges.contains(where: { $0.contains(id) }) {
+            let actual = host.window.frame.origin
+            let old = members[id]?.lastScreenOrigin ?? actual
+            apply(screenDelta: CGPoint(x: actual.x - old.x, y: actual.y - old.y), display: true, from: host, sourceAlreadyMoved: true)
+        } else {
+            tryAutoDock(host)
+        }
+        dragStartOrigins.removeValue(forKey: id)
+        members[id]?.lastScreenOrigin = host.window.frame.origin
+    }
+
+    private func apply(screenDelta delta: CGPoint, display: Bool, from source: WinampSkinWindowHost, sourceAlreadyMoved: Bool, startOrigins: [ObjectIdentifier: CGPoint]? = nil) {
         guard delta.x != 0 || delta.y != 0 else { return }
         let component = connectedComponent(containing: source)
         isApplyingGroupMove = true
@@ -406,11 +480,16 @@ final class WinampSkinWindowGroup {
                 members.removeValue(forKey: key)
                 continue
             }
-            var frame = host.logicalFrame
-            frame.origin.x += delta.x
-            frame.origin.y += delta.y
-            host.setLogicalFrame(frame, display: display)
-            members[key]?.lastLogicalOrigin = frame.origin
+            if key != ObjectIdentifier(source) || !sourceAlreadyMoved {
+                let origin: CGPoint
+                if let start = startOrigins?[key] {
+                    origin = CGPoint(x: start.x + delta.x, y: start.y + delta.y)
+                } else {
+                    origin = CGPoint(x: host.window.frame.minX + delta.x, y: host.window.frame.minY + delta.y)
+                }
+                host.setFrameFromGroup(CGRect(origin: origin, size: host.window.frame.size), display: display)
+            }
+            members[key]?.lastScreenOrigin = host.window.frame.origin
         }
     }
 
@@ -432,8 +511,8 @@ final class WinampSkinWindowGroup {
         let hostID = ObjectIdentifier(host)
         guard members[hostID] != nil,
               let other = members.values.compactMap(\.host).first(where: { $0 !== host && shouldDock(host, to: $0) }) else { return }
-        let frame = host.logicalFrame
-        let otherFrame = other.logicalFrame
+        let frame = host.window.frame
+        let otherFrame = other.window.frame
         var snapped = frame
         let horizontalCandidates = [otherFrame.minX - frame.width, otherFrame.maxX]
         let verticalCandidates = [otherFrame.minY - frame.height, otherFrame.maxY]
@@ -449,15 +528,15 @@ final class WinampSkinWindowGroup {
             return
         }
         isApplyingGroupMove = true
-        host.setLogicalFrame(snapped, display: false)
+        host.setFrameFromGroup(snapped, display: false)
         isApplyingGroupMove = false
         dock(host, to: other)
-        members[hostID]?.lastLogicalOrigin = snapped.origin
+        members[hostID]?.lastScreenOrigin = snapped.origin
     }
 
     private func shouldDock(_ host: WinampSkinWindowHost, to other: WinampSkinWindowHost) -> Bool {
-        let frame = host.logicalFrame
-        let otherFrame = other.logicalFrame
+        let frame = host.window.frame
+        let otherFrame = other.window.frame
         let horizontalGap = min(abs(frame.maxX - otherFrame.minX), abs(frame.minX - otherFrame.maxX))
         let verticalGap = min(abs(frame.maxY - otherFrame.minY), abs(frame.minY - otherFrame.maxY))
         let overlapsVertically = frame.maxY > otherFrame.minY && frame.minY < otherFrame.maxY

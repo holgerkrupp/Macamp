@@ -195,10 +195,12 @@ protocol MakiRuntimeHost: AnyObject {
     func makiVisibilityChanged(objectID: String, isVisible: Bool)
     func makiTargetChanged(objectID: String, x: Double, speed: Double)
     func makiTargetGeometryChanged(objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double)
+    func makiTargetGeometryChanged(receiver: WasabiHandle, objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double)
     func makiLayoutSwitched(containerID: String, layoutID: String)
     func makiLayoutResized(objectID: String, frame: CGRect)
     func makiRedock(objectID: String, before: Bool)
     func makiTargetReached(objectID: String)
+    func makiTargetReached(receiver: WasabiHandle, objectID: String)
     func makiVolumeChanged(_ value: Double)
     func makiEQBandChanged(index: Int, value: Int)
     func makiEQBandValue(index: Int) -> Int
@@ -220,6 +222,7 @@ protocol MakiRuntimeHost: AnyObject {
 @MainActor
 extension MakiRuntimeHost {
     func makiTargetReached(objectID: String) {}
+    func makiTargetReached(receiver: WasabiHandle, objectID: String) { makiTargetReached(objectID: objectID) }
     func makiEQBandValue(index: Int) -> Int { 128 }
     func makiEQPreampValue() -> Int { 128 }
     func makiEQPreampChanged(value: Int) {}
@@ -229,6 +232,9 @@ extension MakiRuntimeHost {
         if let x, y == nil, width == nil, height == nil, alpha == nil {
             makiTargetChanged(objectID: objectID, x: x, speed: speed)
         }
+    }
+    func makiTargetGeometryChanged(receiver: WasabiHandle, objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double) {
+        makiTargetGeometryChanged(objectID: objectID, x: x, y: y, width: width, height: height, alpha: alpha, speed: speed)
     }
     func makiLayoutSwitched(containerID: String, layoutID: String) {}
     func makiLayoutResized(objectID: String, frame: CGRect) {}
@@ -306,11 +312,12 @@ final class MakiRuntime {
     let registry: WasabiObjectRegistry
     private var instances: [Instance] = []
     private var xmlParameters: [String: [String: String]] = [:]
-    private var targetX: [String: Double] = [:]
-    private var targetSpeed: [String: Double] = [:]
+    private var targetX: [WasabiHandle: Double] = [:]
+    private var targetSpeed: [WasabiHandle: Double] = [:]
     private var visibleObjects: [String: Bool] = [:]
     private var scriptedTexts: [String: String] = [:]
     private var targetStates: [String: [String: Double]] = [:]
+    private var sceneTargetStates: [WasabiHandle: [String: Double]] = [:]
     private var privateState: [String: Value] = [:]
     private var configAttributes: [String: Value] = [:]
     private var timers: [String: Task<Void, Never>] = [:]
@@ -325,7 +332,9 @@ final class MakiRuntime {
     private let persistentState: UserDefaults
     private let skinID: String
     private var nestedEventDepth = 0
+    private var pressedObject: WasabiHandle?
     private var pressedButton: WasabiHandle?
+    private var suppressTimers = false
     private(set) var pressedButtons: Set<WasabiHandle> = []
     private(set) var diagnostics: [String] = []
     private(set) var trace: [MakiRuntimeTraceEntry] = []
@@ -351,6 +360,14 @@ final class MakiRuntime {
         dispatch(event: "onScriptLoaded", receiver: registry.systemHandle)
     }
 
+    /// Run the script-load event to capture deterministic initial scene state
+    /// for a static preview. Timer objects stay stopped so preview rendering
+    /// never creates a second active skin runtime.
+    func startForPreviewSnapshot() {
+        suppressTimers = true
+        dispatch(event: "onScriptLoaded", receiver: registry.systemHandle)
+    }
+
     deinit { timers.values.forEach { $0.cancel() } }
 
     @discardableResult
@@ -361,6 +378,7 @@ final class MakiRuntime {
 
     @discardableResult
     func dispatchMouseDown(receiver: WasabiHandle, x: Int, y: Int) -> Bool {
+        pressedObject = receiver
         if let pressedButton { setButtonPressed(pressedButton, isPressed: false) }
         pressedButton = nil
 
@@ -374,29 +392,48 @@ final class MakiRuntime {
     }
 
     @discardableResult
+    func dispatchClick(receiver: WasabiHandle) -> Bool {
+        dispatch(event: "onLeftClick", receiver: receiver)
+    }
+
+    @discardableResult
     func dispatchMouseUp(objectID: String, x: Int = 0, y: Int = 0) -> Bool {
         let receiver = registry.compatibilityHandle(for: objectID)
         return dispatchMouseUp(receiver: receiver, x: x, y: y)
     }
 
     @discardableResult
-    func dispatchMouseUp(receiver: WasabiHandle, x: Int, y: Int) -> Bool {
+    func dispatchMouseUp(receiver: WasabiHandle, x: Int, y: Int, completeClick: Bool = true) -> Bool {
         // Winamp keeps the pressed Button as the mouse-capture receiver. The
         // release coordinates are still those of the pointer at mouse-up.
-        let eventReceiver = pressedButton ?? receiver
+        let eventReceiver = pressedObject ?? pressedButton ?? receiver
         var handled = dispatch(event: "onLeftButtonUp", receiver: eventReceiver, arguments: [
             .integer(Int32(clamping: x)), .integer(Int32(clamping: y))
         ])
 
         if let button = pressedButton {
             setButtonPressed(button, isPressed: false)
-            if button == receiver {
+            if button == receiver && completeClick {
                 emitTrace(.init(kind: .declarativeButtonAction, receiver: button, name: "declarativeAction"))
                 host?.makiDeclarativeButtonAction(receiver: button)
-                handled = dispatch(event: "onLeftClick", receiver: button) || handled
+                let clickHandled = dispatch(event: "onLeftClick", receiver: button)
+                if !clickHandled,
+                   let objectID = registry.object(button)?.id,
+                   registry.compatibilityHandle(for: objectID) != button {
+                    let compatibilityReceiver = registry.compatibilityHandle(for: objectID)
+                    // Some skins declare the same object ID in multiple
+                    // layouts while their compiled MAKI program retains the
+                    // first handle. If the visible duplicate has no bound
+                    // click handler, route this completed click through that
+                    // script-visible handle.
+                    handled = dispatch(event: "onLeftClick", receiver: compatibilityReceiver) || handled
+                } else {
+                    handled = clickHandled || handled
+                }
             }
         }
         pressedButton = nil
+        pressedObject = nil
         return handled
     }
 
@@ -406,8 +443,18 @@ final class MakiRuntime {
     }
 
     @discardableResult
+    func dispatchMouseEnter(receiver: WasabiHandle) -> Bool {
+        dispatch(event: "onEnterArea", receiver: receiver)
+    }
+
+    @discardableResult
     func dispatchMouseLeave(objectID: String) -> Bool {
         dispatch(event: "onLeaveArea", objectID: objectID.lowercased())
+    }
+
+    @discardableResult
+    func dispatchMouseLeave(receiver: WasabiHandle) -> Bool {
+        dispatch(event: "onLeaveArea", receiver: receiver)
     }
 
     @discardableResult
@@ -433,6 +480,7 @@ final class MakiRuntime {
     }
 
     func isPressed(_ receiver: WasabiHandle) -> Bool { pressedButtons.contains(receiver) }
+    func isActivated(_ receiver: WasabiHandle) -> Bool { activatedButtons.contains(receiver) }
 
     func clearTrace() { trace.removeAll(keepingCapacity: true) }
 
@@ -447,6 +495,7 @@ final class MakiRuntime {
     }
 
     private func scheduleTimer(receiver: WasabiHandle, interval: Duration) {
+        guard !suppressTimers else { return }
         let key = timerKey(for: receiver)
         timers[key]?.cancel()
         timerRunning.insert(receiver)
@@ -527,6 +576,10 @@ final class MakiRuntime {
 
     func targetReached(objectID: String) {
         _ = dispatch(event: "onTargetReached", objectID: objectID.lowercased())
+    }
+
+    func targetReached(receiver: WasabiHandle, objectID: String) {
+        _ = dispatch(event: "onTargetReached", receiver: receiver)
     }
 
     @discardableResult
@@ -909,20 +962,23 @@ final class MakiRuntime {
         case "getposition": return .number(host?.makiElapsed().secondsValue ?? 0)
         case "stringtointeger": return .integer(arguments.first?.integer ?? 0)
         case "settargetx":
-            targetX[objectID] = arguments.first?.number ?? 0
-            targetStates[objectID, default: [:]]["x"] = arguments.first?.number ?? 0
+            targetX[receiver] = arguments.first?.number ?? 0
+            sceneTargetStates[receiver, default: [:]]["x"] = arguments.first?.number ?? 0
             return .void
-        case "settargety": targetStates[objectID, default: [:]]["y"] = arguments.first?.number ?? 0; return .void
-        case "settargetw", "settargetwidth": targetStates[objectID, default: [:]]["w"] = arguments.first?.number ?? 0; return .void
-        case "settargeth", "settargetheight": targetStates[objectID, default: [:]]["h"] = arguments.first?.number ?? 0; return .void
-        case "settargetalpha": targetStates[objectID, default: [:]]["alpha"] = arguments.first?.number ?? 1; return .void
-        case "settargetspeed": targetSpeed[objectID] = max(0.01, arguments.first?.number ?? 0.25); return .void
+        case "settargety": sceneTargetStates[receiver, default: [:]]["y"] = arguments.first?.number ?? 0; return .void
+        case "settargetw", "settargetwidth": sceneTargetStates[receiver, default: [:]]["w"] = arguments.first?.number ?? 0; return .void
+        case "settargeth", "settargetheight": sceneTargetStates[receiver, default: [:]]["h"] = arguments.first?.number ?? 0; return .void
+        case "settargetalpha": sceneTargetStates[receiver, default: [:]]["alpha"] = arguments.first?.number ?? 1; return .void
+        case "settargetspeed":
+            let requested = arguments.first?.number ?? 0.25
+            targetSpeed[receiver] = requested.isFinite ? max(0.01, requested) : 0.25
+            return .void
         case "gototarget":
-            let state = targetStates[objectID] ?? [:]
+            let state = sceneTargetStates[receiver] ?? [:]
             if state.isEmpty {
-                host?.makiTargetChanged(objectID: objectID, x: targetX[objectID] ?? 0, speed: targetSpeed[objectID] ?? 0.25)
+                host?.makiTargetGeometryChanged(receiver: receiver, objectID: objectID, x: targetX[receiver] ?? 0, y: nil, width: nil, height: nil, alpha: nil, speed: targetSpeed[receiver] ?? 0.25)
             } else {
-                host?.makiTargetGeometryChanged(objectID: objectID, x: targetX[objectID], y: state["y"], width: state["w"], height: state["h"], alpha: state["alpha"], speed: targetSpeed[objectID] ?? 0.25)
+                host?.makiTargetGeometryChanged(receiver: receiver, objectID: objectID, x: targetX[receiver], y: state["y"], width: state["w"], height: state["h"], alpha: state["alpha"], speed: targetSpeed[receiver] ?? 0.25)
             }
             return .void
         case "leftclick": _ = dispatch(event: "onLeftClick", receiver: receiver); return .void

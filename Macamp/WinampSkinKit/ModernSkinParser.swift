@@ -61,7 +61,7 @@ enum ModernSkinParser {
             return (normalizeXUITag(xuiTag), candidate)
         }, uniquingKeysWith: { first, _ in first })
         let expandedCandidates = candidates.map { expand($0, definitions: definitions, xuiDefinitions: xuiDefinitions, visited: []) }
-        if let selected = expandedCandidates.max(by: { score($0) < score($1) }) {
+        if let selected = selectInitialLayout(from: expandedCandidates) {
             let clamped = CGSize(width: min(max(selected.canvasSize.width, 16), 2_048), height: min(max(selected.canvasSize.height, 16), 2_048))
             if clamped != selected.canvasSize { warnings.append("The selected Modern layout canvas was clamped to safe dimensions.") }
             descriptor.canvasSize = clamped
@@ -119,6 +119,8 @@ enum ModernSkinParser {
         var embedXUITarget: String?
         var containerID: String?
         var containerIsDefaultVisible: Bool
+        var declaredDefaultLayoutID: String?
+        var isDeclaredDefaultLayout: Bool
         var drawerTargetX: CGFloat?
         var scripts: [ScriptReference]
         var sendParams: [SendParam]
@@ -519,6 +521,8 @@ enum ModernSkinParser {
                     embedXUITarget: attribute("embed_xui", root),
                     containerID: container.flatMap { attribute("id", $0)?.lowercased() },
                     containerIsDefaultVisible: container.flatMap { attribute("default_visible", $0) }.map { $0 != "0" } ?? false,
+                    declaredDefaultLayoutID: container.flatMap { attribute("default_layout", $0) ?? attribute("layout", $0) }?.lowercased(),
+                    isDeclaredDefaultLayout: ["default", "isdefault", "active"].contains { bool(attribute($0, root)) },
                     drawerTargetX: drawerTargetX,
                     scripts: scripts,
                     sendParams: sendParams,
@@ -886,19 +890,32 @@ enum ModernSkinParser {
         return result
     }
 
-    nonisolated private static func score(_ candidate: LayoutCandidate) -> Int {
-        let id = candidate.id.lowercased()
-        var value = candidate.layers.count + candidate.controls.count * 4
-        if candidate.isLayout { value += 300 }
-        if candidate.containerID == "main" { value += 1_000 }
-        if candidate.containerIsDefaultVisible { value += 300 }
-        if id.contains("player") { value += 100 }
-        if id.contains("normal") || id.contains("main") { value += 80 }
-        if id == "normal" || id == "main" || id.hasSuffix(".normal") { value += 500 }
-        if id.contains("visual") || id.contains("vis") { value -= 80 }
-        if id.contains("equalizer") || id.contains("eq") { value -= 80 }
-        if id.contains("shade") || id.contains("compact") { value -= 30 }
-        return value
+    /// Pick the layout the skin declares as its initial player surface. Layout
+    /// size, control count, and familiar IDs are not reliable indicators: an
+    /// auxiliary component can be larger or more populated than the player.
+    nonisolated private static func selectInitialLayout(from candidates: [LayoutCandidate]) -> LayoutCandidate? {
+        let layouts = candidates.filter(\.isLayout)
+        guard !layouts.isEmpty else { return candidates.first }
+
+        for container in unique(layouts.compactMap(\.containerID)) {
+            let inContainer = layouts.filter { $0.containerID == container }
+            if let declared = inContainer.first?.declaredDefaultLayoutID,
+               let match = inContainer.first(where: { $0.id.caseInsensitiveCompare(declared) == .orderedSame }) {
+                return match
+            }
+            if let declared = inContainer.first(where: \.isDeclaredDefaultLayout) { return declared }
+        }
+
+        let visibleContainerIDs = unique(layouts.filter(\.containerIsDefaultVisible).compactMap(\.containerID))
+        for container in visibleContainerIDs {
+            if let first = layouts.first(where: { $0.containerID == container }) { return first }
+        }
+        return layouts.first
+    }
+
+    nonisolated private static func unique<T: Hashable>(_ values: [T]) -> [T] {
+        var seen = Set<T>()
+        return values.filter { seen.insert($0).inserted }
     }
 
     nonisolated private static func expand(

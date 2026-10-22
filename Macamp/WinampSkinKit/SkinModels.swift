@@ -1045,23 +1045,22 @@ final class SkinAssetCatalog {
                 let source = descriptor.bitmapSourceRects[layer.imageID.lowercased()]
                 let sourceRect: CGRect
                 if let source {
-                    sourceRect = CGRect(x: source.minX, y: image.size.height - source.maxY, width: source.width, height: source.height)
+                    sourceRect = source
                 } else if layer.cropToFirstFrame, frame.width > 0, frame.height > 0,
                           image.size.width >= frame.width, image.size.height >= frame.height {
-                    sourceRect = CGRect(x: 0, y: image.size.height - frame.height, width: frame.width, height: frame.height)
+                    sourceRect = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
                 } else {
                     sourceRect = CGRect(origin: .zero, size: image.size)
                 }
-                guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
-                let renderedImage = sourceRect == CGRect(origin: .zero, size: image.size)
-                    ? cgImage
-                    : cgImage.cropping(to: sourceRect) ?? cgImage
-                let context = NSGraphicsContext.current?.cgContext
-                context?.saveGState()
-                context?.interpolationQuality = .none
-                context?.setAlpha(CGFloat(layer.opacity))
-                context?.draw(renderedImage, in: frame)
-                context?.restoreGState()
+                guard let croppedImage = ModernSkinCoordinateSpace.croppedImage(image, fromTopLeft: sourceRect) else { continue }
+                croppedImage.draw(
+                    in: frame,
+                    from: CGRect(origin: .zero, size: croppedImage.size),
+                    operation: .sourceOver,
+                    fraction: CGFloat(layer.opacity),
+                    respectFlipped: true,
+                    hints: [.interpolation: NSImageInterpolation.none]
+                )
                 if layer.action != nil { renderedControlFrames.append(layer.frame.integral) }
             }
             return true

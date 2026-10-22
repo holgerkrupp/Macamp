@@ -53,6 +53,193 @@ struct SkinTests {
         #expect(descriptor.canvasSize == CGSize(width: 64, height: 32))
     }
 
+    @Test @MainActor func modernPreviewAndFlattenedSnapshotKeepAsymmetricBitmapCornersUpright() throws {
+        let colors: [(CGRect, NSColor)] = [
+            (CGRect(x: 0, y: 0, width: 8, height: 8), NSColor(calibratedRed: 1, green: 0, blue: 0, alpha: 1)),
+            (CGRect(x: 8, y: 0, width: 8, height: 8), NSColor(calibratedRed: 0, green: 0, blue: 1, alpha: 1)),
+            (CGRect(x: 0, y: 8, width: 8, height: 8), NSColor(calibratedRed: 0, green: 1, blue: 0, alpha: 1)),
+            (CGRect(x: 8, y: 8, width: 8, height: 8), NSColor(calibratedRed: 1, green: 1, blue: 0, alpha: 1)),
+            (CGRect(x: 0, y: 0, width: 16, height: 1), NSColor.white)
+        ]
+        let files: [String: Data] = [
+            "skin.xml": Data("""
+            <WinampAbstractionLayer>
+              <elements><bitmap id="corners" file="corners.png" /></elements>
+              <container id="main" default_visible="1">
+                <layout id="normal" w="16" h="16"><layer id="background" image="corners" x="0" y="0" w="16" h="16" /></layout>
+              </container>
+            </WinampAbstractionLayer>
+            """.utf8),
+            "corners.png": SkinDiagnosticFixtures.diagnosticPNG(size: CGSize(width: 16, height: 16), background: .black, fills: colors)
+        ]
+        let descriptor = ModernSkinParser.parse(files: files).descriptor
+        let catalog = SkinAssetCatalog(name: "Four corners", files: files, report: .init(), format: .modern, modern: descriptor)
+        let registry = WasabiResourceRegistry(catalog: catalog)
+        let preview = try #require(WasabiScenePainter.renderBitmapScene(catalog.scene, resources: registry, size: catalog.canvasSize))
+        let liveStaticSnapshot = try #require(catalog.mainImage)
+        let previewBitmap = try #require(preview.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+        let snapshotBitmap = try #require(liveStaticSnapshot.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+
+        for bitmap in [previewBitmap, snapshotBitmap] {
+            // NSBitmapImageRep pixel coordinates start at the lower-left edge.
+            #expect(try #require(bitmap.colorAt(x: 3, y: 10)).redComponent > 0.9)
+            #expect(try #require(bitmap.colorAt(x: 12, y: 10)).blueComponent > 0.9)
+            #expect(try #require(bitmap.colorAt(x: 3, y: 3)).greenComponent > 0.9)
+            let bottomRight = try #require(bitmap.colorAt(x: 12, y: 3))
+            #expect(bottomRight.redComponent > 0.9 && bottomRight.greenComponent > 0.9 && bottomRight.blueComponent < 0.1)
+        }
+
+        #expect(try #require(previewBitmap.colorAt(x: 8, y: 15)).redComponent > 0.9)
+    }
+
+    @Test @MainActor func modernScenePainterKeepsBitmapCropsAndAnimatedFramesInTopLeftCoordinates() throws {
+        let atlas = SkinDiagnosticFixtures.diagnosticPNG(
+            size: CGSize(width: 32, height: 32),
+            background: .black,
+            fills: [
+                (CGRect(x: 0, y: 0, width: 16, height: 16), NSColor.red),
+                (CGRect(x: 16, y: 0, width: 16, height: 16), NSColor.blue),
+                (CGRect(x: 0, y: 16, width: 16, height: 16), NSColor.green),
+                (CGRect(x: 16, y: 16, width: 16, height: 16), NSColor.yellow)
+            ]
+        )
+        let croppedXML = """
+        <WinampAbstractionLayer>
+          <elements><bitmap id="crop" file="atlas.png" x="16" y="0" w="16" h="8" /></elements>
+          <container id="main" default_visible="1"><layout id="normal" w="16" h="16">
+            <layer image="crop" x="0" y="0" w="16" h="16" />
+          </layout></container>
+        </WinampAbstractionLayer>
+        """
+        let cropped = try renderModernBitmapPreview(xml: croppedXML, files: ["atlas.png": atlas])
+        let croppedBitmap = try #require(cropped.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+        let croppedPixel = try #require(croppedBitmap.colorAt(x: 8, y: 8))
+        #expect(croppedPixel.redComponent > 0.9 && croppedPixel.greenComponent > 0.9 && croppedPixel.blueComponent < 0.1)
+        let flattenedDescriptor = ModernSkinParser.parse(files: ["skin.xml": Data(croppedXML.utf8), "atlas.png": atlas]).descriptor
+        let flattenedCatalog = SkinAssetCatalog(name: "Top-left crop", files: ["skin.xml": Data(croppedXML.utf8), "atlas.png": atlas], report: .init(), format: .modern, modern: flattenedDescriptor)
+        let flattenedBitmap = try #require(flattenedCatalog.mainImage?.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+        let flattenedPixel = try #require(flattenedBitmap.colorAt(x: 8, y: 8))
+        #expect(flattenedPixel.redComponent > 0.9 && flattenedPixel.greenComponent > 0.9 && flattenedPixel.blueComponent < 0.1)
+
+        let frames = SkinDiagnosticFixtures.diagnosticPNG(
+            size: CGSize(width: 16, height: 32),
+            background: .black,
+            fills: [
+                (CGRect(x: 0, y: 0, width: 16, height: 16), NSColor.red),
+                (CGRect(x: 0, y: 16, width: 16, height: 16), NSColor.green)
+            ]
+        )
+        for index in 0...1 {
+            let animatedXML = """
+            <WinampAbstractionLayer>
+              <elements><bitmap id="frames" file="frames.png" /></elements>
+              <container id="main" default_visible="1"><layout id="normal" w="16" h="16">
+                <animatedlayer id="animation" image="frames" x="0" y="0" w="16" h="16" framecount="2" frameindex="\(index)" />
+              </layout></container>
+            </WinampAbstractionLayer>
+            """
+            let image = try renderModernBitmapPreview(xml: animatedXML, files: ["frames.png": frames])
+            let bitmap = try #require(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+            let pixel = try #require(bitmap.colorAt(x: 8, y: 8))
+            if index == 0 { #expect(pixel.greenComponent > 0.9 && pixel.redComponent < 0.1) }
+            else { #expect(pixel.redComponent > 0.9 && pixel.greenComponent < 0.1) }
+        }
+    }
+
+    @Test @MainActor func liveModernViewKeepsGroupedButtonCropUpright() async throws {
+        let atlas = SkinDiagnosticFixtures.diagnosticPNG(
+            size: CGSize(width: 32, height: 32),
+            background: .black,
+            fills: [
+                (CGRect(x: 0, y: 0, width: 16, height: 16), .red),
+                (CGRect(x: 16, y: 0, width: 16, height: 16), .blue),
+                (CGRect(x: 0, y: 16, width: 16, height: 16), .green),
+                (CGRect(x: 16, y: 16, width: 16, height: 16), .yellow)
+            ]
+        )
+        let xml = """
+        <WinampAbstractionLayer>
+          <elements><bitmap id="button" file="atlas.png" x="16" y="0" w="16" h="16" /></elements>
+          <container id="main" default_visible="1">
+            <groupdef id="controls" w="24" h="40">
+              <button id="croppedButton" image="button" x="4" y="4" />
+            </groupdef>
+            <layout id="normal" w="48" h="48">
+              <group id="controls" x="6" y="4" w="24" h="40" />
+            </layout>
+          </container>
+        </WinampAbstractionLayer>
+        """
+        let source = try temporarySkin(entries: [("skin.xml", Data(xml.utf8)), ("atlas.png", atlas)], extension: "wal")
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+
+        let defaultsName = "Macamp.LiveModernCrop.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skins = SkinLibraryStore(defaults: defaults, root: root)
+        await skins.importSkin(from: source)
+        #expect(skins.lastError == nil)
+
+        let view = SkinRendererView(
+            coordinator: PlaybackCoordinator(),
+            skinStore: skins,
+            settings: SettingsStore(defaults: defaults),
+            openMedia: {},
+            playlistToggle: {},
+            equalizerToggle: {},
+            visualizationToggle: {}
+        )
+        let liveBitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: liveBitmap)
+        let preview = try #require(WasabiScenePainter.renderBitmapScene(
+            skins.activeCatalog.scene,
+            resources: WasabiResourceRegistry(catalog: skins.activeCatalog),
+            size: skins.activeCatalog.canvasSize
+        ))
+        let previewBitmap = try #require(preview.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+
+        for bitmap in [liveBitmap, previewBitmap] {
+            let pixel = CGPoint(x: CGFloat(14) / 48 * CGFloat(bitmap.pixelsWide), y: CGFloat(14) / 48 * CGFloat(bitmap.pixelsHigh))
+            let croppedPixel = try #require(bitmap.colorAt(x: Int(pixel.x), y: Int(pixel.y)))
+            #expect(croppedPixel.redComponent > 0.9 && croppedPixel.greenComponent > 0.9 && croppedPixel.blueComponent < 0.1)
+        }
+    }
+
+    @Test @MainActor func modernPreviewAppliesNegativeWindowRegionInSceneCoordinates() throws {
+        let xml = """
+        <WinampAbstractionLayer>
+          <elements><bitmap id="pixel" file="pixel.png" /></elements>
+          <container id="main" default_visible="1"><layout id="normal" w="16" h="16" desktopalpha="false">
+            <layer id="outer" image="pixel" x="0" y="0" w="16" h="16" sysregion="1" />
+            <layer id="hole" image="pixel" x="4" y="4" w="8" h="8" sysregion="-2" />
+          </layout></container>
+        </WinampAbstractionLayer>
+        """
+        let files = [
+            "skin.xml": Data(xml.utf8),
+            "pixel.png": SkinDiagnosticFixtures.diagnosticPNG(size: CGSize(width: 1, height: 1), background: .white, fills: [])
+        ]
+        let descriptor = ModernSkinParser.parse(files: files).descriptor
+        let catalog = SkinAssetCatalog(name: "Region cutout", files: files, report: .init(), format: .modern, modern: descriptor)
+        let resources = WasabiResourceRegistry(catalog: catalog)
+        let preview = try #require(WasabiScenePainter.renderBitmapScene(catalog.scene, resources: resources, size: catalog.canvasSize, clipPath: catalog.regionPath))
+        let bitmap = try #require(preview.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+        #expect(try #require(bitmap.colorAt(x: 2, y: 8)).alphaComponent > 0.9)
+        #expect(try #require(bitmap.colorAt(x: 8, y: 8)).alphaComponent < 0.1)
+    }
+
+    @MainActor
+    private func renderModernBitmapPreview(xml: String, files: [String: Data]) throws -> NSImage {
+        var archive = files
+        archive["skin.xml"] = Data(xml.utf8)
+        let descriptor = ModernSkinParser.parse(files: archive).descriptor
+        let catalog = SkinAssetCatalog(name: "Bitmap fixture", files: archive, report: .init(), format: .modern, modern: descriptor)
+        let resources = WasabiResourceRegistry(catalog: catalog)
+        return try #require(WasabiScenePainter.renderBitmapScene(catalog.scene, resources: resources, size: catalog.canvasSize))
+    }
+
     @Test func classicBrandingUsesStableCanonicalRegions() {
         let main = ClassicBrandingRenderer.layout(for: .main, size: CGSize(width: 275, height: 116))
         let playlist = ClassicBrandingRenderer.layout(for: .playlist, size: CGSize(width: 275, height: 232))
@@ -283,6 +470,8 @@ struct SkinTests {
         #expect(loaded.files.keys.filter { ($0 as NSString).pathExtension.lowercased() == "maki" }.count == 4)
         #expect(!loaded.report.warnings.contains { $0.contains("Rejected scripts/") })
         let catalog = SkinAssetCatalog(name: "HeadAMP", files: loaded.files, report: loaded.report, format: loaded.format, modern: loaded.modern)
+        let previewSnapshot = WasabiScenePainter.previewSnapshot(for: catalog)
+        #expect(!WasabiScenePainter.renderNodes(in: previewSnapshot.scene).isEmpty)
         #expect(catalog.modernOcclusionFrame == CGRect(x: 260, y: 0, width: 234, height: 394))
         #expect(descriptor.layers.first { $0.elementID?.caseInsensitiveCompare("BGLayer") == .orderedSame }?.frame.width ?? 0 > 0)
         #expect(descriptor.scene.firstHandle(for: "bglayer").flatMap { descriptor.scene.worldFrame(of: $0) }?.width ?? 0 > 0)
@@ -316,6 +505,7 @@ struct SkinTests {
             SkinAssetCatalog(name: "HeadAMP", files: loaded.files, report: loaded.report, format: loaded.format, modern: $0)
         })
         let host = TestMakiHost()
+        host.scene = catalog.scene
         #expect(catalog.scene.firstHandle(for: "leftdrawercoords") != nil)
         #expect(catalog.scene.firstHandle(for: "leftdrawerstatus") != nil)
         #expect(catalog.scene.firstHandle(for: "rightdrawercoords") != nil)
@@ -334,16 +524,126 @@ struct SkinTests {
         #expect(runtime.dispatchClick(objectID: "eqToggle"))
         #expect(host.targets.last?.objectID == "leftdrawer")
         #expect(host.targets.last?.x == 0)
+        let leftDrawer = try #require(host.scene?.firstHandle(for: "leftdrawer"))
+        #expect(host.scene?.node(leftDrawer)?.localFrame.minX == 0)
         #expect(runtime.dispatchClick(objectID: "eqToggle"))
         #expect(host.targets.last?.objectID == "leftdrawer")
         #expect(host.targets.last?.x == 207)
+        #expect(host.scene?.node(leftDrawer)?.localFrame.minX == 207)
         #expect(runtime.dispatchClick(objectID: "plToggle"))
         #expect(host.targets.last?.objectID == "rightdrawer")
         #expect(host.targets.last?.x == 488)
+        let rightDrawer = try #require(host.scene?.firstHandle(for: "rightdrawer"))
+        #expect(host.scene?.node(rightDrawer)?.localFrame.minX == 488)
         #expect(runtime.dispatchClick(objectID: "plToggle"))
         #expect(host.targets.last?.objectID == "rightdrawer")
         #expect(host.targets.last?.x == 277)
+        #expect(host.scene?.node(rightDrawer)?.localFrame.minX == 277)
         #expect(!runtime.diagnostics.contains { $0.contains("Disabled") })
+    }
+
+    @Test @MainActor func bundledHeadAMPDrawersKeepTheirTopEdgesAndOppositeOpenDirections() async throws {
+        let projectRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let url = projectRoot.appending(path: "Skins/HeadAMP.wal")
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+
+        let loaded = try await SkinArchiveLoader().load(url: url)
+        let descriptor = try #require(loaded.modern)
+        let catalog = SkinAssetCatalog(name: "HeadAMP", files: loaded.files, report: loaded.report, format: .modern, modern: descriptor)
+        var scene = catalog.scene
+        let leftDrawer = try #require(scene.firstHandle(for: "leftdrawer"))
+        let rightDrawer = try #require(scene.firstHandle(for: "rightdrawer"))
+        var leftFrame = try #require(scene.node(leftDrawer)?.localFrame)
+        var rightFrame = try #require(scene.node(rightDrawer)?.localFrame)
+        leftFrame.origin.x = 0
+        rightFrame.origin.x = 488
+        scene.setLocalFrame(leftFrame, for: leftDrawer)
+        scene.setLocalFrame(rightFrame, for: rightDrawer)
+
+        let resources = WasabiResourceRegistry(catalog: catalog)
+        let rendered = try #require(WasabiScenePainter.renderBitmapScene(
+            scene,
+            resources: resources,
+            size: catalog.canvasSize,
+            clipPath: catalog.regionPath
+        ))
+        let bitmap = try #require(rendered.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+        let topPixelY = 88
+
+        #expect(scene.worldFrame(of: leftDrawer)?.minX == 0)
+        #expect(scene.worldFrame(of: rightDrawer)?.minX == 488)
+        #expect(try #require(bitmap.colorAt(x: 100, y: topPixelY)).alphaComponent > 0.9)
+        #expect(try #require(bitmap.colorAt(x: 620, y: topPixelY)).alphaComponent > 0.9)
+    }
+
+    @Test @MainActor func bundledHeadAMPRuntimeOpensBothDrawersWithoutClippingTheirTopEdges() async throws {
+        let projectRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let url = projectRoot.appending(path: "Skins/HeadAMP.wal")
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+
+        let defaultsName = "Macamp.HeadAMPRuntime.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let libraryRoot = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: libraryRoot) }
+        let skins = SkinLibraryStore(defaults: defaults, root: libraryRoot)
+        await skins.importSkin(from: url)
+        #expect(skins.lastError == nil)
+
+        let view = SkinRendererView(
+            coordinator: PlaybackCoordinator(),
+            skinStore: skins,
+            settings: SettingsStore(defaults: defaults),
+            openMedia: {},
+            playlistToggle: {},
+            equalizerToggle: {},
+            visualizationToggle: {}
+        )
+        #expect(view.liveSceneForTesting.firstHandle(for: "rightdrawercoords").flatMap { view.liveSceneForTesting.node($0)?.localFrame.minX } == 488)
+        #expect(view.liveSceneForTesting.firstHandle(for: "rightdrawer").flatMap { view.liveSceneForTesting.node($0)?.localFrame.minX } == 277)
+        let host = WinampSkinWindowHost(normalLogicalSize: skins.activeCatalog.canvasSize)
+        view.windowHost = host
+        host.setContentView(view)
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(skins.activeCatalog.canvasSize.width),
+            pixelsHigh: Int(skins.activeCatalog.canvasSize.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bitmapFormat: [],
+            bytesPerRow: Int(skins.activeCatalog.canvasSize.width) * 4,
+            bitsPerPixel: 32
+        ))
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+
+        #expect(view.injectMouseDown(at: CGPoint(x: 285, y: 224)) == "eqtoggle")
+        view.injectMouseUp(at: CGPoint(x: 285, y: 224))
+        #expect(view.injectMouseDown(at: CGPoint(x: 473, y: 224)) == "pltoggle")
+        view.injectMouseUp(at: CGPoint(x: 473, y: 224))
+        #expect(view.makiTraceForTesting.contains { entry in
+            entry.name.caseInsensitiveCompare("onLeftClick") == .orderedSame && view.liveSceneForTesting.node(entry.receiver)?.id == "pltoggle"
+        })
+        #expect(view.makiTraceForTesting.contains { entry in
+            entry.name.caseInsensitiveCompare("onLeftClick") == .orderedSame && view.liveSceneForTesting.node(entry.receiver)?.id == "rightdraweropen"
+        })
+        #expect(view.makiDiagnosticsForTesting == "No unsupported MAKI operations encountered.")
+        try await Task.sleep(for: .milliseconds(350))
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+
+        let scene = view.liveSceneForTesting
+        let leftDrawer = try #require(scene.firstHandle(for: "leftdrawer"))
+        let rightDrawer = try #require(scene.firstHandle(for: "rightdrawer"))
+        #expect(scene.node(leftDrawer)?.localFrame.minX == 0)
+        #expect(scene.node(rightDrawer)?.localFrame.minX == 488)
+        let maskPath = try #require((view.layer?.mask as? CAShapeLayer)?.path)
+        let maskScaleX = view.bounds.width / skins.activeCatalog.canvasSize.width
+        let maskScaleY = view.bounds.height / skins.activeCatalog.canvasSize.height
+        #expect(maskPath.contains(CGPoint(x: 100 * maskScaleX, y: 88 * maskScaleY), using: .winding, transform: .identity))
+        #expect(maskPath.contains(CGPoint(x: 620 * maskScaleX, y: 88 * maskScaleY), using: .winding, transform: .identity))
+        #expect(scene.worldFrame(of: rightDrawer)?.minX == 488)
     }
 
     @Test func bundledCellLayoutAndMetadataWhenFixtureIsAvailable() async throws {
@@ -426,6 +726,29 @@ struct SkinTests {
         #expect(descriptor.drawers.first { $0.role == .right }?.collapsedOrigin.x == 277)
     }
 
+    @Test func modernParserUsesDeclaredInitialLayoutInsteadOfLargestCandidate() throws {
+        let xml = """
+        <WinampAbstractionLayer>
+          <container id="auxiliary" default_visible="0">
+            <layout id="component" w="1200" h="900"><layer id="component-bg" /></layout>
+          </container>
+          <container id="main" default_visible="1" default_layout="compact">
+            <layout id="normal" w="760" h="394"><button id="normal-control" x="0" y="0" w="10" h="10" /></layout>
+            <layout id="compact" w="80" h="40"><button id="compact-control" x="0" y="0" w="10" h="10" /></layout>
+          </container>
+        </WinampAbstractionLayer>
+        """
+
+        let descriptor = ModernSkinParser.parse(files: ["skin.xml": Data(xml.utf8)]).descriptor
+
+        #expect(descriptor.canvasSize == CGSize(width: 80, height: 40))
+        #expect(descriptor.controls.contains { $0.elementID == "compact-control" })
+        #expect(!descriptor.controls.contains { $0.elementID == "normal-control" })
+        let main = try #require(descriptor.scene.firstHandle(for: "main"))
+        let activeLayout = try #require(descriptor.scene.activeLayout(for: main))
+        #expect(descriptor.scene.node(activeLayout)?.id == "compact")
+    }
+
     @Test func modernParserMapsPlaylistAndEqualizerControls() throws {
         let xml = """
         <WinampAbstractionLayer>
@@ -487,6 +810,7 @@ struct SkinTests {
     @Test @MainActor func modernParserRetainsWasabiObjectsAndMakiOnlyButtons() {
         let xml = """
         <WinampAbstractionLayer>
+          <elements><bitmap id="pixel" file="pixel.png" /></elements>
           <container id="main" default_visible="1">
             <layout id="normal" w="120" h="60">
               <layer id="mouseTrap" image="pixel" x="0" y="0" w="120" h="60" />
@@ -742,6 +1066,17 @@ struct SkinTests {
         dynamicRuntime.start()
         #expect(dynamicRuntime.registry.objects.count == objectCount + 1)
         #expect(dynamicRuntime.registry.objects.values.contains { $0.className == "Timer" })
+
+        let previewDomain = "MacampPreviewRuntimeTests-\(UUID().uuidString)"
+        let previewDefaults = try #require(UserDefaults(suiteName: previewDomain))
+        defer { previewDefaults.removePersistentDomain(forName: previewDomain) }
+        let previewRuntime = MakiRuntime(
+            programs: [program], bindings: [ModernMakiBinding(path: program.path, groupID: "main", parameter: nil)],
+            host: host, limits: .init(), skinID: "preview-timer", persistentState: previewDefaults
+        )
+        previewRuntime.startForPreviewSnapshot()
+        let previewTimer = try #require(previewRuntime.registry.objects.values.first { $0.className == "Timer" }?.handle)
+        #expect(previewRuntime.invoke(receiver: previewTimer, method: "isRunning", arguments: []) == .integer(0))
     }
 
     @Test @MainActor func makiInputLifecyclePreservesArgumentsAndButtonOrdering() throws {
@@ -836,6 +1171,32 @@ struct SkinTests {
         #expect(host.eventNames == ["onEnterArea", "onLeaveArea", "onSetPosition", "onPostedPosition", "onSetFinalPosition"])
         #expect(host.eventReceivers == [button, button, slider, slider, slider])
         #expect(host.eventArguments.dropFirst(2) == [[.integer(42)], [.integer(43)], [.integer(44)]])
+    }
+
+    @Test @MainActor func duplicateWasabiIDsKeepIndependentTargetStateAndCallbacks() throws {
+        var scene = WasabiScene()
+        let container = scene.addNode(id: "main", kind: .container, localFrame: .zero)
+        let layout = scene.addNode(id: "normal", kind: .layout, localFrame: .zero, parent: container)
+        let firstGroup = scene.addNode(id: "first", kind: .group, localFrame: .zero, parent: layout)
+        let secondGroup = scene.addNode(id: "second", kind: .group, localFrame: .zero, parent: layout)
+        let first = scene.addNode(id: "drawer", kind: .layer, localFrame: .zero, parent: firstGroup)
+        let second = scene.addNode(id: "drawer", kind: .layer, localFrame: .zero, parent: secondGroup)
+        scene.setActiveLayout(layout, for: container)
+
+        let host = TestMakiHost()
+        let runtime = MakiRuntime(
+            programs: [], bindings: [], host: host, limits: .init(),
+            skinID: "duplicate-targets", persistentState: .standard, scene: scene
+        )
+        for (receiver, targetX) in [(first, 50.0), (second, 90.0)] {
+            #expect(runtime.invoke(receiver: receiver, method: "setTargetX", arguments: [.number(targetX)]) == .void)
+            #expect(runtime.invoke(receiver: receiver, method: "setTargetSpeed", arguments: [.number(0.3)]) == .void)
+            #expect(runtime.invoke(receiver: receiver, method: "gotoTarget", arguments: []) == .void)
+        }
+
+        #expect(host.targets.map(\.x) == [50, 90])
+        #expect(host.targets.map(\.objectID) == ["drawer", "drawer"])
+        #expect(host.targetReceivers == [first, second])
     }
 
     @Test func syntheticSceneValidationTraceDetectsHierarchyAndLayoutChanges() throws {
@@ -1130,7 +1491,7 @@ struct SkinTests {
         let logical = CGRect(x: 40, y: 25, width: 275, height: 116)
         let screen = WinampSkinWindowGeometry.screenFrame(for: logical, scale: 2)
 
-        #expect(screen == CGRect(x: 80, y: 50, width: 550, height: 232))
+        #expect(screen == CGRect(x: 40, y: 25, width: 550, height: 232))
         #expect(WinampSkinWindowGeometry.logicalFrame(for: screen, scale: 2) == logical)
         #expect(WinampSkinWindowGeometry.screenSize(for: CGSize(width: 100, height: 14), scale: 3) == CGSize(width: 300, height: 42))
     }
@@ -1194,9 +1555,64 @@ struct SkinTests {
         #expect(playlist.logicalFrame.origin == CGPoint(x: 400, y: 65))
     }
 
+    @Test @MainActor func appKitMoveObserverAppliesScreenDeltaOnceToDockedWindows() {
+        let main = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 116), scale: 1)
+        let playlist = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 232), scale: 2)
+        main.setLogicalFrame(CGRect(x: 100, y: 80, width: 275, height: 116))
+        playlist.setLogicalFrame(CGRect(x: 375, y: 80, width: 275, height: 232))
+        let group = WinampSkinWindowGroup()
+        group.add(main)
+        group.add(playlist)
+        group.dock(main, to: playlist)
+        let mainStart = main.window.frame.origin
+        let playlistStart = playlist.window.frame.origin
+
+        main.window.setFrameOrigin(CGPoint(x: mainStart.x + 5, y: mainStart.y + 7))
+        main.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: main.window))
+
+        #expect(main.window.frame.origin == CGPoint(x: mainStart.x + 5, y: mainStart.y + 7))
+        #expect(playlist.window.frame.origin == CGPoint(x: playlistStart.x + 5, y: playlistStart.y + 7))
+
+        let beforeCoalescedMain = main.window.frame.origin
+        let beforeCoalescedPlaylist = playlist.window.frame.origin
+        main.window.setFrameOrigin(CGPoint(x: beforeCoalescedMain.x + 40, y: beforeCoalescedMain.y + 30))
+        main.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: main.window))
+
+        #expect(main.window.frame.origin == CGPoint(x: beforeCoalescedMain.x + 40, y: beforeCoalescedMain.y + 30))
+        #expect(playlist.window.frame.origin == CGPoint(x: beforeCoalescedPlaylist.x + 40, y: beforeCoalescedPlaylist.y + 30))
+        #expect(group.dockedPairs.count == 1)
+    }
+
+    @Test @MainActor func draggingEqualizerMovesThreeWindowChainWithoutAccumulatedDrift() {
+        let main = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 116), scale: 1)
+        let playlist = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 232), scale: 2)
+        let equalizer = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 116), scale: 3)
+        main.setLogicalFrame(CGRect(x: 100, y: 80, width: 275, height: 116))
+        playlist.setLogicalFrame(CGRect(x: 375, y: 80, width: 275, height: 232))
+        equalizer.setLogicalFrame(CGRect(x: 650, y: 80, width: 275, height: 116))
+        let group = WinampSkinWindowGroup()
+        [main, playlist, equalizer].forEach(group.add)
+        group.dock(main, to: playlist)
+        group.dock(playlist, to: equalizer)
+        let starts = [main, playlist, equalizer].map { $0.window.frame.origin }
+        equalizer.beginInteractiveDrag()
+
+        for step in 1...100 {
+            let origin = CGPoint(x: starts[2].x + CGFloat(step) * 0.25, y: starts[2].y + CGFloat(step) * 0.125)
+            equalizer.window.setFrameOrigin(origin)
+            equalizer.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: equalizer.window))
+        }
+        equalizer.endInteractiveDrag()
+
+        let actualDelta = CGPoint(x: equalizer.window.frame.minX - starts[2].x, y: equalizer.window.frame.minY - starts[2].y)
+        for (host, start) in zip([main, playlist, equalizer], starts) {
+            #expect(host.window.frame.origin == CGPoint(x: start.x + actualDelta.x, y: start.y + actualDelta.y))
+        }
+    }
+
     @Test @MainActor func skinWindowHostSnapsToVisibleScreenEdgesInDisplayCoordinates() {
         let host = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 100, height: 40), scale: 2)
-        host.screenSnapDistance = 8
+        host.screenSnapDistance = 12
         host.snapsToVisibleScreenEdges = true
         let visible = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1200, height: 800)
         host.window.setFrame(CGRect(x: visible.minX + 10, y: visible.minY + 10, width: 200, height: 80), display: false)
@@ -1308,15 +1724,18 @@ struct SkinTests {
             shadeLogicalSize: CGSize(width: 100, height: 14),
             scale: 2
         )
-        let content = NSView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
+        let content = FlippedMaskTestView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
         host.setContentView(content)
 
-        let region = NSBezierPath(rect: CGRect(x: 0, y: 0, width: 50, height: 50))
+        let region = NSBezierPath(rect: CGRect(x: 10, y: 10, width: 20, height: 20))
         host.regionPath = region
         host.clickThroughTransparentPixels = true
         host.clickThroughTest = { $0.x < 25 }
 
         #expect(content.layer?.mask != nil)
+        #expect(content.isFlipped)
+        #expect(content.layer?.isGeometryFlipped == true)
+        #expect((content.layer?.mask as? CAShapeLayer)?.path?.boundingBoxOfPath == CGRect(x: 20, y: 20, width: 40, height: 40))
         #expect(host.acceptsInput(atLogicalPoint: CGPoint(x: 20, y: 20)))
         #expect(!host.acceptsInput(atLogicalPoint: CGPoint(x: 30, y: 20)))
         #expect(!host.acceptsInput(atLogicalPoint: CGPoint(x: 80, y: 20)))
@@ -1590,6 +2009,11 @@ private struct SkinBehaviorTrace {
     }
 }
 
+@MainActor
+private final class FlippedMaskTestView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 private struct SkinValidationHasher {
     private var value: UInt64 = 14_695_981_039_346_656_037
 
@@ -1757,7 +2181,7 @@ private enum SkinDiagnosticFixtures {
         ]
     }
 
-    private static func diagnosticPNG(size: CGSize, background: NSColor, fills: [(CGRect, NSColor)]) -> Data {
+    static func diagnosticPNG(size: CGSize, background: NSColor, fills: [(CGRect, NSColor)]) -> Data {
         let bitmap = NSBitmapImageRep(
             bitmapDataPlanes: nil,
             pixelsWide: Int(size.width),
@@ -1788,7 +2212,9 @@ private enum SkinDiagnosticFixtures {
 
 @MainActor
 private final class TestMakiHost: MakiRuntimeHost {
+    var scene: WasabiScene?
     var targets: [(objectID: String, x: Double, speed: Double)] = []
+    var targetReceivers: [WasabiHandle] = []
     var eventNames: [String] = []
     var eventReceivers: [WasabiHandle] = []
     var eventArguments: [[MakiValue]] = []
@@ -1808,6 +2234,16 @@ private final class TestMakiHost: MakiRuntimeHost {
     func makiTargetChanged(objectID: String, x: Double, speed: Double) { targets.append((objectID, x, speed)) }
     func makiTargetGeometryChanged(objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double) {
         if let x { targets.append((objectID, x, speed)) }
+    }
+    func makiTargetGeometryChanged(receiver: WasabiHandle, objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double) {
+        targetReceivers.append(receiver)
+        if let x {
+            targets.append((objectID, x, speed))
+            if var frame = scene?.node(receiver)?.localFrame {
+                frame.origin.x = x
+                scene?.setLocalFrame(frame, for: receiver)
+            }
+        }
     }
     func makiVolumeChanged(_ value: Double) { }
     func makiEQBandChanged(index: Int, value: Int) { }

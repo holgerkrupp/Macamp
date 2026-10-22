@@ -21,6 +21,13 @@ final class URLSessionSkinArtworkLoader: SkinArtworkLoader {
 
 @MainActor
 final class SkinRendererView: NSView {
+    private struct HitObject {
+        var id: String
+        var kind: WasabiObjectKind
+        var frame: CGRect
+        var handle: WasabiHandle?
+    }
+
     static let fallbackLogicalSize = CGSize(width: 275, height: 116)
     override var isFlipped: Bool { true }
 
@@ -42,8 +49,8 @@ final class SkinRendererView: NSView {
     private var lastMakiPlaybackState: Bool?
     private var pressedControl: SkinControlID?
     private var activeControl: SkinControlDefinition?
-    private var hoveredObjectID: String?
-    private var pressedObjectID: String?
+    private var hoveredObject: HitObject?
+    private var pressedObject: HitObject?
     private var balanceValue = 0.5
     private var sceneAnimationTasks: [WasabiHandle: Task<Void, Never>] = [:]
     private var artworkTask: Task<Void, Never>?
@@ -154,23 +161,24 @@ final class SkinRendererView: NSView {
         }
         let candidates = skinStore.activeCatalog.controls.filter { control in
             if let elementID = control.elementID {
-                guard let handle = liveScene.firstHandle(for: elementID) else { return false }
-                guard liveScene.effectiveVisible(handle), liveScene.isInActiveLayout(handle) else { return false }
-            } else if !control.initiallyVisible { return false }
-            return effectiveFrame(for: control).contains(point)
+                let visibleInstances = liveScene.handles(for: elementID).filter {
+                    liveScene.effectiveVisible($0) && liveScene.isInActiveLayout($0)
+                }
+                guard visibleInstances.contains(where: { liveScene.worldFrame(of: $0)?.contains(point) == true }) else { return false }
+                return true
+            }
+            return control.initiallyVisible && effectiveFrame(for: control).contains(point)
         }
         let object = hitObject(at: point)
-        pressedObjectID = object?.id
-        let mouseDownHandled = object.flatMap { makiRuntime?.dispatchMouseDown(objectID: $0.id) } ?? false
+        pressedObject = object
+        let mouseDownHandled = object.map { dispatchMouseDown(to: $0, at: point) } ?? false
         let control = candidates.first(where: { coordinator.state.isPlaying ? $0.action == .pause : $0.action == .play }) ?? candidates.first
         if let control {
             pressedControl = control.id
             activeControl = control
             needsDisplay = true
-            let frame = effectiveFrame(for: control)
-            Task { await activate(control, point: point, frame: frame) }
         } else {
-            if !mouseDownHandled { window?.performDrag(with: event) }
+            if !mouseDownHandled { windowHost?.performDrag(with: event) }
         }
     }
 
@@ -179,12 +187,11 @@ final class SkinRendererView: NSView {
     @discardableResult
     func injectMouseDown(at point: CGPoint) -> String? {
         let object = hitObject(at: point)
-        pressedObjectID = object?.id
-        _ = object.flatMap { makiRuntime?.dispatchMouseDown(objectID: $0.id) }
+        pressedObject = object
+        _ = object.map { dispatchMouseDown(to: $0, at: point) }
         guard let control = skinStore.activeCatalog.controls.first(where: { effectiveFrame(for: $0).contains(point) && isElementVisible($0.elementID, initiallyVisible: $0.initiallyVisible) }) else { return object?.id }
         pressedControl = control.id
         activeControl = control
-        Task { await activate(control, point: point, frame: effectiveFrame(for: control)) }
         return object?.id ?? control.elementID
     }
 
@@ -193,27 +200,84 @@ final class SkinRendererView: NSView {
         if let elementID = control.elementID {
             let frame = effectiveFrame(for: control)
             let value = Int((sliderValueFrom(point, frame: frame, orientation: control.orientation) * 255).rounded())
-            _ = makiRuntime?.dispatchSliderPosition(objectID: elementID, value: value, posted: true)
+            if let handle = pressedObject?.handle {
+                _ = makiRuntime?.dispatchSliderPosition(receiver: handle, value: value, posted: true)
+            } else {
+                _ = makiRuntime?.dispatchSliderPosition(objectID: elementID, value: value, posted: true)
+            }
         }
-        Task { await activate(control, point: point, frame: effectiveFrame(for: control)) }
     }
 
     func injectMouseUp(at point: CGPoint) {
-        if let object = hitObject(at: point) { _ = makiRuntime?.dispatchMouseUp(objectID: object.id) }
+        let object = hitObject(at: point)
+        let makiHandled = dispatchMouseUp(to: object, at: point)
+        activatePressedControl(ifReleasedAt: point, makiHandled: makiHandled)
         pressedControl = nil
-        pressedObjectID = nil
+        pressedObject = nil
         activeControl = nil
         needsDisplay = true
     }
 
     override func mouseMoved(with event: NSEvent) {
         let object = hitObject(at: logical(convert(event.locationInWindow, from: nil)))
-        if object?.id != hoveredObjectID {
-            if let hoveredObjectID { _ = makiRuntime?.dispatchMouseLeave(objectID: hoveredObjectID) }
-            if let object { _ = makiRuntime?.dispatchMouseEnter(objectID: object.id) }
-            hoveredObjectID = object?.id
+        if object?.handle != hoveredObject?.handle || object?.id != hoveredObject?.id {
+            if let hoveredObject { dispatchMouseLeave(from: hoveredObject) }
+            if let object { dispatchMouseEnter(to: object) }
+            hoveredObject = object
             needsDisplay = true
         }
+    }
+
+    private func dispatchMouseDown(to object: HitObject, at point: CGPoint) -> Bool {
+        let x = Int(point.x - object.frame.minX)
+        let y = Int(point.y - object.frame.minY)
+        if let handle = object.handle { return makiRuntime?.dispatchMouseDown(receiver: handle, x: x, y: y) ?? false }
+        return makiRuntime?.dispatchMouseDown(objectID: object.id, x: x, y: y) ?? false
+    }
+
+    @discardableResult
+    private func dispatchMouseUp(to object: HitObject?, at point: CGPoint) -> Bool {
+        let captured = pressedObject
+        let receiver = object ?? captured
+        guard let receiver else { return false }
+        let coordinatesObject = captured ?? receiver
+        let x = Int(point.x - coordinatesObject.frame.minX)
+        let y = Int(point.y - coordinatesObject.frame.minY)
+        let completedClick = object?.handle == captured?.handle && object?.id == captured?.id
+        if let handle = receiver.handle {
+            let handled = makiRuntime?.dispatchMouseUp(receiver: handle, x: x, y: y, completeClick: completedClick) ?? false
+            if receiver.kind == .slider, let control = activeControl,
+               let slider = captured?.handle {
+                let value = Int((sliderValueFrom(point, frame: effectiveFrame(for: control), orientation: control.orientation) * 255).rounded())
+                _ = makiRuntime?.dispatchSliderPosition(receiver: slider, value: value, final: true)
+            }
+            return handled
+        } else {
+            return makiRuntime?.dispatchMouseUp(objectID: receiver.id, x: x, y: y) ?? false
+        }
+    }
+
+    private func dispatchMouseEnter(to object: HitObject) {
+        if let handle = object.handle { _ = makiRuntime?.dispatchMouseEnter(receiver: handle) }
+        else { _ = makiRuntime?.dispatchMouseEnter(objectID: object.id) }
+    }
+
+    private func dispatchMouseLeave(from object: HitObject) {
+        if let handle = object.handle { _ = makiRuntime?.dispatchMouseLeave(receiver: handle) }
+        else { _ = makiRuntime?.dispatchMouseLeave(objectID: object.id) }
+    }
+
+    private func activatePressedControl(ifReleasedAt point: CGPoint, makiHandled: Bool) {
+        guard let control = activeControl else { return }
+        if let pressedObject {
+            guard let releasedObject = hitObject(at: point),
+                  releasedObject.handle == pressedObject.handle,
+                  releasedObject.id == pressedObject.id else { return }
+        } else {
+            guard effectiveFrame(for: control).contains(point) else { return }
+        }
+        let needsCompatibilityClick = pressedObject == nil
+        Task { await activate(control, point: point, frame: effectiveFrame(for: control), dispatchCompatibilityClick: needsCompatibilityClick, makiHandled: makiHandled) }
     }
 
     private func drawModernScene() {
@@ -305,49 +369,20 @@ final class SkinRendererView: NSView {
     }
 
     private func drawSceneLayer(_ node: WasabiSceneRenderNode, in frame: CGRect) {
-        guard let bitmap = resourceRegistry?.bitmap(for: node.attributes["image"]) else { return }
-        let image = bitmap.image
-        let declaredSource = bitmap.sourceRect
-        let source: CGRect
-        if let declaredSource {
-            source = CGRect(
-                x: declaredSource.minX,
-                y: image.size.height - declaredSource.maxY,
-                width: min(declaredSource.width, image.size.width - declaredSource.minX),
-                height: min(declaredSource.height, declaredSource.maxY - declaredSource.minY)
-            )
-        } else if let animated = WasabiAnimatedLayer.selection(for: node, imageSize: image.size) {
-            source = CGRect(
-                x: animated.sourceRect.minX,
-                y: image.size.height - animated.sourceRect.maxY,
-                width: animated.sourceRect.width,
-                height: animated.sourceRect.height
-            )
-        } else {
-            source = CGRect(origin: .zero, size: image.size)
-        }
-        image.draw(in: frame, from: source, operation: .sourceOver, fraction: node.alpha, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
+        guard let resourceRegistry else { return }
+        WasabiScenePainter.drawBitmapNode(node, resources: resourceRegistry, in: frame)
     }
 
     private func drawSceneControl(_ node: WasabiSceneRenderNode, in frame: CGRect) {
-        let active = node.attributes["active"] == "1" || node.attributes["activated"] == "1"
-        let imageID: String?
-        if node.id == pressedObjectID || node.attributes["pressed"] == "1" {
-            imageID = node.attributes["activepressedimage"].flatMap { $0.isEmpty ? nil : $0 }
-                ?? node.attributes["downimage"].flatMap { $0.isEmpty ? nil : $0 }
-        } else if node.id == hoveredObjectID {
-            imageID = node.attributes["hoverimage"].flatMap { $0.isEmpty ? nil : $0 }
-        } else if active {
-            imageID = node.attributes["activeimage"].flatMap { $0.isEmpty ? nil : $0 }
-                ?? node.attributes["image"].flatMap { $0.isEmpty ? nil : $0 }
-        } else {
-            imageID = node.attributes["image"].flatMap { $0.isEmpty ? nil : $0 }
-        }
-        guard let bitmap = resourceRegistry?.bitmap(for: imageID) else { return }
-        let source = bitmap.sourceRect.map { rect in
-            CGRect(x: rect.minX, y: bitmap.image.size.height - rect.maxY, width: rect.width, height: rect.height)
-        } ?? CGRect(origin: .zero, size: bitmap.image.size)
-        bitmap.image.draw(in: frame, from: source, operation: .sourceOver, fraction: node.alpha, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
+        guard let resourceRegistry else { return }
+        WasabiScenePainter.drawBitmapNode(
+            node,
+            resources: resourceRegistry,
+            in: frame,
+            pressedObjectID: pressedObject?.id,
+            hoveredObjectID: hoveredObject?.id,
+            isActive: makiRuntime?.isActivated(node.handle) ?? false
+        )
     }
 
     private func drawSceneContent(_ node: WasabiSceneRenderNode, in frame: CGRect) {
@@ -520,32 +555,33 @@ final class SkinRendererView: NSView {
         let frame = effectiveFrame(for: control)
         if let elementID = control.elementID {
             let value = Int((sliderValueFrom(point, frame: frame, orientation: control.orientation) * 255).rounded())
-            _ = makiRuntime?.dispatchSliderPosition(objectID: elementID, value: value, posted: true)
+            if let handle = pressedObject?.handle {
+                _ = makiRuntime?.dispatchSliderPosition(receiver: handle, value: value, posted: true)
+            } else {
+                _ = makiRuntime?.dispatchSliderPosition(objectID: elementID, value: value, posted: true)
+            }
         }
-        Task { await activate(control, point: point, frame: frame) }
     }
 
     override func mouseUp(with event: NSEvent) {
-        if let object = hitObject(at: logical(convert(event.locationInWindow, from: nil))) {
-            _ = makiRuntime?.dispatchMouseUp(objectID: object.id)
-            if object.kind == .slider { _ = makiRuntime?.dispatchSliderPosition(objectID: object.id, value: 0, final: true) }
-        }
+        let point = logical(convert(event.locationInWindow, from: nil))
+        let object = hitObject(at: point)
+        let makiHandled = dispatchMouseUp(to: object, at: point)
+        activatePressedControl(ifReleasedAt: point, makiHandled: makiHandled)
         pressedControl = nil
-        pressedObjectID = nil
+        pressedObject = nil
         activeControl = nil
         needsDisplay = true
     }
 
-    private func activate(_ control: SkinControlDefinition, point: CGPoint, frame: CGRect) async {
-        // Wasabi skins often use a button tooltip only as a label while the
-        // real behavior lives in MAKI.  HeadAMP's eqToggle and plToggle are
-        // exactly that: their scripts move the inline drawers.  Opening the
-        // native auxiliary window as well creates a second, empty window and
-        // leaves the live scene looking as if the drawer had the wrong side.
-        let makiHandled = control.elementID.map { makiRuntime?.dispatchClick(objectID: $0) == true } ?? false
-        let makiOwnsAuxiliaryToggle = makiHandled && (control.action == .togglePlaylist || control.action == .toggleEqualizer)
-
-        if makiOwnsAuxiliaryToggle { return }
+    private func activate(_ control: SkinControlDefinition, point: CGPoint, frame: CGRect, dispatchCompatibilityClick: Bool, makiHandled: Bool) async {
+        // The scene's mouse-up path owns MAKI click dispatch. Declarative
+        // player actions run here only after a press is released on the same
+        // control, so a scripted click cannot fire once on down and again on up.
+        if dispatchCompatibilityClick, let elementID = control.elementID {
+            _ = makiRuntime?.dispatchClick(objectID: elementID)
+        }
+        if makiHandled { return }
         switch control.action {
         case .previous: await coordinator.previous()
         case .play: await coordinator.play()
@@ -583,10 +619,6 @@ final class SkinRendererView: NSView {
         case .windowshade: break
         case .none, .scripted: break
         }
-        // Declarative behavior and MAKI are both part of a Winamp Button's
-        // lifecycle. For auxiliary toggles, a handled script event is the
-        // authoritative behavior; other controls retain both behaviors.
-        if !makiHandled, let elementID = control.elementID { _ = makiRuntime?.dispatchClick(objectID: elementID) }
     }
 
     private func drawTransportControls() {
@@ -922,18 +954,15 @@ final class SkinRendererView: NSView {
         return result
     }
 
-    private func hitObject(at point: CGPoint) -> WasabiObjectNode? {
+    private func hitObject(at point: CGPoint) -> HitObject? {
         if skinStore.activeCatalog.format == .modern,
            let sceneNode = liveScene.hitTest(point),
            let worldFrame = liveScene.worldFrame(of: sceneNode.handle) {
-            return WasabiObjectNode(
+            return HitObject(
                 id: sceneNode.id,
                 kind: sceneNode.kind,
                 frame: worldFrame,
-                parentID: nil,
-                initiallyVisible: true,
-                attributes: sceneNode.attributes,
-                zIndex: sceneNode.zIndex
+                handle: sceneNode.handle
             )
         }
         // Compatibility fallback for hand-built descriptors that predate the
@@ -944,7 +973,8 @@ final class SkinRendererView: NSView {
             guard isElementVisible(node.id, initiallyVisible: node.initiallyVisible) else { return false }
             return effectiveFrame(node.frame, elementID: node.id).contains(point)
         }
-        return candidates.sorted { $0.zIndex > $1.zIndex }.first
+        guard let node = candidates.sorted(by: { $0.zIndex > $1.zIndex }).first else { return nil }
+        return HitObject(id: node.id, kind: node.kind, frame: effectiveFrame(node.frame, elementID: node.id), handle: nil)
     }
 
     private func sliderValueFrom(_ point: CGPoint, frame: CGRect, orientation: SkinControlOrientation?) -> Double {
@@ -1006,6 +1036,8 @@ final class SkinRendererView: NSView {
     }
 
     var liveSceneForTesting: WasabiScene { liveScene }
+    var makiTraceForTesting: [MakiRuntimeTraceEntry] { makiRuntime?.trace ?? [] }
+    var makiDiagnosticsForTesting: String { makiRuntime?.diagnosticsReport() ?? "" }
 
     private func updateMakiPlaybackState() {
         let current = coordinator.state.isPlaying
@@ -1063,38 +1095,44 @@ extension SkinRendererView: MakiRuntimeHost {
     }
 
     func makiTargetGeometryChanged(objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double) {
-        guard let handle = liveScene.firstHandle(for: objectID),
-              let node = liveScene.node(handle) else { return }
+        guard let handle = liveScene.firstHandle(for: objectID) else { return }
+        makiTargetGeometryChanged(receiver: handle, objectID: objectID, x: x, y: y, width: width, height: height, alpha: alpha, speed: speed)
+    }
+
+    func makiTargetGeometryChanged(receiver handle: WasabiHandle, objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double) {
+        guard let node = liveScene.node(handle) else { return }
         var target = node.localFrame
         if let x { target.origin.x = x }
         if let y { target.origin.y = y }
         if let width, width > 0 { target.size.width = width }
         if let height, height > 0 { target.size.height = height }
         let start = node.localFrame
-        let duration = min(max(speed, 0.05), 2)
-        let started = Date.timeIntervalSinceReferenceDate
+        let startAlpha = node.alpha
+        let targetAlpha = alpha.map { min(max($0 > 1 ? $0 / 255 : $0, 0), 1) } ?? startAlpha
+        let duration = max(0.01, speed.isFinite ? speed : 0.25)
+        let started = ProcessInfo.processInfo.systemUptime
         sceneAnimationTasks[handle]?.cancel()
         sceneAnimationTasks[handle] = Task { [weak self] in
-            let frameCount = max(1, Int(ceil(duration / 0.016)) + 1)
-            for _ in 0..<frameCount {
+            while true {
                 guard !Task.isCancelled else { return }
-                let progress = min(max((Date.timeIntervalSinceReferenceDate - started) / duration, 0), 1)
-                let eased = progress * progress * (3 - 2 * progress)
+                let progress = min(max((ProcessInfo.processInfo.systemUptime - started) / duration, 0), 1)
                 var frame = start
-                frame.origin.x += (target.origin.x - start.origin.x) * CGFloat(eased)
-                frame.origin.y += (target.origin.y - start.origin.y) * CGFloat(eased)
-                frame.size.width += (target.width - start.width) * CGFloat(eased)
-                frame.size.height += (target.height - start.height) * CGFloat(eased)
+                frame.origin.x += (target.origin.x - start.origin.x) * CGFloat(progress)
+                frame.origin.y += (target.origin.y - start.origin.y) * CGFloat(progress)
+                frame.size.width += (target.width - start.width) * CGFloat(progress)
+                frame.size.height += (target.height - start.height) * CGFloat(progress)
                 self?.liveScene.setLocalFrame(frame, for: handle)
-                if let alpha { self?.liveScene.setAlpha(CGFloat(alpha > 1 ? alpha / 255 : alpha), for: handle) }
+                self?.liveScene.setAlpha(startAlpha + (targetAlpha - startAlpha) * CGFloat(progress), for: handle)
                 self?.needsDisplay = true
+                if progress >= 1 { break }
                 try? await Task.sleep(for: .milliseconds(16))
             }
+            guard !Task.isCancelled else { return }
             self?.liveScene.setLocalFrame(target, for: handle)
-            if let alpha { self?.liveScene.setAlpha(CGFloat(alpha > 1 ? alpha / 255 : alpha), for: handle) }
+            self?.liveScene.setAlpha(targetAlpha, for: handle)
             self?.sceneAnimationTasks.removeValue(forKey: handle)
             self?.needsDisplay = true
-            self?.makiTargetReached(objectID: objectID)
+            self?.makiTargetReached(receiver: handle, objectID: objectID)
         }
     }
 
@@ -1177,4 +1215,5 @@ extension SkinRendererView: MakiRuntimeHost {
         needsDisplay = true
     }
     func makiTargetReached(objectID: String) { makiRuntime?.targetReached(objectID: objectID) }
+    func makiTargetReached(receiver: WasabiHandle, objectID: String) { makiRuntime?.targetReached(receiver: receiver, objectID: objectID) }
 }

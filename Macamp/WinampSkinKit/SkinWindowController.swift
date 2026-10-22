@@ -356,7 +356,7 @@ final class ClassicPlaylistSurface: NSView {
             return
         }
         if point.y < 20 {
-            window?.performDrag(with: event)
+            windowHost?.performDrag(with: event)
             return
         }
         let middleBottom = max(20, bounds.height - 38)
@@ -668,7 +668,7 @@ private final class ClassicEqualizerSurface: NSView {
             return
         }
         if point.y < 14 {
-            window?.performDrag(with: event)
+            windowHost?.performDrag(with: event)
             return
         }
         if point.x >= 14, point.x < 40, point.y >= 18, point.y < 30 {

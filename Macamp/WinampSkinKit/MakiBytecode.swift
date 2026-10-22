@@ -38,11 +38,13 @@ nonisolated enum MakiValue: Sendable, Equatable {
 
     var integer: Int32 {
         switch self {
-        case let .integer(value): value
-        case let .number(value): Int32(clamping: Int(value))
-        case let .string(value): Int32(value.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
-        case let .object(handle): handle.rawValue == 0 ? 0 : 1
-        case .void: 0
+        case let .integer(value): return value
+        case let .number(value): return Int32(clamping: Int(value))
+        case let .string(value):
+            guard let number = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)), number.isFinite else { return 0 }
+            return Int32(max(Double(Int32.min), min(Double(Int32.max), number)))
+        case let .object(handle): return handle.rawValue == 0 ? 0 : 1
+        case .void: return 0
         }
     }
 

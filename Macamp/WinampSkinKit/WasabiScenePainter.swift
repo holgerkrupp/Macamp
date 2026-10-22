@@ -1,5 +1,30 @@
 import AppKit
 
+/// Winamp XML bitmap rectangles use a top-left origin. Crop the underlying
+/// bitmap before handing it to AppKit so a flipped view and an offscreen
+/// NSImage context see identical pixels.
+enum ModernSkinCoordinateSpace {
+    @MainActor
+    static func croppedImage(_ image: NSImage, fromTopLeft rect: CGRect) -> NSImage? {
+        let imageBounds = CGRect(origin: .zero, size: image.size)
+        let clipped = rect.intersection(imageBounds)
+        guard !clipped.isNull, !clipped.isEmpty else { return nil }
+        guard clipped != imageBounds else { return image }
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              image.size.width > 0, image.size.height > 0 else { return nil }
+        let scaleX = CGFloat(cgImage.width) / image.size.width
+        let scaleY = CGFloat(cgImage.height) / image.size.height
+        let pixelRect = CGRect(
+            x: clipped.minX * scaleX,
+            y: clipped.minY * scaleY,
+            width: clipped.width * scaleX,
+            height: clipped.height * scaleY
+        ).integral
+        guard let cropped = cgImage.cropping(to: pixelRect) else { return nil }
+        return NSImage(cgImage: cropped, size: clipped.size)
+    }
+}
+
 /// A render visit resolved from the live Wasabi hierarchy. `localFrame` is
 /// authored geometry; `worldFrame` is derived for hit testing and diagnostics.
 struct WasabiSceneRenderNode: Sendable, Equatable {
@@ -135,6 +160,11 @@ final class WasabiResourceRegistry {
     }
 }
 
+struct WasabiScenePreviewSnapshot {
+    let scene: WasabiScene
+    let activeObjectIDs: Set<String>
+}
+
 /// Walks a Wasabi scene in paint order. Structural nodes establish the
 /// transform and visibility scope; drawable nodes are handed to the caller
 /// in a context already translated by every local parent frame.
@@ -154,6 +184,188 @@ enum WasabiScenePainter {
         draw: (WasabiSceneRenderNode) -> Void
     ) {
         visit(scene, handles: scene.rootHandles, context: context, draw: draw)
+    }
+
+    @MainActor
+    static func previewSnapshot(for catalog: SkinAssetCatalog) -> WasabiScenePreviewSnapshot {
+        let host = WasabiPreviewMakiHost(scene: catalog.scene)
+        guard !catalog.makiPrograms.isEmpty, !catalog.makiBindings.isEmpty else {
+            return WasabiScenePreviewSnapshot(scene: host.scene, activeObjectIDs: [])
+        }
+
+        let defaultsDomain = "dev.macamp.preview.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: defaultsDomain) else {
+            return WasabiScenePreviewSnapshot(scene: host.scene, activeObjectIDs: [])
+        }
+        defer { defaults.removePersistentDomain(forName: defaultsDomain) }
+
+        let runtime = MakiRuntime(
+            programs: catalog.makiPrograms,
+            bindings: catalog.makiBindings,
+            host: host,
+            limits: .init(),
+            skinID: catalog.name,
+            persistentState: defaults,
+            scene: catalog.scene
+        )
+        host.runtime = runtime
+        runtime.startForPreviewSnapshot()
+        let activeObjectIDs = Set(host.scene.allNodes.compactMap { node in
+            runtime.isActivated(node.handle) ? node.id : nil
+        })
+        return WasabiScenePreviewSnapshot(scene: host.scene, activeObjectIDs: activeObjectIDs)
+    }
+
+    /// Draw bitmap-backed scene nodes through AppKit's flipped image drawing
+    /// path. Modern XML rectangles and sprite crops use a top-left origin;
+    /// `respectFlipped: true` keeps those source rectangles in that same
+    /// coordinate system when painting into the flipped Wasabi scene.
+    @MainActor
+    static func drawBitmapNode(
+        _ node: WasabiSceneRenderNode,
+        resources: WasabiResourceRegistry,
+        in frame: CGRect,
+        pressedObjectID: String? = nil,
+        hoveredObjectID: String? = nil,
+        isActive: Bool = false
+    ) {
+        let bitmap: WasabiResourceRegistry.Bitmap?
+        switch node.kind {
+        case .layer, .animatedLayer:
+            bitmap = resources.bitmap(for: node.attributes["image"])
+        case .button, .slider:
+            let active = isActive || node.attributes["active"] == "1" || node.attributes["activated"] == "1"
+            let imageID: String?
+            if node.id == pressedObjectID || node.attributes["pressed"] == "1" {
+                imageID = node.attributes["activepressedimage"].flatMap { $0.isEmpty ? nil : $0 }
+                    ?? node.attributes["downimage"].flatMap { $0.isEmpty ? nil : $0 }
+            } else if node.id == hoveredObjectID {
+                imageID = node.attributes["hoverimage"].flatMap { $0.isEmpty ? nil : $0 }
+            } else if active {
+                imageID = node.attributes["activeimage"].flatMap { $0.isEmpty ? nil : $0 }
+                    ?? node.attributes["image"].flatMap { $0.isEmpty ? nil : $0 }
+            } else {
+                imageID = node.attributes["image"].flatMap { $0.isEmpty ? nil : $0 }
+            }
+            bitmap = resources.bitmap(for: imageID)
+        default:
+            return
+        }
+        guard let bitmap else { return }
+
+        let image = bitmap.image
+        let animatedSource = node.kind == .animatedLayer
+            ? WasabiAnimatedLayer.selection(for: node, imageSize: image.size)?.sourceRect
+            : nil
+        let topLeftSource = bitmap.sourceRect ?? animatedSource ?? CGRect(origin: .zero, size: image.size)
+        guard let croppedImage = ModernSkinCoordinateSpace.croppedImage(image, fromTopLeft: topLeftSource) else { return }
+        croppedImage.draw(
+            in: frame,
+            from: CGRect(origin: .zero, size: croppedImage.size),
+            operation: .sourceOver,
+            fraction: node.alpha,
+            respectFlipped: true,
+            hints: [.interpolation: NSImageInterpolation.none]
+        )
+    }
+
+    @MainActor
+    static func renderBitmapScene(
+        _ scene: WasabiScene,
+        resources: WasabiResourceRegistry,
+        size: CGSize,
+        clipPath: NSBezierPath? = nil,
+        activeObjectIDs: Set<String> = []
+    ) -> NSImage? {
+        let nodes = renderNodes(in: scene)
+        let hasBitmapContent = nodes.contains { node in
+            switch node.kind {
+            case .layer, .animatedLayer:
+                resources.bitmap(for: node.attributes["image"]) != nil
+            case .button, .slider:
+                ["image", "activeimage", "downimage", "activepressedimage", "hoverimage"]
+                    .contains { resources.bitmap(for: node.attributes[$0]) != nil }
+            default:
+                false
+            }
+        }
+        guard size.width > 0, size.height > 0, hasBitmapContent else { return nil }
+        return NSImage(size: size, flipped: true) { _ in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            context.interpolationQuality = .none
+            if let clipPath {
+                context.addPath(clipPath.cgPath)
+                context.clip(using: .winding)
+            }
+            paint(scene, in: context) { node in
+                drawBitmapNode(
+                    node,
+                    resources: resources,
+                    in: CGRect(origin: .zero, size: node.localFrame.size),
+                    isActive: activeObjectIDs.contains(node.id)
+                )
+            }
+            return true
+        }
+    }
+
+    @MainActor
+    private final class WasabiPreviewMakiHost: MakiRuntimeHost {
+        var scene: WasabiScene
+        weak var runtime: MakiRuntime?
+
+        init(scene: WasabiScene) { self.scene = scene }
+
+        func makiPlaybackStatus() -> Int { 0 }
+
+        func makiXMLParameter(objectID: String, name: String) -> String? {
+            guard let handle = scene.firstHandle(for: objectID), let node = scene.node(handle) else { return nil }
+            switch name.lowercased() {
+            case "x": return String(Double(node.localFrame.minX))
+            case "y": return String(Double(node.localFrame.minY))
+            case "w", "width": return String(Double(node.localFrame.width))
+            case "h", "height": return String(Double(node.localFrame.height))
+            case "alpha": return String(Double(scene.effectiveAlpha(handle)))
+            case "visible": return scene.effectiveVisible(handle) ? "1" : "0"
+            default: return nil
+            }
+        }
+
+        func makiVisibilityChanged(objectID: String, isVisible: Bool) {
+            for handle in scene.handles(for: objectID) { scene.setVisible(isVisible, for: handle) }
+        }
+
+        func makiTargetChanged(objectID: String, x: Double, speed: Double) {
+            guard let handle = scene.firstHandle(for: objectID), var frame = scene.node(handle)?.localFrame else { return }
+            frame.origin.x = x
+            scene.setLocalFrame(frame, for: handle)
+        }
+
+        func makiTargetGeometryChanged(objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double) {
+            guard let handle = scene.firstHandle(for: objectID) else { return }
+            makiTargetGeometryChanged(receiver: handle, objectID: objectID, x: x, y: y, width: width, height: height, alpha: alpha, speed: speed)
+        }
+
+        func makiTargetGeometryChanged(receiver: WasabiHandle, objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double) {
+            guard var frame = scene.node(receiver)?.localFrame else { return }
+            if let x { frame.origin.x = x }
+            if let y { frame.origin.y = y }
+            if let width, width > 0 { frame.size.width = width }
+            if let height, height > 0 { frame.size.height = height }
+            scene.setLocalFrame(frame, for: receiver)
+            if let alpha { scene.setAlpha(CGFloat(alpha > 1 ? alpha / 255 : alpha), for: receiver) }
+            runtime?.targetReached(receiver: receiver, objectID: objectID)
+        }
+
+        func makiLayoutSwitched(containerID: String, layoutID: String) {
+            guard let container = scene.firstHandle(for: containerID),
+                  let layout = scene.handles(for: layoutID).first(where: { scene.node($0)?.kind == .layout && scene.node($0)?.parent == container }) else { return }
+            scene.setActiveLayout(layout, for: container)
+        }
+
+        func makiVolumeChanged(_ value: Double) {}
+        func makiEQBandChanged(index: Int, value: Int) {}
+        func makiRuntimeNeedsDisplay() {}
     }
 
     private static func visit(

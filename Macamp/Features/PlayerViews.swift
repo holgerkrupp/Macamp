@@ -218,12 +218,25 @@ struct SkinPreview: NSViewRepresentable {
 
 @MainActor
 final class SkinPreviewSurface: NSView {
-    var catalog: SkinAssetCatalog { didSet { needsDisplay = true } }
+    var catalog: SkinAssetCatalog {
+        didSet {
+            guard oldValue !== catalog else {
+                needsDisplay = true
+                return
+            }
+            resourceRegistry = catalog.format == .modern ? WasabiResourceRegistry(catalog: catalog) : nil
+            cachedModernPreview = nil
+            needsDisplay = true
+        }
+    }
     override var isFlipped: Bool { true }
+    private var resourceRegistry: WasabiResourceRegistry?
+    private var cachedModernPreview: NSImage?
 
     init(catalog: SkinAssetCatalog) {
         self.catalog = catalog
         super.init(frame: .zero)
+        resourceRegistry = catalog.format == .modern ? WasabiResourceRegistry(catalog: catalog) : nil
         wantsLayer = true
         layer?.magnificationFilter = .nearest
     }
@@ -231,17 +244,34 @@ final class SkinPreviewSurface: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard let image = catalog.mainImage, image.size.width > 0, image.size.height > 0 else { return }
-        let scale = min(bounds.width / image.size.width, bounds.height / image.size.height)
+        let previewImage: NSImage?
+        if catalog.format == .modern, let resourceRegistry {
+            if cachedModernPreview == nil {
+                let snapshot = WasabiScenePainter.previewSnapshot(for: catalog)
+                cachedModernPreview = WasabiScenePainter.renderBitmapScene(
+                    snapshot.scene,
+                    resources: resourceRegistry,
+                    size: catalog.canvasSize,
+                    clipPath: catalog.regionPath,
+                    activeObjectIDs: snapshot.activeObjectIDs
+                ) ?? catalog.mainImage
+            }
+            previewImage = cachedModernPreview
+        } else {
+            previewImage = catalog.mainImage
+        }
+        guard let image = previewImage, image.size.width > 0, image.size.height > 0 else { return }
+        let size = image.size
+        let scale = min(bounds.width / size.width, bounds.height / size.height)
         guard scale > 0 else { return }
         let destination = CGRect(
-            x: bounds.midX - image.size.width * scale / 2,
-            y: bounds.midY - image.size.height * scale / 2,
-            width: image.size.width * scale,
-            height: image.size.height * scale
+            x: bounds.midX - size.width * scale / 2,
+            y: bounds.midY - size.height * scale / 2,
+            width: size.width * scale,
+            height: size.height * scale
         )
         NSGraphicsContext.saveGraphicsState()
-        if let regionPath = catalog.regionPath {
+        if catalog.format != .modern, let regionPath = catalog.regionPath {
             var transform = CGAffineTransform(a: scale, b: 0, c: 0, d: scale, tx: destination.minX, ty: destination.minY)
             if let transformed = regionPath.cgPath.copy(using: &transform) {
                 NSBezierPath(cgPath: transformed).addClip()
