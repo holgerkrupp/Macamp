@@ -601,7 +601,7 @@ private struct SkinPlaylistView: View {
 /// title, buttons, slider tracks and thumbs. Keep all drawing in logical
 /// Winamp pixels and let WinampSkinWindowHost perform the screen conversion.
 @MainActor
-private final class ClassicEqualizerSurface: NSView {
+final class ClassicEqualizerSurface: NSView {
     private enum SliderTarget { case preamp, band(Int) }
     private let coordinator: PlaybackCoordinator
     private let skinStore: SkinLibraryStore
@@ -708,6 +708,10 @@ private final class ClassicEqualizerSurface: NSView {
             }
             return
         }
+        injectSliderMouseDown(at: point)
+    }
+
+    func injectSliderMouseDown(at point: CGPoint) {
         guard coordinator.audioEffectCapabilities.contains(.equalizerBands) else { return }
         if point.x >= 21, point.x < 32, point.y >= 38, point.y <= 101,
            coordinator.audioEffectCapabilities.contains(.preamp) {
@@ -720,6 +724,13 @@ private final class ClassicEqualizerSurface: NSView {
             beginSliderDrag(.band(index), point: point)
             return
         }
+    }
+
+    func injectSliderMouseDragged(to point: CGPoint) { updateDraggedSlider(at: point) }
+
+    func injectSliderMouseUp(at point: CGPoint) {
+        updateDraggedSlider(at: point)
+        draggingSlider = nil
     }
 
     override func mouseDragged(with event: NSEvent) {

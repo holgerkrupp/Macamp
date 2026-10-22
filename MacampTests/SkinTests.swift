@@ -1930,6 +1930,84 @@ struct SkinTests {
         view.injectMouseUp(at: CGPoint(x: 24, y: 16))
     }
 
+    @Test @MainActor func modernMakiEqualizerValuesRoundTripAndUseZeroBasedBandIndices() async throws {
+        let defaultsName = "Macamp.MakiEQ." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let settings = SettingsStore(defaults: defaults)
+        let coordinator = PlaybackCoordinator(settingsStore: settings)
+        let provider = SkinTestEQPlaybackProvider()
+        coordinator.register(provider)
+        let source = try temporarySkin(entries: [("skin.xml", Data("""
+        <WinampAbstractionLayer><container id="main" default_visible="1"><layout id="normal" w="80" h="40" /></container></WinampAbstractionLayer>
+        """.utf8))], extension: "wal")
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skins = SkinLibraryStore(defaults: defaults, root: root)
+        await skins.importSkin(from: source)
+        let view = SkinRendererView(coordinator: coordinator, skinStore: skins, settings: settings, openMedia: {}, playlistToggle: {}, equalizerToggle: {}, visualizationToggle: {})
+
+        for index in [0, 1, 9] {
+            for value in [0, 128, 255] {
+                view.makiEQBandChanged(index: index, value: value)
+                try await Task.sleep(for: .milliseconds(25))
+                #expect(view.makiEQBandValue(index: index) == value)
+            }
+        }
+
+        let stateBeforeInvalidIndices = coordinator.audioEffectState
+        view.makiEQBandChanged(index: -1, value: 0)
+        view.makiEQBandChanged(index: 10, value: 255)
+        try await Task.sleep(for: .milliseconds(25))
+        #expect(coordinator.audioEffectState == stateBeforeInvalidIndices)
+        #expect(view.makiEQBandValue(index: -1) == 128)
+        #expect(view.makiEQBandValue(index: 10) == 128)
+    }
+
+    @Test @MainActor func classicEqualizerPreampAndBandsTrackEveryDragPosition() async throws {
+        let defaultsName = "Macamp.ClassicEQDrag." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let settings = SettingsStore(defaults: defaults)
+        let coordinator = PlaybackCoordinator(settingsStore: settings)
+        coordinator.register(SkinTestEQPlaybackProvider())
+        let source = try temporarySkin(entries: [("skin.xml", Data("""
+        <WinampAbstractionLayer><container id="main" default_visible="1"><layout id="normal" w="80" h="40" /></container></WinampAbstractionLayer>
+        """.utf8))], extension: "wal")
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skins = SkinLibraryStore(defaults: defaults, root: root)
+        await skins.importSkin(from: source)
+        let surface = ClassicEqualizerSurface(coordinator: coordinator, skinStore: skins)
+
+        let targets: [(x: CGFloat, band: Int?)] = [(26.5, nil)] + EqualizerBand.winamp10.indices.map { (83.5 + CGFloat($0 * 18), $0) }
+        for target in targets {
+            surface.injectSliderMouseDown(at: CGPoint(x: target.x, y: 68.5))
+            try await Task.sleep(for: .milliseconds(25))
+            #expect(abs(currentGain(target.band, coordinator: coordinator)) < 0.001)
+
+            for y in [50.0, 80.0] {
+                surface.injectSliderMouseDragged(to: CGPoint(x: target.x, y: y))
+                try await Task.sleep(for: .milliseconds(25))
+                let expected = 12 - min(max((y - 5.0 - 38) / 51, 0), 1) * 24
+                #expect(abs(Double(currentGain(target.band, coordinator: coordinator)) - expected) < 0.001)
+            }
+
+            surface.injectSliderMouseUp(at: CGPoint(x: target.x, y: 90))
+            try await Task.sleep(for: .milliseconds(25))
+            let expectedFinal = 12 - min(max((90 - 5.0 - 38) / 51, 0), 1) * 24
+            #expect(abs(Double(currentGain(target.band, coordinator: coordinator)) - expectedFinal) < 0.001)
+        }
+    }
+
+    @MainActor
+    private func currentGain(_ bandIndex: Int?, coordinator: PlaybackCoordinator) -> Float {
+        guard let bandIndex else { return coordinator.audioEffectState.preampGain }
+        return coordinator.audioEffectState.gain(for: EqualizerBand.winamp10[bandIndex])
+    }
+
     private func temporarySkin(entries: [(String, Data)], extension fileExtension: String = "wsz") throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -2062,6 +2140,45 @@ private extension WasabiScene {
         }
         return hasher.result
     }
+}
+
+@MainActor
+public final class SkinTestEQPlaybackProvider: PlaybackProvider, AudioEffectController {
+    public let id: PlaybackProviderID = .preview
+    public let displayName = "Skin EQ Test"
+    public let capabilities: PlaybackCapabilities = [.playback, .pause, .seek, .previous, .next, .nativeEqualizer]
+    public let authenticationState: ProviderAuthenticationState = .authorized
+    public private(set) var state = PlaybackState(status: .stopped, providerID: .preview)
+    public private(set) var queue = PlaybackQueue()
+    public let effectCapabilities: AudioEffectCapabilities = [.enable, .preamp, .equalizerBands]
+    public private(set) var effectState = AudioEffectState()
+    public let effectUnavailableReason: String? = nil
+
+    public init() {}
+
+    public func snapshots() -> AsyncStream<ProviderSnapshot> {
+        AsyncStream { continuation in
+            continuation.yield(ProviderSnapshot(authenticationState: authenticationState, state: state, queue: queue))
+            continuation.finish()
+        }
+    }
+    public func authorize() async throws {}
+    public func disconnect() async {}
+    public func play() async throws {}
+    public func pause() async throws {}
+    public func stop() async throws {}
+    public func play(item: PlaybackItem) async throws {}
+    public func play(items: [PlaybackItem], startingAt index: Int) async throws {}
+    public func seek(to position: Duration) async throws {}
+    public func skipToNext() async throws {}
+    public func skipToPrevious() async throws {}
+    public func setVolume(_ volume: Double) async throws {}
+    public func setShuffleMode(_ mode: ShuffleMode) async throws {}
+    public func setRepeatMode(_ mode: RepeatMode) async throws {}
+
+    public func setEnabled(_ enabled: Bool) async throws { effectState.isEnabled = enabled }
+    public func setPreampGain(_ value: Float) async throws { effectState.preampGain = value }
+    public func setBandGain(_ value: Float, band: EqualizerBand) async throws { effectState.setGain(value, for: band) }
 }
 
 @MainActor
