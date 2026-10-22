@@ -13,17 +13,23 @@ final class PlaybackCoordinator {
     private(set) var queue = PlaybackQueue()
     private(set) var audioEffectCapabilities: AudioEffectCapabilities = []
     private(set) var audioEffectState = AudioEffectState()
+    private(set) var audioEffectUnavailableReason: String? = "Equalizer unavailable for this provider's audio source."
     private(set) var recentErrors: [String] = []
 
     @ObservationIgnored private var providers: [PlaybackProviderID: any PlaybackProvider] = [:]
     @ObservationIgnored private var observationTask: Task<Void, Never>?
     @ObservationIgnored private let sessionStore: PlaybackSessionStore
+    @ObservationIgnored private let settingsStore: SettingsStore
     @ObservationIgnored private var persistenceTask: Task<Void, Never>?
     @ObservationIgnored private var lastAppliedProviderID: PlaybackProviderID?
     @ObservationIgnored private let logger = Logger(subsystem: "dev.holgerkrupp.Macamp", category: "Playback")
 
-    init(sessionStore: PlaybackSessionStore = PlaybackSessionStore()) {
+    init(
+        sessionStore: PlaybackSessionStore = PlaybackSessionStore(),
+        settingsStore: SettingsStore = SettingsStore()
+    ) {
         self.sessionStore = sessionStore
+        self.settingsStore = settingsStore
     }
 
     deinit {
@@ -130,24 +136,28 @@ final class PlaybackCoordinator {
     func setRepeat(_ mode: RepeatMode) async { await perform(required: .repeat) { try await $0.setRepeatMode(mode) } }
 
     func setEqualizerEnabled(_ enabled: Bool) async {
-        await performAudioEffect { try await $0.setEnabled(enabled) }
+        await performAudioEffect(required: .enable) { try await $0.setEnabled(enabled) }
     }
 
     func setEqualizerBand(index: Int, gain: Float) async {
         guard EqualizerBand.winamp10.indices.contains(index) else { return }
-        await performAudioEffect { try await $0.setBandGain(gain, band: EqualizerBand.winamp10[index]) }
+        await performAudioEffect(required: .equalizerBands) { try await $0.setBandGain(gain, band: EqualizerBand.winamp10[index]) }
     }
 
     func setPreampGain(_ gain: Float) async {
-        await performAudioEffect { try await $0.setPreampGain(gain.clamped(to: -12...12)) }
+        await performAudioEffect(required: .preamp) { try await $0.setPreampGain(gain.clamped(to: -12...12)) }
     }
 
     func resetEqualizer() async {
         guard let effects = activeProvider as? any AudioEffectController else { return }
         do {
+            guard audioEffectCapabilities.contains(.equalizerBands), audioEffectCapabilities.contains(.preamp) else {
+                return record(.unsupported("equalizer for this source"))
+            }
             for band in EqualizerBand.winamp10 { try await effects.setBandGain(0, band: band) }
             try await effects.setPreampGain(0)
             refreshAudioEffects()
+            settingsStore.equalizerState = effects.effectState
         } catch { record(error as? ProviderError ?? ProviderError(code: .unknown, message: error.localizedDescription)) }
     }
 
@@ -184,24 +194,47 @@ final class PlaybackCoordinator {
         }
     }
 
-    private func performAudioEffect(action: (any AudioEffectController) async throws -> Void) async {
+    private func performAudioEffect(
+        required capability: AudioEffectCapabilities,
+        action: (any AudioEffectController) async throws -> Void
+    ) async {
         guard let effects = activeProvider as? any AudioEffectController else {
-            return record(.unsupported("audio effects"))
+            return record(ProviderError(code: .unsupported, message: audioEffectUnavailableReason ?? "Equalizer unavailable for this provider's audio source."))
+        }
+        guard audioEffectCapabilities.contains(capability) else {
+            return record(ProviderError(code: .unsupported, message: audioEffectUnavailableReason ?? "Equalizer unavailable for this source."))
         }
         do {
             try await action(effects)
             refreshAudioEffects()
+            settingsStore.equalizerState = effects.effectState
         } catch { record(error as? ProviderError ?? ProviderError(code: .unknown, message: error.localizedDescription)) }
     }
 
     private func refreshAudioEffects() {
         guard let effects = activeProvider as? any AudioEffectController else {
             audioEffectCapabilities = []
-            audioEffectState = AudioEffectState()
+            audioEffectState = settingsStore.equalizerState
+            audioEffectUnavailableReason = unavailableReason(for: activeProvider)
+            capabilities = activeProvider?.capabilities ?? []
             return
         }
         audioEffectCapabilities = effects.effectCapabilities
         audioEffectState = effects.effectState
+        audioEffectUnavailableReason = effects.effectUnavailableReason
+        if let provider = activeProvider { capabilities = provider.capabilities }
+    }
+
+    private func unavailableReason(for provider: (any PlaybackProvider)?) -> String {
+        guard let provider else { return "Equalizer unavailable because no playback provider is active." }
+        switch provider.id {
+        case .appleMusic:
+            return "Equalizer unavailable: Apple Music keeps protected decoded audio outside Macamp's DSP path."
+        case .spotify, .tidal, .soundCloud, .youtube:
+            return "Equalizer unavailable: this provider streams hosted audio outside Macamp's DSP path."
+        default:
+            return "Equalizer unavailable for this provider's audio source."
+        }
     }
 
     private func apply(_ snapshot: ProviderSnapshot) {
@@ -211,6 +244,9 @@ final class PlaybackCoordinator {
         authenticationState = snapshot.authenticationState
         state = snapshot.state
         queue = snapshot.queue
+        // Local playback can switch between AVAudioEngine files and AVPlayer
+        // streams without changing providers. Keep controls honest per route.
+        refreshAudioEffects()
         persistMeaningfulChanges(
             from: (providerID: previousProviderID, state: previousState, queue: previousQueue),
             to: snapshot

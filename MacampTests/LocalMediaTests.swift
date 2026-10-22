@@ -48,10 +48,14 @@ struct LocalMediaTests {
         #expect(provider.capabilities.contains(.localMetadata))
         #expect(provider.capabilities.contains(.playlists))
         #expect(!provider.capabilities.contains(.pcmAudio))
-        #expect(provider.capabilities.contains(.nativeEqualizer))
-        #expect(provider.effectCapabilities.contains(.equalizerBands))
-        try await provider.setBandGain(6, band: EqualizerBand.winamp10[0])
-        #expect(provider.effectState.isEnabled)
-        #expect(provider.effectState.bandGains[EqualizerBand.winamp10[0]] == 6)
+        #expect(!provider.capabilities.contains(.nativeEqualizer))
+        #expect(!provider.effectCapabilities.contains(.equalizerBands))
+        #expect(provider.effectUnavailableReason?.contains("AVPlayer") == true)
+        do {
+            try await provider.setBandGain(6, band: EqualizerBand.winamp10[0])
+            Issue.record("EQ must be unavailable until playback uses the decoded local-file engine")
+        } catch let error as ProviderError {
+            #expect(error.code == .unsupported)
+        }
     }
 }
