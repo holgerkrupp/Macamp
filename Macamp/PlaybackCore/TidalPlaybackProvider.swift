@@ -125,6 +125,24 @@ final class TidalPlaybackProvider: ExternalPlaybackProviderBase, MusicDiscoveryP
         return MusicLibrarySnapshot(songs: songs, playlists: playlists)
     }
 
+    func items(in collection: PlaybackCollection) async throws -> [PlaybackItem] {
+        guard collection.providerID == id, collection.kind == .playlist else {
+            throw ProviderError.unsupported("adding tracks from this TIDAL collection")
+        }
+        try requireAuthorized()
+        let response = try await PlaylistsAPITidal.playlistsIdRelationshipsItemsGet(
+            id: collection.id,
+            countryCode: "US",
+            include: ["tracks"]
+        )
+        let tracksByID = Dictionary(uniqueKeysWithValues: (response.included ?? []).compactMap { included -> (String, PlaybackItem)? in
+            guard case let .tracksResourceObject(track) = included,
+                  let item = mapTrack(track) else { return nil }
+            return (track.id, item)
+        })
+        return (response.data ?? []).compactMap { tracksByID[$0.id] }
+    }
+
     func stateChanged(to playerState: State) {
         switch playerState {
         case .PLAYING: state.status = .playing; state.playbackRate = 1

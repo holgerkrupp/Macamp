@@ -137,17 +137,45 @@ final class AppleMusicPlaybackProvider: MusicDiscoveryProvider {
     }
 
     func items(in collection: PlaybackCollection) async throws -> [PlaybackItem] {
-        guard collection.providerID == id, collection.kind == .album else {
-            throw ProviderError.unsupported("adding entries from Apple Music playlists; add tracks from search or your library instead")
+        guard collection.providerID == id, collection.kind == .album || collection.kind == .playlist else {
+            throw ProviderError.unsupported("adding this Apple Music collection")
         }
-        let query = [collection.title, collection.subtitle].compactMap { $0 }.joined(separator: " ")
-        let (results, songs) = try await catalogService.search(query, limit: 100)
-        songsByID.merge(songs) { _, new in new }
-        let tracks = results.songs.filter { $0.albumTitle?.localizedCaseInsensitiveCompare(collection.title) == .orderedSame }
-        guard !tracks.isEmpty else {
-            throw ProviderError(code: .itemUnavailable, message: "Apple Music did not return tracks for this album. You can still add individual tracks from search.")
+        try requireAuthorization()
+        let albumTracks: MusicItemCollection<Track>
+        if collection.kind == .album {
+            var request = MusicCatalogResourceRequest<Album>(matching: \.id, equalTo: MusicItemID(collection.id))
+            request.properties = [.tracks]
+            let response = try await request.response()
+            guard let album = response.items.first, let tracks = album.tracks else {
+                throw ProviderError(code: .itemUnavailable, message: "Apple Music did not return tracks for this album. You can still add individual tracks from search.")
+            }
+            albumTracks = tracks
+        } else {
+            var request = MusicCatalogResourceRequest<Playlist>(matching: \.id, equalTo: MusicItemID(collection.id))
+            request.properties = [.tracks]
+            let response = try await request.response()
+            guard let playlist = response.items.first, let tracks = playlist.tracks else {
+                throw ProviderError(code: .itemUnavailable, message: "Apple Music did not return tracks for this playlist. You can still add individual tracks from search.")
+            }
+            albumTracks = tracks
         }
-        return tracks
+
+        var page = albumTracks
+        var songs: [Song] = []
+        while true {
+            songs.append(contentsOf: page.compactMap { track in
+                guard case let .song(song) = track else { return nil }
+                return song
+            })
+            guard page.hasNextBatch else { break }
+            guard let nextPage = try await page.nextBatch() else { break }
+            page = nextPage
+        }
+        guard !songs.isEmpty else {
+            throw ProviderError(code: .itemUnavailable, message: "Apple Music did not return playable songs for this album. You can still add individual tracks from search.")
+        }
+        songsByID.merge(Dictionary(uniqueKeysWithValues: songs.map { ($0.id.rawValue, $0) })) { _, new in new }
+        return songs.map(MusicKitModelMapper.item)
     }
 
     private var snapshot: ProviderSnapshot { ProviderSnapshot(authenticationState: authenticationState, state: state, queue: queue) }

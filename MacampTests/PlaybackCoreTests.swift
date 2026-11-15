@@ -279,6 +279,24 @@ struct PlaybackCoreTests {
         #expect(restored.entries.first?.id == firstID)
     }
 
+    @Test func repeatedPlaylistOccurrencesKeepIndependentIdentityAcrossEditAndReorder() {
+        let store = makePlaylistStore()
+        let sameTrack = PlaybackItem(id: "same-track", providerID: .appleMusic, providerItemID: "catalogue-123", title: "Repeated", mediaKind: .song, isExplicit: false)
+        let occurrenceIDs = store.append([sameTrack, sameTrack])
+        #expect(occurrenceIDs.count == 2)
+        #expect(occurrenceIDs[0] != occurrenceIDs[1])
+        #expect(store.queue.items[0].id != store.queue.items[1].id)
+
+        store.select(occurrenceIDs[1])
+        store.move(fromOffsets: IndexSet(integer: 1), toOffset: 0)
+        #expect(store.currentEntryID == occurrenceIDs[1])
+        #expect(store.queue.items.map { $0.id.rawValue } == ["playlist:\(occurrenceIDs[1].uuidString)", "playlist:\(occurrenceIDs[0].uuidString)"])
+
+        store.remove(at: IndexSet(integer: 1))
+        #expect(store.entries.map(\.id) == [occurrenceIDs[1]])
+        #expect(store.currentEntryID == occurrenceIDs[1])
+    }
+
     private func makePlaylistStore() -> UnifiedPlaylistStore {
         let suiteName = "MacampUnifiedPlaylistTest-\(UUID().uuidString)"
         return UnifiedPlaylistStore(defaults: UserDefaults(suiteName: suiteName)!, storageKey: "playlist")
