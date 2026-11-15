@@ -45,6 +45,10 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     @ObservationIgnored private var locations: [PlaybackItemID: URL] = [:]
     @ObservationIgnored private var continuations: [UUID: AsyncStream<ProviderSnapshot>.Continuation] = [:]
     @ObservationIgnored private var progressTask: Task<Void, Never>?
+    @ObservationIgnored private var radioReconnectTask: Task<Void, Never>?
+    @ObservationIgnored private var radioReconnectAttempts = 0
+    @ObservationIgnored private var metadataOutput: AVPlayerItemMetadataOutput?
+    @ObservationIgnored private let metadataDelegate = RadioStreamMetadataDelegate()
     @ObservationIgnored private var scopedURLs: [URL] = []
     @ObservationIgnored private var didRestoreBookmarks = false
     @ObservationIgnored private var handledCurrentEnd = false
@@ -239,13 +243,15 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         } else {
             player.play()
         }
-        state.status = .playing
-        state.playbackRate = 1
+        let isRadio = state.currentItem?.mediaKind == .radioStation
+        state.status = isRadio ? .connecting : .playing
+        state.playbackRate = isRadio ? 0 : 1
         startProgressUpdates()
         publish()
     }
 
     func pause() async throws {
+        cancelRadioReconnect(resetAttempts: false)
         updateElapsed()
         if usesAudioEngine { audioPlayerNode.pause() } else { player.pause() }
         state.status = .paused
@@ -255,6 +261,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     }
 
     func stop() async throws {
+        cancelRadioReconnect()
         if usesAudioEngine { audioPlayerNode.stop() } else { player.pause() }
         try seekPlayer(to: .zero, resume: false)
         state.status = .stopped
@@ -413,11 +420,16 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     }
 
     private func loadCurrentItem(autoplay: Bool) throws {
+        cancelRadioReconnect()
+        radioReconnectAttempts = 0
         guard let item = queue.currentItem, let url = locations[item.id] else {
             throw ProviderError(code: .itemUnavailable, message: "The selected local file is no longer available.")
         }
         audioPlayerNode.stop()
         player.pause()
+        if let oldOutput = metadataOutput, let oldItem = player.currentItem { oldItem.remove(oldOutput) }
+        metadataOutput = nil
+        metadataDelegate.onTitle = nil
         if url.isFileURL, item.mediaKind == .localFile {
             let file = try AVAudioFile(forReading: url)
             audioFile = file
@@ -429,7 +441,11 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
             removeAnalysisTapIfNeeded()
             audioFile = nil
             usesAudioEngine = false
-            player.replaceCurrentItem(with: AVPlayerItem(url: url))
+            let playerItem = AVPlayerItem(url: url)
+            if item.mediaKind == .radioStation, !url.isFileURL {
+                attachRadioMetadataOutput(to: playerItem)
+            }
+            player.replaceCurrentItem(with: playerItem)
         }
         state.currentItem = item
         if let file = audioFile, item.sourceStartSeconds == nil, item.sourceEndSeconds == nil {
@@ -442,8 +458,8 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         handledCurrentEnd = false
         if autoplay {
             if !usesAudioEngine { player.play() }
-            state.status = .playing
-            state.playbackRate = 1
+            state.status = item.mediaKind == .radioStation ? .connecting : .playing
+            state.playbackRate = item.mediaKind == .radioStation ? 0 : 1
             startProgressUpdates()
         } else {
             state.status = .paused
@@ -540,17 +556,95 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         progressTask = nil
     }
 
+    private func attachRadioMetadataOutput(to item: AVPlayerItem) {
+        let output = AVPlayerItemMetadataOutput(identifiers: nil)
+        output.setDelegate(metadataDelegate, queue: .main)
+        item.add(output)
+        metadataOutput = output
+        metadataDelegate.onTitle = { [weak self] title in self?.updateRadioMetadata(title) }
+    }
+
+    private func updateRadioMetadata(_ rawTitle: String) {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, var item = state.currentItem, item.mediaKind == .radioStation else { return }
+        if item.albumTitle == nil { item.albumTitle = item.title }
+        let parts = title.components(separatedBy: " - ")
+        if parts.count > 1 {
+            item.artist = parts[0].trimmingCharacters(in: .whitespaces)
+            item.title = parts.dropFirst().joined(separator: " - ").trimmingCharacters(in: .whitespaces)
+        } else {
+            item.title = title
+        }
+        state.currentItem = item
+        if let index = queue.currentIndex, queue.items.indices.contains(index) { queue.items[index] = item }
+        publish()
+    }
+
+    private func scheduleRadioReconnect(url: URL, itemID: PlaybackItemID, message: String) {
+        guard radioReconnectTask == nil else { return }
+        guard radioReconnectAttempts < 3 else {
+            state.status = .failed
+            state.playbackRate = 0
+            state.lastError = ProviderError(code: .network, message: "Radio connection could not be restored: \(message)")
+            stopProgressUpdates()
+            publish()
+            return
+        }
+        let delay = [1, 2, 4][radioReconnectAttempts]
+        state.status = .buffering
+        state.playbackRate = 0
+        state.lastError = ProviderError(code: .network, message: "Radio connection interrupted. Reconnecting…")
+        publish()
+        radioReconnectTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled,
+                  self.queue.currentItem?.id == itemID,
+                  [.connecting, .buffering, .playing].contains(self.state.status) else {
+                self?.radioReconnectTask = nil
+                return
+            }
+            self.radioReconnectAttempts += 1
+            self.radioReconnectTask = nil
+            if let oldOutput = self.metadataOutput, let oldItem = self.player.currentItem { oldItem.remove(oldOutput) }
+            let item = AVPlayerItem(url: url)
+            self.attachRadioMetadataOutput(to: item)
+            self.player.replaceCurrentItem(with: item)
+            self.player.play()
+            self.state.status = .connecting
+            self.publish()
+        }
+    }
+
+    private func cancelRadioReconnect(resetAttempts: Bool = true) {
+        radioReconnectTask?.cancel()
+        radioReconnectTask = nil
+        if resetAttempts { radioReconnectAttempts = 0 }
+    }
+
     private func updateProgress() {
         if !usesAudioEngine {
             guard let currentItem = player.currentItem else { return }
             if currentItem.status == .failed {
                 let message = currentItem.error?.localizedDescription ?? "AVFoundation could not play this item."
+                if let station = queue.currentItem, station.mediaKind == .radioStation,
+                   let url = locations[station.id], [.connecting, .buffering, .playing].contains(state.status) {
+                    scheduleRadioReconnect(url: url, itemID: station.id, message: message)
+                    return
+                }
                 state.lastError = ProviderError(code: .playbackFailed, message: message)
                 state.status = .failed
                 state.playbackRate = 0
                 stopProgressUpdates()
                 publish()
                 return
+            }
+            if queue.currentItem?.mediaKind == .radioStation, [.connecting, .buffering, .playing].contains(state.status) {
+                switch player.timeControlStatus {
+                case .playing: state.status = .playing; state.playbackRate = 1; state.lastError = nil; radioReconnectAttempts = 0
+                case .waitingToPlayAtSpecifiedRate: state.status = .buffering; state.playbackRate = 0
+                case .paused: break
+                @unknown default: state.status = .connecting; state.playbackRate = 0
+                }
             }
             if state.duration == nil {
                 let seconds = currentItem.duration.seconds
@@ -642,5 +736,29 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     private func publish() {
         let value = snapshot
         continuations.values.forEach { $0.yield(value) }
+    }
+}
+
+private final class RadioStreamMetadataDelegate: NSObject, AVPlayerItemMetadataOutputPushDelegate, @unchecked Sendable {
+    var onTitle: (@MainActor (String) -> Void)?
+
+    func metadataOutput(
+        _ output: AVPlayerItemMetadataOutput,
+        didOutputTimedMetadataGroups groups: [AVTimedMetadataGroup],
+        from track: AVPlayerItemTrack?
+    ) {
+        for group in groups {
+            for item in group.items {
+                let identifier = item.identifier?.rawValue.lowercased() ?? ""
+                let commonKey = item.commonKey?.rawValue.lowercased() ?? ""
+                guard commonKey == AVMetadataKey.commonKeyTitle.rawValue.lowercased()
+                        || identifier.contains("title")
+                        || identifier.contains("icy")
+                        || identifier.contains("tit2"),
+                      let value = item.value as? String,
+                      !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                Task { @MainActor [weak self] in self?.onTitle?(value) }
+            }
+        }
     }
 }
