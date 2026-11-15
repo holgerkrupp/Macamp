@@ -34,11 +34,19 @@ struct VisualizationTests {
         per_pixel_1=a.warp=a.warp+0.01;
         wave_0_per_frame_1=a.r=1;
         wave_0_per_point_1=a.x=a.x+0.01;
+        shape_0_enabled=1;
+        shape_0_sides=6;
+        shape_0_textured=1;
+        shape_0_per_frame_2=a.rad=0.25;
+        shape_0_init_1=a.x=0.5;
         """, fileName: "Test.milk")
         let payload = try #require(JSONSerialization.jsonObject(with: Data(preset.rendererJSON.utf8)) as? [String: Any])
         let baseValues = try #require(payload["baseVals"] as? [String: Double])
         let waves = try #require(payload["waves"] as? [[String: Any]])
         let firstWave = try #require(waves.first)
+        let shapes = try #require(payload["shapes"] as? [[String: Any]])
+        let firstShape = try #require(shapes.first)
+        let shapeValues = try #require(firstShape["baseVals"] as? [String: Double])
 
         #expect(preset.title == "Test")
         #expect(baseValues["decay"] == 0.96)
@@ -47,6 +55,11 @@ struct VisualizationTests {
         #expect(payload["pixel_eqs_str"] as? String == "a.warp=a.warp+0.01;")
         #expect(firstWave["frame_eqs_str"] as? String == "a.r=1;")
         #expect(firstWave["point_eqs_str"] as? String == "a.x=a.x+0.01;")
+        #expect(shapeValues["enabled"] == 1)
+        #expect(shapeValues["sides"] == 6)
+        #expect(shapeValues["textured"] == 1)
+        #expect(firstShape["init_eqs_str"] as? String == "a.x=0.5;")
+        #expect(firstShape["frame_eqs_str"] as? String == "a.rad=0.25;")
     }
 
     @Test func milkDropPresetParserRejectsMissingSectionsAndUnsafeEquations() {

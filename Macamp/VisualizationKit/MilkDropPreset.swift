@@ -46,6 +46,16 @@ enum MilkDropPresetParser {
     private static let pixelPattern = try! NSRegularExpression(pattern: #"^per_pixel_(\d+)$"#)
     private static let waveFramePattern = try! NSRegularExpression(pattern: #"^wave_(\d+)_per_frame_(\d+)$"#)
     private static let wavePointPattern = try! NSRegularExpression(pattern: #"^wave_(\d+)_per_point_(\d+)$"#)
+    private static let shapeInitPattern = try! NSRegularExpression(pattern: #"^shape_(\d+)_init_(\d+)$"#)
+    private static let shapeFramePattern = try! NSRegularExpression(pattern: #"^shape_(\d+)_per_frame_(\d+)$"#)
+    private static let shapeValuePattern = try! NSRegularExpression(pattern: #"^shape_(\d+)_(enabled|sides|additive|textured|thick|num_inst|tex_zoom|tex_ang|x|y|rad|ang|r|g|b|a|r2|g2|b2|a2|border_r|border_g|border_b|border_a)$"#)
+    private static let shapeValueNames: [String: String] = [
+        "enabled": "enabled", "sides": "sides", "additive": "additive", "textured": "textured",
+        "thick": "thickoutline", "num_inst": "num_inst", "tex_zoom": "tex_zoom", "tex_ang": "tex_ang",
+        "x": "x", "y": "y", "rad": "rad", "ang": "ang", "r": "r", "g": "g", "b": "b", "a": "a",
+        "r2": "r2", "g2": "g2", "b2": "b2", "a2": "a2", "border_r": "border_r",
+        "border_g": "border_g", "border_b": "border_b", "border_a": "border_a"
+    ]
     private static let forbiddenTokens = ["window", "document", "globalthis", "fetch", "eval", "function", "constructor", "prototype", "webkit"]
 
     static func parse(data: Data, fileName: String) throws -> MilkDropPreset {
@@ -67,6 +77,9 @@ enum MilkDropPresetParser {
         var pixelEquations: [(Int, String)] = []
         var waveFrameEquations: [Int: [(Int, String)]] = [:]
         var wavePointEquations: [Int: [(Int, String)]] = [:]
+        var shapeValues: [Int: [String: Double]] = [:]
+        var shapeInitEquations: [Int: [(Int, String)]] = [:]
+        var shapeFrameEquations: [Int: [(Int, String)]] = [:]
 
         for rawLine in lines {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -94,6 +107,17 @@ enum MilkDropPresetParser {
             } else if let match = wavePointPattern.firstMatch(in: key, range: keyRange),
                       let wave = int(match, 1, in: key), let number = int(match, 2, in: key) {
                 try appendEquation(value, number, to: &wavePointEquations[wave, default: []])
+            } else if let match = shapeInitPattern.firstMatch(in: key, range: keyRange),
+                      let shape = int(match, 1, in: key), let number = int(match, 2, in: key), (0..<4).contains(shape) {
+                try appendEquation(value, number, to: &shapeInitEquations[shape, default: []])
+            } else if let match = shapeFramePattern.firstMatch(in: key, range: keyRange),
+                      let shape = int(match, 1, in: key), let number = int(match, 2, in: key), (0..<4).contains(shape) {
+                try appendEquation(value, number, to: &shapeFrameEquations[shape, default: []])
+            } else if let match = shapeValuePattern.firstMatch(in: key, range: keyRange),
+                      let shape = int(match, 1, in: key), let valueName = capture(match, 2, in: key),
+                      (0..<4).contains(shape), let rendererKey = shapeValueNames[valueName],
+                      let number = Double(value), number.isFinite {
+                shapeValues[shape, default: [:]][rendererKey] = number
             } else if let rendererKey = baseValueNames[key], let number = Double(value), number.isFinite {
                 baseValues[rendererKey] = number
             }
@@ -113,13 +137,19 @@ enum MilkDropPresetParser {
                 "init_eqs_str": "", "frame_eqs_str": frame, "point_eqs_str": point
             ]
         }
-        let disabledShapes = (0..<4).map { _ in ["baseVals": ["enabled": 0.0], "init_eqs_str": "", "frame_eqs_str": ""] }
+        let shapes: [[String: Any]] = (0..<4).map { index in
+            [
+                "baseVals": shapeValues[index] ?? ["enabled": 0.0],
+                "init_eqs_str": sorted(shapeInitEquations[index] ?? []),
+                "frame_eqs_str": sorted(shapeFrameEquations[index] ?? [])
+            ]
+        }
         let rendererObject: [String: Any] = [
             "baseVals": baseValues,
             "init_eqs_str": sorted(initEquations),
             "frame_eqs_str": sorted(frameEquations),
             "pixel_eqs_str": sorted(pixelEquations),
-            "warp": "", "comp": "", "waves": waves, "shapes": disabledShapes
+            "warp": "", "comp": "", "waves": waves, "shapes": shapes
         ]
         let json = try JSONSerialization.data(withJSONObject: rendererObject, options: [.sortedKeys])
         let name = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
@@ -139,6 +169,11 @@ enum MilkDropPresetParser {
     private static func int(_ match: NSTextCheckingResult, _ group: Int, in text: String) -> Int? {
         guard let range = Range(match.range(at: group), in: text) else { return nil }
         return Int(text[range])
+    }
+
+    private static func capture(_ match: NSTextCheckingResult, _ group: Int, in text: String) -> String? {
+        guard let range = Range(match.range(at: group), in: text) else { return nil }
+        return String(text[range])
     }
 
     private static func sorted(_ pairs: [(Int, String)]) -> String {
