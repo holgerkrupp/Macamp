@@ -24,6 +24,17 @@ struct VisualizationTests {
         #expect(throws: ProviderError.self) { try preset.validated() }
     }
 
+    @Test func goomIsAvailableAndVisualizationModeSelectionPersists() throws {
+        #expect(BuiltInVisualization(rawValue: "goom")?.title == "GOOM")
+        #expect(BuiltInVisualization(rawValue: "milkDrop")?.title == "MilkDrop")
+        #expect(BuiltInVisualization.allCases.contains(.spectrum))
+        let suite = "MacampVisualizationTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        SettingsStore(defaults: defaults).selectedVisualization = BuiltInVisualization.goom.rawValue
+        #expect(SettingsStore(defaults: defaults).selectedVisualization == "goom")
+    }
+
     @Test func milkDropPresetParserConvertsOrderedEquationsToBundledRendererFormat() throws {
         let preset = try MilkDropPresetParser.parse(text: """
         [preset00]
@@ -34,9 +45,9 @@ struct VisualizationTests {
         per_pixel_1=a.warp=a.warp+0.01;
         wave_0_per_frame_1=a.r=1;
         wave_0_per_point_1=a.x=a.x+0.01;
-        shape_0_enabled=1;
-        shape_0_sides=6;
-        shape_0_textured=1;
+        shape_0_enabled=1
+        shape_0_sides=6
+        shape_0_textured=1
         shape_0_per_frame_2=a.rad=0.25;
         shape_0_init_1=a.x=0.5;
         """, fileName: "Test.milk")
