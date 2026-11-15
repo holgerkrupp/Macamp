@@ -72,7 +72,7 @@ final class ApplicationOpenRouter {
         Task { await dependencies.playback.handleOAuthCallback(url) }
     }
 
-    private static func isSupportedMediaURL(_ url: URL) -> Bool {
+    static func isSupportedMediaURL(_ url: URL) -> Bool {
         guard url.isFileURL else { return false }
         if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { return true }
         return LocalMediaImporter.importFileExtensions.contains(url.pathExtension.lowercased())

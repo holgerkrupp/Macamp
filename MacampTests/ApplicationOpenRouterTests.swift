@@ -9,6 +9,16 @@ struct ApplicationOpenRouterTests {
         #expect(ApplicationOpenRouter.route(for: file) == .fileImport)
     }
 
+    @Test(arguments: ["mp3", "aac", "m4a", "alac", "flac", "wav", "aif", "aiff", "m3u", "m3u8", "pls", "xspf", "cue"])
+    func acceptsSupportedFinderImportTypes(_ fileExtension: String) {
+        let url = URL(fileURLWithPath: "/Music/track.\(fileExtension)")
+        #expect(ApplicationOpenRouter.isSupportedMediaURL(url))
+    }
+
+    @Test func rejectsUnsupportedSkinArchiveFromFinderOpen() {
+        #expect(!ApplicationOpenRouter.isSupportedMediaURL(URL(fileURLWithPath: "/Downloads/skin.wsz")))
+    }
+
     @Test(arguments: [
         URL(string: "macamp://oauth/tidal?code=abc")!
     ])
