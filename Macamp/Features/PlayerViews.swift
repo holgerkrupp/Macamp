@@ -287,7 +287,7 @@ struct VisualizationPickerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Visualizations").font(.largeTitle.bold())
-            Label("Visualizations react to decoded local audio. Apple Music and other hosted sources do not expose audio for visualization.", systemImage: "info.circle")
+            Label("Visualizations react to decoded local audio. Apple Music and other hosted sources do not expose audio for visualization. Right-click an inline skin visualization to switch between spectrum and waveform.", systemImage: "info.circle")
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 180))], spacing: 12) {
                 ForEach(BuiltInVisualization.allCases) { mode in
                     Button { dependencies.visualizations.select(mode); if dependencies.visualizations.window?.isVisible != true { dependencies.visualizations.toggle() } } label: {

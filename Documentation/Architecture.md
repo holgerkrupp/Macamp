@@ -4,7 +4,7 @@ Macamp is a new standalone macOS project. The initial repository contained only 
 
 ## Dependency direction
 
-`DependencyContainer` owns provider instances, settings, skin storage, simulated analysis, and window controllers. `PlaybackCoordinator` is the single UI-facing playback model. SwiftUI and AppKit consume only `PlaybackItem`, `PlaybackQueue`, `PlaybackState`, and `PlaybackCapabilities`; they never receive `Song`, `Album`, `Playlist`, or `ApplicationMusicPlayer`.
+`DependencyContainer` owns provider instances, settings, skin storage, local PCM analysis, and window controllers. `PlaybackCoordinator` is the single UI-facing playback model. SwiftUI and AppKit consume only `PlaybackItem`, `PlaybackQueue`, `PlaybackState`, and `PlaybackCapabilities`; they never receive `Song`, `Album`, `Playlist`, or `ApplicationMusicPlayer`.
 
 ```text
 SwiftUI library ─┐
@@ -13,9 +13,10 @@ Commands ────────┘                         ├── AppleMusi
                                           ├── LocalFilePlaybackProvider ── AVFoundation
                                           └── MockPlaybackProvider
 
-VisualizationWindow ── AudioAnalysisSource
-                       ├── SimulatedAudioAnalysisSource (Apple Music)
-                       └── LocalPCMAudioAnalysisSource (future local engine boundary)
+LocalFilePlaybackProvider ── post-EQ PCM tap ── LocalPCMAudioAnalysisSource
+                                              └── VisualizationFrameStore
+                                                   ├── VisualizationWindow
+                                                   └── Classic / Modern inline regions
 ```
 
 All playback providers are main-actor isolated. Provider snapshots arrive through `AsyncStream`; transport calls also apply an immediate snapshot, preventing UI latency. Each active engine owns one elapsed-time task that runs only during playback. UI updates never originate from an arbitrary background queue.
@@ -39,8 +40,7 @@ Skin archive decoding runs in an actor. AppKit image creation, window state, hit
 
 ## Roadmap
 
-1. Complete classic sprite/font/config parsing and playlist/equalizer windows.
-2. Add docking relationships and multi-display change observation.
-3. Add an AVAudioEngine local path with bounded PCM transfer, vDSP FFT, ReplayGain, gapless playback, and real DSP.
-4. Add Now Playing and remote command integration where it complements MusicKit.
-5. Evaluate future service adapters only through documented provider APIs and permitted playback surfaces.
+1. Continue closing Classic sprite/font/config compatibility gaps.
+2. Extend supported decoded local formats and improve their metadata workflows.
+3. Add Now Playing and remote command integration where it complements MusicKit.
+4. Evaluate future service adapters only through documented provider APIs and permitted playback surfaces.

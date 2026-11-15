@@ -204,6 +204,19 @@ final class SkinRendererView: NSView {
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        let point = logical(convert(event.locationInWindow, from: nil))
+        if inlineVisualizationFrame(at: point) != nil {
+            let menu = NSMenu()
+            for mode in InlineVisualizationMode.allCases {
+                let item = NSMenuItem(title: mode == .spectrum ? "Spectrum" : "Waveform", action: #selector(selectInlineVisualizationMode(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = mode.rawValue
+                item.state = visualizationFrames.inlineMode == mode ? .on : .off
+                menu.addItem(item)
+            }
+            menu.popUp(positioning: nil, at: point, in: self)
+            return
+        }
         let menu = NSMenu()
         addContextMenuItem("Open & Play…", tag: 0, to: menu)
         menu.addItem(.separator())
@@ -213,7 +226,25 @@ final class SkinRendererView: NSView {
         addContextMenuItem("Add from Streaming Service…", tag: 5, to: menu)
         menu.addItem(.separator())
         addContextMenuItem("Show Playlist", tag: 4, to: menu)
-        menu.popUp(positioning: nil, at: logical(convert(event.locationInWindow, from: nil)), in: self)
+        menu.popUp(positioning: nil, at: point, in: self)
+    }
+
+    @objc private func selectInlineVisualizationMode(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let mode = InlineVisualizationMode(rawValue: rawValue) else { return }
+        visualizationFrames.selectInlineMode(mode)
+        needsDisplay = true
+    }
+
+    private func inlineVisualizationFrame(at point: CGPoint) -> CGRect? {
+        if skinStore.activeCatalog.format == .classic {
+            let frame = CGRect(x: 24, y: 43, width: 72, height: 16)
+            return frame.contains(point) ? frame : nil
+        }
+        return skinStore.activeCatalog.contentRegions
+            .filter { $0.role == .visualization && isElementVisible($0.elementID, initiallyVisible: $0.initiallyVisible) }
+            .map(effectiveFrame(for:))
+            .first(where: { $0.contains(point) })
     }
 
     private func addContextMenuItem(_ title: String, tag: Int, to menu: NSMenu) {
@@ -635,6 +666,10 @@ final class SkinRendererView: NSView {
         }
         let bands = analysis.bands
         guard !bands.isEmpty else { return }
+        if visualizationFrames.inlineMode == .waveform {
+            drawWaveform(analysis.waveform, in: frame, color: NSColor.systemGreen)
+            return
+        }
         let barCount = max(8, min(32, Int(frame.width / 7)))
         let spacing = max(1, frame.width / CGFloat(barCount * 3))
         let barWidth = max(1, (frame.width - spacing * CGFloat(barCount + 1)) / CGFloat(barCount))
@@ -1018,6 +1053,12 @@ final class SkinRendererView: NSView {
             "NO PCM".draw(in: frame, withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 6, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor])
             return
         }
+        if visualizationFrames.inlineMode == .waveform {
+            let oscillator = palette?.oscillator.first
+            let color = oscillator.map(classicColor) ?? colors[0]
+            drawWaveform(analysis.waveform, in: frame, color: color)
+            return
+        }
         let barCount = 12
         let spacing = CGFloat(2)
         let barWidth = max(1, (frame.width - spacing * CGFloat(barCount + 1)) / CGFloat(barCount))
@@ -1027,7 +1068,32 @@ final class SkinRendererView: NSView {
             let height = frame.height * CGFloat(level)
             colors[index % max(1, colors.count)].setFill()
             CGRect(x: frame.minX + spacing + CGFloat(index) * (barWidth + spacing), y: frame.maxY - height, width: barWidth, height: height).fill()
+            if visualizationFrames.peakHoldBands.indices.contains(bandIndex),
+               visualizationFrames.peakHoldBands[bandIndex] > 0 {
+                let peakY = frame.maxY - CGFloat(visualizationFrames.peakHoldBands[bandIndex]) * frame.height
+                let peakColor = palette.map { classicColor($0.peakDots) } ?? colors[index % max(1, colors.count)]
+                peakColor.setFill()
+                CGRect(x: frame.minX + spacing + CGFloat(index) * (barWidth + spacing), y: peakY, width: barWidth, height: 1).fill()
+            }
         }
+    }
+
+    private func drawWaveform(_ samples: [Float], in frame: CGRect, color: NSColor) {
+        guard samples.count > 1 else { return }
+        let path = NSBezierPath()
+        path.lineWidth = 1
+        for (index, value) in samples.enumerated() {
+            let x = frame.minX + CGFloat(index) / CGFloat(samples.count - 1) * frame.width
+            let y = frame.midY - CGFloat(value) * frame.height * 0.45
+            if index == 0 { path.move(to: CGPoint(x: x, y: y)) }
+            else { path.line(to: CGPoint(x: x, y: y)) }
+        }
+        color.setStroke()
+        path.stroke()
+    }
+
+    private func classicColor(_ value: ClassicRGBColor) -> NSColor {
+        NSColor(calibratedRed: CGFloat(value.red) / 255, green: CGFloat(value.green) / 255, blue: CGFloat(value.blue) / 255, alpha: 1)
     }
 
     private func formatted(_ seconds: Double) -> String {

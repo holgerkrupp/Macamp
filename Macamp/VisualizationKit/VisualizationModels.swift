@@ -19,6 +19,28 @@ struct VisualizationAnalysisFrame: Equatable, Sendable {
     var pcm: [Float] = []
 }
 
+enum InlineVisualizationMode: String, CaseIterable, Sendable {
+    case spectrum
+    case waveform
+}
+
+struct PeakHoldEnvelope: Equatable, Sendable {
+    private(set) var values: [Float] = []
+
+    mutating func update(_ bands: [Float]?, decay: Float = 0.025) {
+        guard let bands, !bands.isEmpty else {
+            values = []
+            return
+        }
+        if values.count != bands.count { values = Array(repeating: 0, count: bands.count) }
+        let boundedDecay = decay.isFinite ? min(max(decay, 0), 1) : 0
+        for index in bands.indices {
+            let level = bands[index].isFinite ? min(max(bands[index], 0), 1) : 0
+            values[index] = max(level, max(0, values[index] - boundedDecay))
+        }
+    }
+}
+
 enum VisualizationAudioData: Sendable {
     case pcm(PCMFrame)
     case spectrum(SpectrumFrame)

@@ -972,13 +972,14 @@ private struct SkinPlaylistView: View {
 /// Winamp pixels and let WinampSkinWindowHost perform the screen conversion.
 @MainActor
 final class ClassicEqualizerSurface: NSView {
-    private enum SliderTarget { case preamp, band(Int) }
+    private enum SliderTarget: Equatable { case preamp, band(Int) }
     private let coordinator: PlaybackCoordinator
     private let skinStore: SkinLibraryStore
     weak var windowHost: WinampSkinWindowHost?
     var isActive = true
     private let bands = EqualizerBand.winamp10
     private var draggingSlider: SliderTarget?
+    private var selectedSlider: SliderTarget = .preamp
     private var dragThumbOffset: CGFloat = 0
 
     override var isFlipped: Bool { true }
@@ -989,8 +990,9 @@ final class ClassicEqualizerSurface: NSView {
         super.init(frame: CGRect(x: 0, y: 0, width: 275, height: 116))
         wantsLayer = true
         autoresizingMask = [.width, .height]
-        setAccessibilityRole(.group)
-        setAccessibilityLabel("Macamp Equalizer")
+        setAccessibilityRole(.slider)
+        updateSliderAccessibility()
+        setAccessibilityHelp("Use Left and Down to lower gain, Right and Up to raise it. Home and End set the minimum and maximum. Tab selects the next slider.")
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -1035,6 +1037,7 @@ final class ClassicEqualizerSurface: NSView {
             let gain = coordinator.audioEffectState.bandGains[band] ?? 0
             drawSliderThumb(gain: gain, at: CGPoint(x: 78 + CGFloat(index * 18), y: 38))
         }
+        drawKeyboardFocusRing()
         _ = drawSprite(asset: "eqmain.bmp", source: CGRect(x: 0, y: 294, width: 113, height: 19), in: CGRect(x: 86, y: 17, width: 113, height: 19))
         drawGraph()
         if !coordinator.audioEffectCapabilities.contains(.equalizerBands) {
@@ -1049,6 +1052,8 @@ final class ClassicEqualizerSurface: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        updateSliderAccessibility()
         let point = convert(event.locationInWindow, from: nil)
         if point.y < 14, point.x >= 264 { window?.close(); return }
         if point.y < 14, point.x >= 254 {
@@ -1115,7 +1120,30 @@ final class ClassicEqualizerSurface: NSView {
         needsDisplay = true
     }
 
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 48:
+            let position = selectedSliderPosition
+            let next = (position + (event.modifierFlags.contains(.shift) ? 10 : 1)) % 11
+            selectSlider(at: next)
+        case 123, 125:
+            adjustSelectedSlider(by: -1)
+        case 124, 126:
+            adjustSelectedSlider(by: 1)
+        case 115:
+            setSelectedSliderGain(-12)
+        case 119:
+            setSelectedSliderGain(12)
+        default:
+            super.keyDown(with: event)
+        }
+    }
+
     private func beginSliderDrag(_ target: SliderTarget, point: CGPoint) {
+        selectedSlider = target
+        updateSliderAccessibility()
         let thumbY: CGFloat
         switch target {
         case .preamp: thumbY = sliderY(for: coordinator.audioEffectState.preampGain)
@@ -1137,8 +1165,80 @@ final class ClassicEqualizerSurface: NSView {
             case .preamp: await coordinator.setPreampGain(Float(gain))
             case .band(let index): await coordinator.setEqualizerBand(index: index, gain: Float(gain))
             }
+            updateSliderAccessibility()
             needsDisplay = true
         }
+    }
+
+    private var selectedSliderPosition: Int {
+        switch selectedSlider {
+        case .preamp: 0
+        case .band(let index): index + 1
+        }
+    }
+
+    private func selectSlider(at position: Int) {
+        selectedSlider = position == 0 ? .preamp : .band(position - 1)
+        updateSliderAccessibility()
+        needsDisplay = true
+    }
+
+    private func adjustSelectedSlider(by amount: Float) {
+        guard coordinator.audioEffectCapabilities.contains(.equalizerBands) else { return }
+        setSelectedSliderGain(selectedSliderGain + amount)
+    }
+
+    private var selectedSliderGain: Float {
+        switch selectedSlider {
+        case .preamp: coordinator.audioEffectState.preampGain
+        case .band(let index): coordinator.audioEffectState.bandGains[bands[index]] ?? 0
+        }
+    }
+
+    private func setSelectedSliderGain(_ gain: Float) {
+        guard coordinator.audioEffectCapabilities.contains(.equalizerBands) else { return }
+        let value = min(max(gain, -12), 12)
+        Task { [weak self] in
+            guard let self else { return }
+            switch selectedSlider {
+            case .preamp: await coordinator.setPreampGain(value)
+            case .band(let index): await coordinator.setEqualizerBand(index: index, gain: value)
+            }
+            updateSliderAccessibility()
+            needsDisplay = true
+        }
+    }
+
+    private func updateSliderAccessibility() {
+        let sliderName: String
+        switch selectedSlider {
+        case .preamp: sliderName = "Preamp"
+        case .band(let index): sliderName = "\(Int(bands[index].centerFrequency)) Hz band"
+        }
+        setAccessibilityLabel("Equalizer \(sliderName)")
+        setAccessibilityValue(String(format: "%.1f dB", selectedSliderGain))
+        setAccessibilityHelp(coordinator.audioEffectCapabilities.contains(.equalizerBands)
+            ? "Use Left and Down to lower gain, Right and Up to raise it. Home and End set the minimum and maximum. Tab selects the next slider."
+            : (coordinator.audioEffectUnavailableReason ?? "Equalizer unavailable for this source."))
+    }
+
+    private func drawKeyboardFocusRing() {
+        guard window?.firstResponder === self else { return }
+        let x: CGFloat
+        let gain: Float
+        switch selectedSlider {
+        case .preamp:
+            x = 21
+            gain = coordinator.audioEffectState.preampGain
+        case .band(let index):
+            x = 78 + CGFloat(index * 18)
+            gain = coordinator.audioEffectState.bandGains[bands[index]] ?? 0
+        }
+        let rect = CGRect(x: x - 2, y: sliderY(for: gain) - 2, width: 15, height: 15)
+        NSColor.controlAccentColor.setStroke()
+        let ring = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
+        ring.lineWidth = 1
+        ring.stroke()
     }
 
     private func sliderY(for gain: Float) -> CGFloat {

@@ -23,17 +23,13 @@ enum BuiltInVisualization: String, CaseIterable, Identifiable, Sendable {
 final class VisualizationRenderView: NSView {
     private(set) var frameData: VisualizationAudioData = .silent
     var mode: BuiltInVisualization = .spectrum { didSet { needsDisplay = true } }
-    private var peaks = Array(repeating: Float.zero, count: 48)
+    private var peakHold = PeakHoldEnvelope()
+    var peakHoldBands: [Float] { peakHold.values }
     override var isFlipped: Bool { true }
 
     func update(_ data: VisualizationAudioData) {
         frameData = data
-        if let frame = data.analysisFrame {
-            if peaks.count != frame.bands.count { peaks = Array(repeating: 0, count: frame.bands.count) }
-            for index in frame.bands.indices { peaks[index] = max(frame.bands[index], peaks[index] - 0.025) }
-        } else {
-            peaks = Array(repeating: 0, count: peaks.count)
-        }
+        peakHold.update(data.analysisFrame?.bands)
         needsDisplay = true
     }
 
@@ -47,7 +43,7 @@ final class VisualizationRenderView: NSView {
         switch mode {
         case .spectrum: drawSpectrum(frame.bands, mirrored: false, peaks: false)
         case .mirroredSpectrum: drawSpectrum(frame.bands, mirrored: true, peaks: false)
-        case .classicPeakHold: drawSpectrum(frame.bands, mirrored: false, peaks: true)
+        case .classicPeakHold: drawSpectrum(frame.bands, peakBands: peakHold.values, mirrored: false, peaks: true)
         case .oscilloscope: drawWaveform(frame.waveform)
         case .radialSpectrum: drawRadial(frame.bands)
         case .starfield: drawStarfield(frame)
@@ -58,7 +54,7 @@ final class VisualizationRenderView: NSView {
         drawBadge()
     }
 
-    private func drawSpectrum(_ bands: [Float], mirrored: Bool, peaks showPeaks: Bool) {
+    private func drawSpectrum(_ bands: [Float], peakBands: [Float]? = nil, mirrored: Bool, peaks showPeaks: Bool) {
         let gap: CGFloat = 2
         let width = max(1, (bounds.width - CGFloat(bands.count - 1) * gap) / CGFloat(bands.count))
         for (index, value) in bands.enumerated() {
@@ -70,8 +66,8 @@ final class VisualizationRenderView: NSView {
                 CGRect(x: x, y: bounds.midY - height, width: width, height: height * 2).fill()
             } else {
                 CGRect(x: x, y: bounds.maxY - height, width: width, height: height).fill()
-                if showPeaks, peaks.indices.contains(index) {
-                    let y = bounds.maxY - CGFloat(peaks[index]) * bounds.height * 0.82
+                if showPeaks, let peakBands, peakBands.indices.contains(index) {
+                    let y = bounds.maxY - CGFloat(peakBands[index]) * bounds.height * 0.82
                     CGRect(x: x, y: y, width: width, height: 2).fill()
                 }
             }
@@ -159,11 +155,24 @@ final class VisualizationRenderView: NSView {
 @Observable
 final class VisualizationFrameStore {
     private(set) var data: VisualizationAudioData = .unavailable("This playback route does not expose PCM audio.")
+    private(set) var inlineMode: InlineVisualizationMode = .spectrum
+    private var peakHold = PeakHoldEnvelope()
+    var peakHoldBands: [Float] { peakHold.values }
     private var framesTask: Task<Void, Never>?
     private var routeTask: Task<Void, Never>?
 
-    func update(_ value: VisualizationAudioData) { data = value }
-    func unavailable(_ reason: String) { data = .unavailable(reason) }
+    func update(_ value: VisualizationAudioData) {
+        data = value
+        peakHold.update(value.analysisFrame?.bands)
+    }
+
+    func unavailable(_ reason: String) { update(.unavailable(reason)) }
+
+    func selectInlineMode(_ mode: InlineVisualizationMode) { inlineMode = mode }
+
+    func toggleInlineMode() {
+        inlineMode = inlineMode == .spectrum ? .waveform : .spectrum
+    }
 
     func start(source: LocalPCMAudioAnalysisSource, coordinator: PlaybackCoordinator) {
         guard framesTask == nil else { return }

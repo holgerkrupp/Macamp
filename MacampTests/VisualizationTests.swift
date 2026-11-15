@@ -45,6 +45,36 @@ struct VisualizationTests {
         #expect(frame.pcm == Array(samples.suffix(1_024)))
     }
 
+    @Test func classicPeakHoldConsumesAnalyzedPCMFramesAndClearsWhenUnavailable() {
+        let bands = [Float](arrayLiteral: 0.8, 0.25, 0.05)
+        let view = VisualizationRenderView(frame: CGRect(x: 0, y: 0, width: 120, height: 40))
+        view.mode = .classicPeakHold
+        view.update(.analysis(VisualizationAnalysisFrame(bands: bands, waveform: [0, 0.5, 0])))
+
+        #expect(view.peakHoldBands == bands)
+
+        view.update(.analysis(VisualizationAnalysisFrame(bands: [0.1, 0.1, 0.1], waveform: [0, 0, 0])))
+        #expect(abs(view.peakHoldBands[0] - 0.775) < 0.0001)
+        #expect(abs(view.peakHoldBands[1] - 0.225) < 0.0001)
+
+        view.update(.unavailable("Hosted audio does not expose PCM."))
+        #expect(view.peakHoldBands.isEmpty)
+    }
+
+    @Test func inlineVisualizationModeCanSwitchAndPeakHoldClearsOnSilence() {
+        let store = VisualizationFrameStore()
+        store.update(.analysis(VisualizationAnalysisFrame(bands: [0.5, 0.2], waveform: [0, 0.5, 0])))
+        #expect(store.peakHoldBands == [0.5, 0.2])
+
+        store.selectInlineMode(.waveform)
+        #expect(store.inlineMode == .waveform)
+        store.toggleInlineMode()
+        #expect(store.inlineMode == .spectrum)
+
+        store.update(.silent)
+        #expect(store.peakHoldBands.isEmpty)
+    }
+
     @Test func pcmAnalyzerPlacesTonesInExpectedLogBands() {
         let sampleCount = 2_048
         let frequencies: [(hertz: Double, expectedBand: Int)] = [
