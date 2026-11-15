@@ -145,15 +145,16 @@ struct LocalMediaView: View {
                 Button("Add Folder…") { importFolder() }.buttonStyle(.borderedProminent)
             }.padding(24)
 
-            if dependencies.localMedia.libraryItems.isEmpty {
-                ContentUnavailableView(
-                    "No local media",
-                    systemImage: "internaldrive",
-                    description: Text("Choose audio, video, a playlist, or a folder containing your media.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
+            List {
+                AudioCDSection(dependencies: dependencies)
+                if dependencies.localMedia.libraryItems.isEmpty {
+                    ContentUnavailableView(
+                        "No local media",
+                        systemImage: "internaldrive",
+                        description: Text("Choose audio, video, a playlist, or a folder containing your media.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
                     Section("\(dependencies.localMedia.libraryItems.count) Items") {
                         ForEach(dependencies.localMedia.libraryItems) { item in
                             TrackRow(
@@ -174,10 +175,16 @@ struct LocalMediaView: View {
                             }
                         }
                     }
-                }
+                    }
             }
         }
         .navigationTitle("Local Files")
+        .task {
+            while !Task.isCancelled {
+                dependencies.audioCD.refresh()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
         .task { await dependencies.localMedia.restoreLibrary() }
         .dropDestination(for: URL.self) { urls, _ in
             Task { await dependencies.importLocalMedia(urls) }
@@ -203,6 +210,108 @@ struct LocalMediaView: View {
         let urls = LocalMediaImportPanel.chooseFolder()
         guard !urls.isEmpty else { return }
         Task { await dependencies.importLocalMedia(urls) }
+    }
+}
+
+private struct AudioCDSection: View {
+    let dependencies: DependencyContainer
+    @State private var selectedTrackIDs: Set<String> = []
+    @State private var ripFormat: AudioCDRipFormat = .m4a
+    @State private var operationMessage: String?
+
+    private var manager: AudioCDManager { dependencies.audioCD }
+    private var selectedTracks: [AudioCDTrack] { manager.tracks.filter { selectedTrackIDs.contains($0.id) } }
+
+    var body: some View {
+        Section {
+            if manager.tracks.isEmpty {
+                Text(manager.statusMessage).font(.caption).foregroundStyle(.secondary)
+                Button("Choose Mounted Disc…") { manager.chooseDisc() }
+            } else {
+                ForEach(manager.tracks) { track in
+                    Toggle(isOn: selection(for: track)) {
+                        HStack {
+                            Text(track.title)
+                            Spacer()
+                            Text(duration(track.duration)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                    .disabled(manager.isRipping)
+                }
+                HStack {
+                    Button("Play Selected") { queueSelected(playFirst: true) }.disabled(selectedTracks.isEmpty || manager.isRipping)
+                    Button("Add to Queue") { queueSelected(playFirst: false) }.disabled(selectedTracks.isEmpty || manager.isRipping)
+                    Picker("Format", selection: $ripFormat) {
+                        ForEach(AudioCDRipFormat.allCases) { format in Text(format.title).tag(format) }
+                    }
+                    .frame(width: 96)
+                    Button("Rip…") { ripSelected() }.disabled(selectedTracks.isEmpty || manager.isRipping)
+                }
+                if manager.isRipping {
+                    HStack {
+                        ProgressView(value: manager.ripProgress)
+                        Text(manager.ripDescription).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Button("Cancel") { manager.cancelRip() }
+                    }
+                } else if let operationMessage {
+                    Text(operationMessage).font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text(manager.statusMessage).font(.caption).foregroundStyle(.secondary)
+                }
+                Button("Choose Different Disc…") { manager.chooseDisc() }.font(.caption)
+            }
+        } header: {
+            Label("Audio CD", systemImage: "opticaldisc")
+        }
+        .onChange(of: manager.tracks.first?.discID) { _, _ in
+            selectedTrackIDs.removeAll()
+            operationMessage = nil
+        }
+    }
+
+    private func selection(for track: AudioCDTrack) -> Binding<Bool> {
+        Binding(
+            get: { selectedTrackIDs.contains(track.id) },
+            set: { isSelected in
+                if isSelected { selectedTrackIDs.insert(track.id) }
+                else { selectedTrackIDs.remove(track.id) }
+            }
+        )
+    }
+
+    private func queueSelected(playFirst: Bool) {
+        let tracks = selectedTracks
+        guard !tracks.isEmpty else { return }
+        Task {
+            let report = await dependencies.localMedia.importQueueItems(from: tracks.map(\.url))
+            guard !report.items.isEmpty else {
+                operationMessage = report.warnings.first ?? "No selected tracks could be read."
+                return
+            }
+            let added = await dependencies.playback.addQueueItems(report.items, placement: .append, to: .localMedia)
+            operationMessage = added ? "Added \(report.items.count) track\(report.items.count == 1 ? "" : "s") to the shared playlist." : "Could not add the tracks to the playlist."
+            if playFirst, added { await dependencies.playback.play(item: report.items[0]) }
+        }
+    }
+
+    private func ripSelected() {
+        let tracks = selectedTracks
+        guard !tracks.isEmpty, let folder = manager.chooseDestinationFolder() else { return }
+        Task {
+            let files = await manager.rip(tracks, to: folder, format: ripFormat)
+            if !files.isEmpty {
+                let items = await dependencies.localMedia.importURLs(files)
+                operationMessage = "Extracted and added \(items.count) track\(items.count == 1 ? "" : "s") to Local Files."
+            } else {
+                operationMessage = manager.ripDescription
+            }
+        }
+    }
+
+    private func duration(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
 

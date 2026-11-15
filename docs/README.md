@@ -12,6 +12,7 @@ Use the instructions in the project’s agent file for precedence. Read only the
 Links below are a navigation inventory, not a statement that every document is current. Check dates, status, and evidence; prefer a current successor when one exists.
 
 - [Documentation/Architecture.md](../Documentation/Architecture.md)
+- [Documentation/AudioCD.md](../Documentation/AudioCD.md)
 - [Documentation/ProviderIntegration.md](../Documentation/ProviderIntegration.md)
 - [Documentation/SecurityAndPrivacy.md](../Documentation/SecurityAndPrivacy.md)
 - [Documentation/SkinCompatibility.md](../Documentation/SkinCompatibility.md)
