@@ -253,6 +253,8 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
     private let docking = WindowDockingController()
     private var customMilkDropPresets: [MilkDropPreset] = []
     private var presetImportWarnings: [String] = []
+    private var milkDropTextureRevision = 0
+    private var milkDropTexturePayloadCache: [String: String] = [:]
     private var framesTask: Task<Void, Never>?
     private var routeTask: Task<Void, Never>?
     private var presetCycleTask: Task<Void, Never>?
@@ -345,6 +347,23 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
         settings.selectedMilkDropPreset = MilkDropView.presets.count
         select(.milkDrop)
         show()
+    }
+
+    func importMilkDropTextures() {
+        let panel = NSOpenPanel()
+        panel.title = "Import MilkDrop Textures"
+        panel.allowedContentTypes = [.png, .jpeg]
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        let result = presetStore.importTextures(panel.urls)
+        let all = presetStore.allPresets()
+        presetImportWarnings = result.warnings + all.warnings
+        if !result.names.isEmpty {
+            milkDropTextureRevision += 1
+            milkDropTexturePayloadCache.removeAll()
+        }
     }
 
     func previousMilkDropPreset() { stepMilkDropPreset(by: -1) }
@@ -495,10 +514,26 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
         milkDrop?.webView.isHidden = false
         let preset = settings.selectedMilkDropPreset
         let index = (0..<MilkDropView.presets.count + customMilkDropPresets.count).contains(preset) ? preset : 0
-        let customJSON = customMilkDropPresets.indices.contains(index - MilkDropView.presets.count)
-            ? customMilkDropPresets[index - MilkDropView.presets.count].rendererJSON
+        let customPreset = customMilkDropPresets.indices.contains(index - MilkDropView.presets.count)
+            ? customMilkDropPresets[index - MilkDropView.presets.count]
             : nil
-        milkDrop?.render(samples: samples, presetIndex: index, customPresetJSON: customJSON)
+        let customJSON = customPreset?.rendererJSON
+        let presetKey: String
+        let textureJSON: String?
+        if let customPreset {
+            presetKey = "custom:\(customPreset.id):\(milkDropTextureRevision)"
+            if let cached = milkDropTexturePayloadCache[customPreset.id] {
+                textureJSON = cached
+            } else {
+                let payload = presetStore.texturePayload(for: customPreset.textureNames)
+                milkDropTexturePayloadCache[customPreset.id] = payload
+                textureJSON = payload
+            }
+        } else {
+            presetKey = "builtin:\(index):\(milkDropTextureRevision)"
+            textureJSON = nil
+        }
+        milkDrop?.render(samples: samples, presetIndex: index, customPresetJSON: customJSON, presetKey: presetKey, customTextureJSON: textureJSON)
     }
 
     private func stopMilkDrop() {

@@ -501,6 +501,7 @@ struct VisualizationPickerView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         Button("Import .milk…") { dependencies.visualizations.importMilkDropPresets() }
+                        Button("Import Textures…") { dependencies.visualizations.importMilkDropTextures() }
                         Picker("Preset", selection: Binding(
                             get: { min(dependencies.settings.selectedMilkDropPreset, max(0, dependencies.visualizations.milkDropPresetTitles.count - 1)) },
                             set: { dependencies.visualizations.selectMilkDropPreset(at: $0) }

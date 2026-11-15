@@ -1,5 +1,7 @@
 import Foundation
+import ImageIO
 import Testing
+import UniformTypeIdentifiers
 @testable import Macamp
 
 @Suite
@@ -111,22 +113,42 @@ struct VisualizationTests {
         #expect(restored.warnings.isEmpty)
     }
 
-    @Test func milkDropPresetStoreReportsUnsupportedCustomShaders() throws {
+    @Test func milkDropImportsCustomShaderAndNamedTexture() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampMilkDropShader-\(UUID().uuidString)", isDirectory: true)
         let sourceDirectory = root.appendingPathComponent("source", isDirectory: true)
         let storeDirectory = root.appendingPathComponent("stored", isDirectory: true)
         let source = sourceDirectory.appendingPathComponent("Shader.milk")
         try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try "[preset00]\nzoom=1.0\nwarp_1=`sampler sampler_custom;\nwarp_2=`ret=tex2D(sampler_custom,uv);\n".write(to: source, atomically: true, encoding: .utf8)
+        try "[preset00]\nzoom=1.0\nwarp_1=`sampler sampler_custom;\nwarp_2=`shader_body\nwarp_3=`{\nwarp_4=`ret = tex2D(sampler_custom, uv).xyz;\nwarp_5=`}\n".write(to: source, atomically: true, encoding: .utf8)
         let store = MilkDropPresetStore(directory: storeDirectory)
+        let context = CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        context?.setFillColor(red: 0.5, green: 0.1, blue: 0.7, alpha: 1)
+        context?.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+        let png = NSMutableData()
+        let image = try #require(context?.makeImage())
+        let imageDestination = try #require(CGImageDestinationCreateWithData(png, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(imageDestination, image, nil)
+        #expect(CGImageDestinationFinalize(imageDestination))
+        let textureURL = sourceDirectory.appendingPathComponent("custom.png")
+        try (png as Data).write(to: textureURL)
 
         let imported = store.importFiles([source])
+        let textures = store.importTextures([textureURL])
         let restored = store.allPresets()
+        let importedPreset = try #require(imported.presets.first)
+        let presetData = Data(importedPreset.rendererJSON.utf8)
+        let presetObject = try #require(JSONSerialization.jsonObject(with: presetData) as? [String: Any])
 
         #expect(imported.presets.count == 1)
-        #expect(restored.warnings.contains { $0.localizedCaseInsensitiveContains("custom warp/composite shader") })
-        #expect(restored.warnings.contains { $0.localizedCaseInsensitiveContains("external texture references") })
+        #expect(imported.presets[0].textureNames == ["custom"])
+        #expect((presetObject["warp"] as? String)?.contains("uniform sampler2D sampler_custom;") == true)
+        #expect((presetObject["warp"] as? String)?.contains("texture(sampler_custom, uv)") == true)
+        #expect(textures.names == ["custom"])
+        let texturePayload = try #require(JSONSerialization.jsonObject(with: Data(store.texturePayload(for: ["custom"]).utf8)) as? [String: [String: Any]])
+        #expect((texturePayload["custom"]?["data"] as? String)?.hasPrefix("data:image/png;base64,") == true)
+        #expect(restored.warnings.isEmpty)
     }
 
     @Test func pcmAnalyzerReturnsSafeSilence() {

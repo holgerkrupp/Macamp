@@ -1,10 +1,12 @@
 import Foundation
+import ImageIO
 
 struct MilkDropPreset: Equatable, Sendable, Identifiable {
     let id: String
     let title: String
     let rendererJSON: String
     let unsupportedFeatures: [String]
+    let textureNames: [String]
 }
 
 enum MilkDropPresetError: Error, LocalizedError {
@@ -57,7 +59,9 @@ enum MilkDropPresetParser {
         "r2": "r2", "g2": "g2", "b2": "b2", "a2": "a2", "border_r": "border_r",
         "border_g": "border_g", "border_b": "border_b", "border_a": "border_a"
     ]
+    private static let shaderPattern = try! NSRegularExpression(pattern: #"^(warp|comp)_(\d+)$"#)
     private static let forbiddenTokens = ["window", "document", "globalthis", "fetch", "eval", "function", "constructor", "prototype", "webkit"]
+    private static let hlslTypes: [(String, String)] = [("float2", "vec2"), ("float3", "vec3"), ("float4", "vec4"), ("half2", "vec2"), ("half3", "vec3"), ("half4", "vec4")]
 
     static func parse(data: Data, fileName: String) throws -> MilkDropPreset {
         guard data.count <= 2 * 1_024 * 1_024 else { throw MilkDropPresetError.tooLarge }
@@ -81,7 +85,8 @@ enum MilkDropPresetParser {
         var shapeValues: [Int: [String: Double]] = [:]
         var shapeInitEquations: [Int: [(Int, String)]] = [:]
         var shapeFrameEquations: [Int: [(Int, String)]] = [:]
-        var hasCustomShader = false
+        var warpShaderChunks: [(Int, String)] = []
+        var compShaderChunks: [(Int, String)] = []
 
         for rawLine in lines {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -97,8 +102,13 @@ enum MilkDropPresetParser {
             let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespaces)
             let keyRange = NSRange(key.startIndex..., in: key)
 
-            if key.range(of: #"^(warp|comp)_\d+$"#, options: .regularExpression) != nil {
-                hasCustomShader = true
+            if let match = shaderPattern.firstMatch(in: key, range: keyRange),
+               let index = int(match, 2, in: key), (1...512).contains(index) {
+                var chunk = String(value)
+                if chunk.first == "`" { chunk.removeFirst() }
+                if capture(match, 1, in: key) == "warp" { warpShaderChunks.append((index, chunk)) }
+                else { compShaderChunks.append((index, chunk)) }
+                continue
             }
 
             if let match = initPattern.firstMatch(in: key, range: keyRange), let number = int(match, 1, in: key) {
@@ -150,24 +160,77 @@ enum MilkDropPresetParser {
                 "frame_eqs_str": sorted(shapeFrameEquations[index] ?? [])
             ]
         }
+        var unsupportedFeatures: [String] = []
+        var textureNames: [String] = []
+        let warp = translateShader(warpShaderChunks, stage: "warp", textureNames: &textureNames, warnings: &unsupportedFeatures)
+        let comp = translateShader(compShaderChunks, stage: "composite", textureNames: &textureNames, warnings: &unsupportedFeatures)
         let rendererObject: [String: Any] = [
             "baseVals": baseValues,
             "init_eqs_str": sorted(initEquations),
             "frame_eqs_str": sorted(frameEquations),
             "pixel_eqs_str": sorted(pixelEquations),
-            "warp": "", "comp": "", "waves": waves, "shapes": shapes
+            "warp": warp ?? "", "comp": comp ?? "", "waves": waves, "shapes": shapes
         ]
         let json = try JSONSerialization.data(withJSONObject: rendererObject, options: [.sortedKeys])
         let name = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
-        let unsupportedFeatures = hasCustomShader
-            ? ["Custom warp/composite shader blocks and their external texture references are not supported; the preset uses Butterchurn's standard feedback shader."]
-            : []
         return MilkDropPreset(
             id: UUID().uuidString,
             title: name.isEmpty ? "MilkDrop Preset" : name,
             rendererJSON: String(decoding: json, as: UTF8.self),
-            unsupportedFeatures: unsupportedFeatures
+            unsupportedFeatures: unsupportedFeatures,
+            textureNames: Array(Set(textureNames)).sorted()
         )
+    }
+
+    private static func translateShader(_ chunks: [(Int, String)], stage: String, textureNames: inout [String], warnings: inout [String]) -> String? {
+        guard !chunks.isEmpty else { return "" }
+        let source = chunks.sorted { $0.0 < $1.0 }.map(\.1).joined(separator: "\n")
+        let hasUnsupportedControlFlow = source.range(of: #"\b(for|while|do|discard|include|define)\b"#, options: .regularExpression) != nil
+        guard source.utf8.count <= 32_768, !hasUnsupportedControlFlow else {
+            warnings.append("The custom \(stage) shader uses code outside Macamp's supported shader subset; that shader stage was skipped.")
+            return nil
+        }
+        let lowered = source.lowercased()
+        guard lowered.contains("shader_body"), lowered.contains("{") && lowered.contains("}") else {
+            warnings.append("The custom \(stage) shader is malformed or unsupported; that shader stage was skipped.")
+            return nil
+        }
+
+        let samplerRegex = try! NSRegularExpression(pattern: #"\bsampler\s+(sampler_[A-Za-z0-9_]+)\s*;"#)
+        let nsSource = source as NSString
+        var samplers: [String] = []
+        for match in samplerRegex.matches(in: source, range: NSRange(location: 0, length: nsSource.length)) {
+            let name = nsSource.substring(with: match.range(at: 1))
+            samplers.append(name)
+        }
+        let builtInTextures: Set<String> = ["sampler_main", "sampler_fw_main", "sampler_fc_main", "sampler_pw_main", "sampler_pc_main", "sampler_blur1", "sampler_blur2", "sampler_blur3", "sampler_noise_lq", "sampler_noise_lq_lite", "sampler_noise_mq", "sampler_noise_hq", "sampler_pw_noise_lq", "sampler_noisevol_lq", "sampler_noisevol_hq"]
+        textureNames.append(contentsOf: samplers.filter { !builtInTextures.contains($0) }.map { String($0.dropFirst("sampler_".count)).lowercased() })
+
+        var translated = replace(source, pattern: #"\bsampler\s+(sampler_[A-Za-z0-9_]+)\s*;"#, with: "uniform sampler2D $1;")
+        for (from, to) in hlslTypes {
+            translated = replace(translated, pattern: #"\b"# + from + #"\b"#, with: to)
+        }
+        translated = replace(translated, pattern: #"\btex2D\b"#, with: "texture", options: [.caseInsensitive])
+        translated = replace(translated, pattern: #"\blerp\b"#, with: "mix", options: [.caseInsensitive])
+        let helpers = """
+        float saturate(float x) { return clamp(x, 0.0, 1.0); }
+        vec2 saturate(vec2 x) { return clamp(x, vec2(0.0), vec2(1.0)); }
+        vec3 saturate(vec3 x) { return clamp(x, vec3(0.0), vec3(1.0)); }
+        vec4 saturate(vec4 x) { return clamp(x, vec4(0.0), vec4(1.0)); }
+        float lum(vec3 x) { return dot(x, vec3(0.32, 0.49, 0.29)); }
+        vec3 GetBlur1(vec2 p) { return texture(sampler_blur1, p).xyz * scale1 + bias1; }
+        vec3 GetBlur2(vec2 p) { return texture(sampler_blur2, p).xyz * scale2 + bias2; }
+        vec3 GetBlur3(vec2 p) { return texture(sampler_blur3, p).xyz * scale3 + bias3; }
+        vec3 GetPixel(vec2 p) { return texture(sampler_main, p).xyz; }
+        """
+        guard let body = translated.range(of: "shader_body") else { return nil }
+        translated.insert(contentsOf: helpers, at: body.lowerBound)
+        return translated
+    }
+
+    private static func replace(_ source: String, pattern: String, with replacement: String, options: NSRegularExpression.Options = []) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return source }
+        return regex.stringByReplacingMatches(in: source, range: NSRange(source.startIndex..., in: source), withTemplate: replacement)
     }
 
     private static func appendEquation(_ value: String, _ index: Int, to values: inout [(Int, String)]) throws {
@@ -198,6 +261,8 @@ enum MilkDropPresetParser {
 @MainActor
 final class MilkDropPresetStore {
     private let directory: URL
+    private var textureDirectory: URL { directory.deletingLastPathComponent().appendingPathComponent("MilkDropTextures", isDirectory: true) }
+    private static let textureExtensions: Set<String> = ["png", "jpg", "jpeg"]
 
     init(directory: URL? = nil) {
         let base = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -251,6 +316,69 @@ final class MilkDropPresetStore {
         return (imported, warnings)
     }
 
+    func importTextures(_ urls: [URL]) -> (names: Set<String>, warnings: [String]) {
+        guard urls.count <= 100 else { return ([], ["Choose up to 100 MilkDrop textures at a time."]) }
+        do { try FileManager.default.createDirectory(at: textureDirectory, withIntermediateDirectories: true) }
+        catch { return ([], ["Could not create the MilkDrop texture folder: \(error.localizedDescription)"]) }
+
+        var imported: Set<String> = []
+        var warnings: [String] = []
+        var totalBytes = 0
+        for url in urls {
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let ext = url.pathExtension.lowercased()
+                guard Self.textureExtensions.contains(ext) else { throw MilkDropTextureError.unsupportedFormat }
+                let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                guard data.count > 0, data.count <= 10 * 1_024 * 1_024,
+                      totalBytes + data.count <= 50 * 1_024 * 1_024,
+                      let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
+                      let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
+                      let width = properties[kCGImagePropertyPixelWidth] as? Int,
+                      let height = properties[kCGImagePropertyPixelHeight] as? Int,
+                      width > 0, height > 0, width <= 4_096, height <= 4_096,
+                      CGImageSourceCreateImageAtIndex(imageSource, 0, nil) != nil else {
+                    throw MilkDropTextureError.invalidImage
+                }
+                var name = url.deletingPathExtension().lastPathComponent.lowercased()
+                if name.hasPrefix("sampler_") { name.removeFirst("sampler_".count) }
+                name = String(name.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") })
+                guard !name.isEmpty else { throw MilkDropTextureError.invalidName }
+                let target = textureDirectory.appendingPathComponent(name).appendingPathExtension(ext)
+                for existingExt in Self.textureExtensions where existingExt != ext {
+                    try? FileManager.default.removeItem(at: textureDirectory.appendingPathComponent(name).appendingPathExtension(existingExt))
+                }
+                try data.write(to: target, options: .atomic)
+                totalBytes += data.count
+                imported.insert(name)
+            } catch {
+                warnings.append("Could not import texture \(url.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+        return (imported, warnings)
+    }
+
+    func texturePayload(for names: [String]) -> String {
+        var payload: [String: [String: Any]] = [:]
+        for name in Set(names.map { $0.lowercased() }) {
+            guard let file = Self.textureExtensions.compactMap({ ext -> URL? in
+                let url = textureDirectory.appendingPathComponent(name).appendingPathExtension(ext)
+                return FileManager.default.fileExists(atPath: url.path) ? url : nil
+            }).first,
+            let data = try? Data(contentsOf: file) else { continue }
+            let mime = file.pathExtension.lowercased() == "png" ? "image/png" : "image/jpeg"
+            payload[name] = ["data": "data:\(mime);base64,\(data.base64EncodedString())", "width": 1, "height": 1]
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else { return "{}" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private func availableTextureNames() -> Set<String> {
+        let files = (try? FileManager.default.contentsOfDirectory(at: textureDirectory, includingPropertiesForKeys: nil)) ?? []
+        return Set(files.filter { Self.textureExtensions.contains($0.pathExtension.lowercased()) }.map { $0.deletingPathExtension().lastPathComponent.lowercased() })
+    }
+
     func allPresets() -> (presets: [MilkDropPreset], warnings: [String]) {
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: directory,
@@ -269,14 +397,31 @@ final class MilkDropPresetStore {
                     id: url.deletingPathExtension().lastPathComponent,
                     title: preset.title,
                     rendererJSON: preset.rendererJSON,
-                    unsupportedFeatures: preset.unsupportedFeatures
+                    unsupportedFeatures: preset.unsupportedFeatures,
+                    textureNames: preset.textureNames
                 )
                 presets.append(preset)
                 warnings.append(contentsOf: preset.unsupportedFeatures.map { "\(preset.title): \($0)" })
+                let missingTextures = Set(preset.textureNames).subtracting(availableTextureNames()).sorted()
+                warnings.append(contentsOf: missingTextures.map { "\(preset.title): texture '\($0)' is missing; Butterchurn will use its fallback image." })
             } catch {
                 warnings.append("Skipped invalid preset \(url.lastPathComponent): \(error.localizedDescription)")
             }
         }
         return (presets.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }, warnings)
+    }
+}
+
+private enum MilkDropTextureError: LocalizedError {
+    case unsupportedFormat
+    case invalidImage
+    case invalidName
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedFormat: "Choose a PNG or JPEG texture."
+        case .invalidImage: "The texture is invalid, too large, or has unsupported dimensions."
+        case .invalidName: "The texture filename must contain letters, numbers, or underscores."
+        }
     }
 }

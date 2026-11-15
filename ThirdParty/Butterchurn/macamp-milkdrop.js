@@ -10,10 +10,30 @@
     const audio = new Uint8Array(1024);
     const audioLevels = { timeByteArray: audio, timeByteArrayL: audio, timeByteArrayR: audio };
     let visualizer;
-    let selectedPreset = -1;
+    let selectedPresetKey = "";
+
+    function fixImageTextureUpload() {
+        const imageTextures = visualizer.renderer.image;
+        const gl = visualizer.renderer.gl;
+        imageTextures.bindTexture = function (texture, image) {
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+            gl.generateMipmap(gl.TEXTURE_2D);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            if (imageTextures.anisoExt) {
+                const ext = imageTextures.anisoExt;
+                gl.texParameterf(gl.TEXTURE_2D, ext.TEXTURE_MAX_ANISOTROPY_EXT,
+                    gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT));
+            }
+        };
+    }
 
     // Swift supplies decoded, post-EQ mono PCM. This path needs no Web Audio output or input.
-    window.renderMacampMilkDrop = async (samples, presetIndex, customPresetJSON) => {
+    window.renderMacampMilkDrop = async (samples, presetIndex, customPresetJSON, presetKey, customTextureJSON) => {
         const scale = Math.min(window.devicePixelRatio || 1, 2);
         const width = Math.max(1, Math.min(2560, Math.round(canvas.clientWidth * scale)));
         const height = Math.max(1, Math.min(1440, Math.round(canvas.clientHeight * scale)));
@@ -21,12 +41,15 @@
             canvas.width = width;
             canvas.height = height;
             visualizer = window.butterchurn.createVisualizer(null, canvas, { width, height, pixelRatio: 1 });
+            fixImageTextureUpload();
         } else if (canvas.width !== width || canvas.height !== height) {
             canvas.width = width;
             canvas.height = height;
             visualizer.setRendererSize(width, height);
         }
-        if (selectedPreset !== presetIndex) {
+        if (selectedPresetKey !== presetKey) {
+            const textures = customTextureJSON ? JSON.parse(customTextureJSON) : {};
+            if (Object.keys(textures).length > 0) visualizer.loadExtraImages(textures);
             const preset = presetIndex < builtInPresets.length
                 ? {
                     baseVals: { ...builtInPresets[presetIndex], wave_a: 0.9, wave_scale: 1.2 },
@@ -40,7 +63,7 @@
                 }
                 : JSON.parse(customPresetJSON);
             await visualizer.loadPreset(preset, 0);
-            selectedPreset = presetIndex;
+            selectedPresetKey = presetKey;
         }
         audio.fill(128);
         const count = Math.min(samples.length, audio.length);
