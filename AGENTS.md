@@ -70,3 +70,11 @@ Respect any explicit, narrower project requirement that applies to the task. Do 
 - Never hide limitations, invent verification results, or compromise essential user-data protection.
 
 **Guiding principle: Good enough, reliable, understandable, and shipped is usually better than theoretically perfect but excessively complex.**
+
+## Documentation authority and navigation
+
+- Start with the [documentation index](docs/README.md) and read only the guidance relevant to the task. For interface work use [hig.md](hig.md); for App Intents and related system integrations use [agentic.md](agentic.md). Neither file establishes that an optional platform or feature is supported.
+- Treat source code, tests, and actual targets/build settings as evidence of current behavior and configuration. The README describes intended product and platform scope; investigate and explicitly report discrepancies rather than assuming either is current.
+- Follow applicable agent instructions and the user's current request for mandatory rules and scope. A current issue describes requested or proposed work, not proof it is implemented. Resolve conflicting requirements explicitly; do not silently override safety or project constraints.
+- Platform and integration guides apply only where relevant and supported. Decision records, audits, spikes, and dated notes may describe historical or proposed states; check their status, date, source evidence, and any successor before relying on them. Never claim a capability or device validation based on documentation alone.
+- Keep each topic's reusable guidance in its owning file; link to it rather than copying checklists. Record material documentation conflicts, verification performed, and remaining limitations.

@@ -1610,6 +1610,31 @@ struct SkinTests {
         }
     }
 
+    @Test @MainActor func hiddenDockMemberDoesNotBridgeVisibleWindowGroups() {
+        let main = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 116), scale: 1)
+        let playlist = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 232), scale: 1)
+        let equalizer = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 275, height: 116), scale: 1)
+        main.setLogicalFrame(CGRect(x: 100, y: 80, width: 275, height: 116))
+        playlist.setLogicalFrame(CGRect(x: 375, y: 80, width: 275, height: 232))
+        equalizer.setLogicalFrame(CGRect(x: 650, y: 80, width: 275, height: 116))
+        let group = WinampSkinWindowGroup()
+        [main, playlist, equalizer].forEach(group.add)
+        group.dock(main, to: playlist)
+        group.dock(playlist, to: equalizer)
+
+        // Hiding the Playlist removes its attachment edges, so it cannot
+        // silently bridge the Main and EQ windows into one moving cluster.
+        group.undock(playlist)
+        let playlistOrigin = playlist.window.frame.origin
+        let equalizerOrigin = equalizer.window.frame.origin
+        main.window.setFrameOrigin(CGPoint(x: main.window.frame.minX + 20, y: main.window.frame.minY + 15))
+        main.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: main.window))
+
+        #expect(playlist.window.frame.origin == playlistOrigin)
+        #expect(equalizer.window.frame.origin == equalizerOrigin)
+        #expect(group.dockedPairs.isEmpty)
+    }
+
     @Test @MainActor func skinWindowHostSnapsToVisibleScreenEdgesInDisplayCoordinates() {
         let host = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 100, height: 40), scale: 2)
         host.screenSnapDistance = 12

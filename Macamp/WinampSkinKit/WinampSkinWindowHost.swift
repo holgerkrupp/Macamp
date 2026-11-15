@@ -510,7 +510,7 @@ final class WinampSkinWindowGroup {
     private func tryAutoDock(_ host: WinampSkinWindowHost) {
         let hostID = ObjectIdentifier(host)
         guard members[hostID] != nil,
-              let other = members.values.compactMap(\.host).first(where: { $0 !== host && shouldDock(host, to: $0) }) else { return }
+              let other = members.values.compactMap(\.host).first(where: { $0 !== host && $0.window.isVisible && shouldDock(host, to: $0) }) else { return }
         let frame = host.window.frame
         let otherFrame = other.window.frame
         var snapped = frame

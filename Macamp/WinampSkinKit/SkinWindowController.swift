@@ -75,7 +75,10 @@ final class SkinWindowController: NSWindowController {
 
     func toggle() {
         guard let window else { return }
-        if window.isVisible { window.orderOut(nil) } else { show() }
+        if window.isVisible {
+            auxiliaryWindows.mainWindowWillHide()
+            window.orderOut(nil)
+        } else { show() }
     }
 
     func showPlaylist() { auxiliaryWindows.showPlaylist() }
@@ -117,6 +120,7 @@ private final class SkinAuxiliaryWindowController: NSObject {
     private var playlistHost: WinampSkinWindowHost?
     private var equalizerHost: WinampSkinWindowHost?
     private var unifiedPlaylistWindow: NSWindow?
+    private weak var mainHost: WinampSkinWindowHost?
     private let docking = WindowDockingController()
     private let windowGroup = WinampSkinWindowGroup()
 
@@ -137,6 +141,7 @@ private final class SkinAuxiliaryWindowController: NSObject {
     }
 
     func attachMainHost(_ host: WinampSkinWindowHost) {
+        mainHost = host
         windowGroup.add(host)
         if let playlistHost { windowGroup.add(playlistHost) }
         if let equalizerHost { windowGroup.add(equalizerHost) }
@@ -146,9 +151,15 @@ private final class SkinAuxiliaryWindowController: NSObject {
     /// Classic auxiliary hosts left over from the previous skin would have no
     /// matching bitmap surface and appear as opaque black rectangles.
     func hideClassicAuxiliaryWindows() {
+        if let playlistHost { windowGroup.undock(playlistHost) }
+        if let equalizerHost { windowGroup.undock(equalizerHost) }
         playlistHost?.window.orderOut(nil)
         equalizerHost?.window.orderOut(nil)
         unifiedPlaylistWindow?.orderOut(nil)
+    }
+
+    func mainWindowWillHide() {
+        if let mainHost { windowGroup.undock(mainHost) }
     }
 
     func togglePlaylist() {
@@ -159,6 +170,7 @@ private final class SkinAuxiliaryWindowController: NSObject {
             return
         }
         if let playlistHost, playlistHost.window.isVisible {
+            windowGroup.undock(playlistHost)
             playlistHost.window.orderOut(nil)
             return
         }
@@ -240,6 +252,7 @@ private final class SkinAuxiliaryWindowController: NSObject {
 
     func toggleEqualizer() {
         if let equalizerHost, equalizerHost.window.isVisible {
+            windowGroup.undock(equalizerHost)
             equalizerHost.window.orderOut(nil)
             return
         }
