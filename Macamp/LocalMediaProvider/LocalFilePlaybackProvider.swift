@@ -429,7 +429,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
             player.replaceCurrentItem(with: AVPlayerItem(url: url))
         }
         state.currentItem = item
-        if let file = audioFile {
+        if let file = audioFile, item.sourceStartSeconds == nil, item.sourceEndSeconds == nil {
             state.duration = .seconds(Double(file.length) / file.processingFormat.sampleRate)
         } else {
             state.duration = item.duration
@@ -457,20 +457,23 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
             guard let persistedURL = persistedItem.sourceURL else { return false }
             return URL(string: item.providerItemID)?.standardizedFileURL == persistedURL.standardizedFileURL
         }
-        if let candidate {
+        if let candidate, persistedItem.sourceStartSeconds == nil, persistedItem.sourceEndSeconds == nil {
             if locations[candidate.id] == nil, let url = URL(string: candidate.providerItemID) {
                 locations[candidate.id] = url
             }
             guard let location = locations[candidate.id],
                   !location.isFileURL || FileManager.default.fileExists(atPath: location.path) else { return nil }
-            return candidate
+            var restored = candidate
+            restored.sourceStartSeconds = persistedItem.sourceStartSeconds
+            restored.sourceEndSeconds = persistedItem.sourceEndSeconds
+            return restored
         }
 
         guard let url = persistedItem.sourceURL,
               !url.isFileURL || FileManager.default.fileExists(atPath: url.path) else { return nil }
         beginAccessing(url)
         locations[persistedItem.id] = url
-        return PlaybackItem(
+        var item = PlaybackItem(
             id: persistedItem.id,
             providerID: id,
             providerItemID: persistedItem.providerItemID,
@@ -483,6 +486,9 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
             sourceURL: url,
             attribution: nil
         )
+        item.sourceStartSeconds = persistedItem.sourceStartSeconds
+        item.sourceEndSeconds = persistedItem.sourceEndSeconds
+        return item
     }
 
     private func advance(manual: Bool) throws {
@@ -565,7 +571,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
            let file = audioFile,
            let nodeTime = audioPlayerNode.lastRenderTime,
            let playerTime = audioPlayerNode.playerTime(forNodeTime: nodeTime) {
-            seconds = Double(scheduledStartFrame) / file.processingFormat.sampleRate
+            seconds = max(0, Double(scheduledStartFrame) / file.processingFormat.sampleRate - (queue.currentItem?.sourceStartSeconds ?? 0))
                 + Double(playerTime.sampleTime) / playerTime.sampleRate
         } else {
             seconds = player.currentTime().seconds
@@ -585,9 +591,13 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         guard let file = audioFile else { return }
         audioPlayerNode.stop()
         let sampleRate = file.processingFormat.sampleRate
-        let start = min(max(AVAudioFramePosition(seconds * sampleRate), 0), file.length)
+        let item = queue.currentItem
+        let segmentStart = max(0, item?.sourceStartSeconds ?? 0)
+        let segmentEnd = min(Double(file.length) / sampleRate, max(segmentStart, item?.sourceEndSeconds ?? (Double(file.length) / sampleRate)))
+        let start = min(max(AVAudioFramePosition((segmentStart + seconds) * sampleRate), 0), file.length)
         scheduledStartFrame = start
-        let remaining = max(0, file.length - start)
+        let endFrame = min(file.length, AVAudioFramePosition(segmentEnd * sampleRate))
+        let remaining = max(0, endFrame - start)
         let frameCount = AVAudioFrameCount(min(remaining, AVAudioFramePosition(UInt32.max)))
         if frameCount > 0 {
             audioPlayerNode.scheduleSegment(file, startingFrame: start, frameCount: frameCount, at: nil)

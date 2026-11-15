@@ -23,6 +23,9 @@
 				<string>aiff</string>
 				<string>m3u</string>
 				<string>m3u8</string>
+				<string>pls</string>
+				<string>xspf</string>
+				<string>cue</string>
 			</array>
 		</dict>
 	</array>

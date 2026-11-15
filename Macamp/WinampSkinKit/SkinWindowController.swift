@@ -207,7 +207,8 @@ private final class SkinAuxiliaryWindowController: NSObject {
             playback: coordinator,
             chooseURLs: choosePlaylistURLs,
             importURLs: importPlaylistURLs,
-            addFromService: onAddFromService
+            addFromService: onAddFromService,
+            exportPlaylist: { ClassicPlaylistSurface.exportPlaylist($0) }
         ))
         window.center()
         unifiedPlaylistWindow = window
@@ -810,18 +811,25 @@ final class ClassicPlaylistSurface: NSView {
     }
 
     private func saveCurrentPlaylist() {
+        Self.exportPlaylist(coordinator.queue.items)
+    }
+
+    static func exportPlaylist(_ items: [PlaybackItem]) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "m3u") ?? .plainText]
         panel.nameFieldStringValue = "Playlist.m3u"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let lines = coordinator.queue.items.map { item -> String in
-            if item.providerID == .localMedia,
-               let url = item.sourceURL ?? URL(string: item.providerItemID) {
-                return url.isFileURL ? url.path : url.absoluteString
+        let export = M3UPlaylistExporter.export(items)
+        do {
+            try export.contents.write(to: url, atomically: true, encoding: .utf8)
+            if export.skippedHostedItems > 0 {
+                let alert = NSAlert()
+                alert.messageText = "Some playlist entries were not exported"
+                alert.informativeText = "\(export.skippedHostedItems) streaming-service item(s) cannot be represented as local file paths in M3U. They remain in Macamp's playlist."
+                alert.alertStyle = .informational
+                alert.runModal()
             }
-            return item.sourceURL?.absoluteString ?? item.providerItemID
         }
-        do { try ("#EXTM3U\n" + lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8) }
         catch { NSSound.beep() }
     }
 

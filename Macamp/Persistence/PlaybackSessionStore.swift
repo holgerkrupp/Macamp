@@ -9,6 +9,8 @@ nonisolated struct PersistedQueueItem: Codable, Equatable, Sendable {
     let durationSeconds: Double?
     let mediaKind: MediaKind
     let sourceURL: URL?
+    let sourceStartSeconds: Double?
+    let sourceEndSeconds: Double?
 
     init(item: PlaybackItem) {
         id = item.id
@@ -19,6 +21,8 @@ nonisolated struct PersistedQueueItem: Codable, Equatable, Sendable {
         durationSeconds = item.duration?.secondsValue
         mediaKind = item.mediaKind
         sourceURL = item.sourceURL ?? URL(string: item.providerItemID)
+        sourceStartSeconds = item.sourceStartSeconds
+        sourceEndSeconds = item.sourceEndSeconds
     }
 }
 

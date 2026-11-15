@@ -55,6 +55,85 @@ struct LocalMediaTests {
         #expect(report.warnings[0].contains("could not be decoded by macOS"))
     }
 
+    @Test func parsesPLSAndXSPFInSourceOrderWithRelativeReferences() throws {
+        let directory = URL(fileURLWithPath: "/Music/Playlists", isDirectory: true)
+        let plsURL = directory.appendingPathComponent("mix.pls")
+        let pls = try PlaylistFileParser.parse(data: Data("[playlist]\nFile2=second.wav\nTitle2=Second\nLength2=20\nFile1=first.wav\nTitle1=First\nNumberOfEntries=2\n".utf8), playlistURL: plsURL)
+        #expect(pls.map(\.title) == ["First", "Second"])
+        #expect(pls.map(\.url.lastPathComponent) == ["first.wav", "second.wav"])
+        #expect(pls[1].duration == .seconds(20))
+
+        let xspfURL = directory.appendingPathComponent("mix.xspf")
+        let xspf = #"<?xml version="1.0"?><playlist version="1" xmlns="http://xspf.org/ns/0/"><trackList><track><location>first.wav</location><title>First</title><creator>Artist</creator></track><track><location>https://example.com/second.mp3</location><title>Second</title><duration>12500</duration></track></trackList></playlist>"#
+        let tracks = try PlaylistFileParser.parse(data: Data(xspf.utf8), playlistURL: xspfURL)
+        #expect(tracks.map(\.title) == ["First", "Second"])
+        #expect(tracks[0].artist == "Artist")
+        #expect(tracks[0].url.path == "/Music/Playlists/first.wav")
+        #expect(tracks[1].duration == .seconds(12.5))
+    }
+
+    @Test func parsesCueTrackOffsetsForSingleAndMultipleAudioFiles() throws {
+        let directory = URL(fileURLWithPath: "/Music/Albums", isDirectory: true)
+        let cueURL = directory.appendingPathComponent("album.cue")
+        let cue = """
+        PERFORMER "Album Artist"
+        FILE "disc one.wav" WAVE
+          TRACK 01 AUDIO
+            TITLE "Opening Track"
+            INDEX 01 00:00:00
+          TRACK 02 AUDIO
+            TITLE "Second Track"
+            PERFORMER "Guest Artist"
+            INDEX 01 03:15:00
+        FILE "disc two.wav" WAVE
+          TRACK 03 AUDIO
+            TITLE "Final Track"
+            INDEX 01 00:00:00
+        """
+        let tracks = try PlaylistFileParser.parse(data: Data(cue.utf8), playlistURL: cueURL)
+        #expect(tracks.map(\.title) == ["Opening Track", "Second Track", "Final Track"])
+        #expect(tracks.map(\.artist) == ["Album Artist", "Guest Artist", "Album Artist"])
+        #expect(tracks.map(\.url.lastPathComponent) == ["disc one.wav", "disc one.wav", "disc two.wav"])
+        #expect(tracks[0].sourceStartSeconds == 0)
+        #expect(tracks[0].sourceEndSeconds == 195)
+        #expect(tracks[1].sourceStartSeconds == 195)
+        #expect(tracks[1].sourceEndSeconds == nil)
+        #expect(tracks[0].occurrenceID != tracks[1].occurrenceID)
+    }
+
+    @Test func importsCueTracksAsIndependentSeekableAudioSegments() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampCueImport-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeSilentWaveFixture(to: root.appendingPathComponent("disc.wav"), duration: 8)
+        let cueURL = root.appendingPathComponent("disc.cue")
+        try """
+        FILE "disc.wav" WAVE
+          TRACK 01 AUDIO
+            TITLE "First"
+            INDEX 01 00:00:00
+          TRACK 02 AUDIO
+            TITLE "Second"
+            INDEX 01 00:03:00
+        """.write(to: cueURL, atomically: true, encoding: .utf8)
+
+        let report = await LocalMediaImporter.importURLs([cueURL])
+
+        #expect(report.items.map(\.title) == ["First", "Second"])
+        #expect(report.items[0].duration == .seconds(3))
+        #expect(report.items[1].duration == .seconds(5))
+        #expect(report.items[0].id != report.items[1].id)
+        #expect(report.items[1].sourceStartSeconds == 3)
+    }
+
+    @Test func m3uExportPreservesLocalOccurrencesAndReportsHostedEntries() {
+        let local = PlaybackItem(id: "local", providerID: .localMedia, providerItemID: "file:///Music/track.wav", title: "Track", mediaKind: .localFile, isExplicit: false)
+        let hosted = PlaybackItem(id: "hosted", providerID: .spotify, providerItemID: "service-track", title: "Hosted", mediaKind: .song, isExplicit: false)
+        let export = M3UPlaylistExporter.export([local, local, hosted])
+        #expect(export.contents == "#EXTM3U\n/Music/track.wav\n/Music/track.wav\n")
+        #expect(export.skippedHostedItems == 1)
+    }
+
     @Test func importerPreservesRepeatedPlaylistOccurrences() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampRepeatedPlaylist-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

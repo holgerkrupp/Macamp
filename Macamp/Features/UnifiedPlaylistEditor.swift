@@ -5,6 +5,7 @@ struct UnifiedPlaylistEditorView: View {
     let chooseURLs: (ClassicPlaylistImportKind) -> [URL]
     let importURLs: ([URL], MediaImportAction) -> Void
     let addFromService: () -> Void
+    let exportPlaylist: ([PlaybackItem]) -> Void
     @State private var selection: Set<PlaybackItemID> = []
 
     var body: some View {
@@ -48,6 +49,9 @@ struct UnifiedPlaylistEditorView: View {
                     Button("Add Folder…") { add(kind: .folder, action: .appendToQueue) }
                     Button("Add Playlist…") { add(kind: .playlist, action: .appendToQueue) }
                     Button("Add from Streaming Service…", action: addFromService)
+                    Divider()
+                    Button("Export Local Playlist…") { exportPlaylist(playback.queue.items) }
+                        .disabled(playback.queue.items.isEmpty)
                     Divider()
                     Button("Insert Files Next…") { add(kind: .files, action: .insertNext) }
                 } label: {

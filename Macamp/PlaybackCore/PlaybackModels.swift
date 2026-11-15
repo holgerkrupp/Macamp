@@ -46,6 +46,8 @@ struct PlaybackItem: Identifiable, Hashable, Sendable {
     var isExplicit: Bool
     var sourceURL: URL? = nil
     var attribution: String? = nil
+    var sourceStartSeconds: Double? = nil
+    var sourceEndSeconds: Double? = nil
     var bitrateKbps: Int? = nil
     var sampleRateHz: Int? = nil
     var channelCount: Int? = nil

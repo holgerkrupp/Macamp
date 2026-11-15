@@ -27,6 +27,8 @@ struct UnifiedPlaylistEntry: Identifiable, Codable, Equatable, Sendable {
     var bitrateKbps: Int?
     var sampleRateHz: Int?
     var channelCount: Int?
+    var sourceStartSeconds: Double?
+    var sourceEndSeconds: Double?
 
     init(id: UUID = UUID(), item: PlaybackItem) {
         self.id = id
@@ -49,6 +51,8 @@ struct UnifiedPlaylistEntry: Identifiable, Codable, Equatable, Sendable {
         bitrateKbps = item.bitrateKbps
         sampleRateHz = item.sampleRateHz
         channelCount = item.channelCount
+        sourceStartSeconds = item.sourceStartSeconds
+        sourceEndSeconds = item.sourceEndSeconds
     }
 
     var playbackItem: PlaybackItem {
@@ -70,6 +74,8 @@ struct UnifiedPlaylistEntry: Identifiable, Codable, Equatable, Sendable {
         item.bitrateKbps = bitrateKbps
         item.sampleRateHz = sampleRateHz
         item.channelCount = channelCount
+        item.sourceStartSeconds = sourceStartSeconds
+        item.sourceEndSeconds = sourceEndSeconds
         return item
     }
 }

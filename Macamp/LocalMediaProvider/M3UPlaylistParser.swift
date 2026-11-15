@@ -10,6 +10,9 @@ struct M3UPlaylistEntry: Equatable, Sendable {
     var title: String?
     var artist: String?
     var duration: Duration?
+    var sourceStartSeconds: Double? = nil
+    var sourceEndSeconds: Double? = nil
+    var occurrenceID: String? = nil
 }
 
 enum M3UPlaylistParser {
@@ -69,12 +72,34 @@ enum M3UPlaylistParser {
         return M3UPlaylist(entries: entries, isHLS: false)
     }
 
-    private static func resolvedURL(_ value: String, relativeTo playlistURL: URL) -> URL? {
+    static func resolvedURL(_ value: String, relativeTo playlistURL: URL) -> URL? {
         if let absolute = URL(string: value), let scheme = absolute.scheme?.lowercased() {
             guard ["file", "http", "https"].contains(scheme) else { return nil }
             return scheme == "file" ? absolute.standardizedFileURL : absolute
         }
         let decoded = value.removingPercentEncoding ?? value
         return URL(fileURLWithPath: decoded, relativeTo: playlistURL.deletingLastPathComponent()).standardizedFileURL
+    }
+}
+
+struct M3UPlaylistExport: Equatable, Sendable {
+    var contents: String
+    var skippedHostedItems: Int
+}
+
+enum M3UPlaylistExporter {
+    static func export(_ items: [PlaybackItem]) -> M3UPlaylistExport {
+        var lines: [String] = []
+        var skipped = 0
+        for item in items {
+            guard item.providerID == .localMedia,
+                  let url = item.sourceURL ?? URL(string: item.providerItemID),
+                  url.isFileURL || ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+                skipped += 1
+                continue
+            }
+            lines.append(url.isFileURL ? url.path : url.absoluteString)
+        }
+        return M3UPlaylistExport(contents: "#EXTM3U\n" + lines.joined(separator: "\n") + (lines.isEmpty ? "" : "\n"), skippedHostedItems: skipped)
     }
 }

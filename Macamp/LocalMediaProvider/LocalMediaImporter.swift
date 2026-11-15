@@ -9,7 +9,7 @@ struct LocalMediaImportReport: Sendable {
 
 enum LocalMediaImporter {
     static let mediaExtensions: Set<String> = ["mp3", "aac", "m4a", "alac", "flac", "wav", "aif", "aiff"]
-    static let playlistExtensions: Set<String> = ["m3u", "m3u8"]
+    static let playlistExtensions: Set<String> = ["m3u", "m3u8", "pls", "xspf", "cue"]
     static let importFileExtensions = mediaExtensions.union(playlistExtensions)
 
     static func importURLs(_ urls: [URL]) async -> LocalMediaImportReport {
@@ -56,15 +56,22 @@ enum LocalMediaImporter {
         warnings: inout [String]
     ) {
         do {
-            let playlist = try M3UPlaylistParser.parse(data: Data(contentsOf: playlistURL), playlistURL: playlistURL)
-            if playlist.isHLS {
-                candidates.append(M3UPlaylistEntry(url: playlistURL, title: playlistURL.deletingPathExtension().lastPathComponent))
+            let data = try Data(contentsOf: playlistURL)
+            let entries: [M3UPlaylistEntry]
+            if ["m3u", "m3u8"].contains(playlistURL.pathExtension.lowercased()) {
+                let playlist = try M3UPlaylistParser.parse(data: data, playlistURL: playlistURL)
+                if playlist.isHLS {
+                    candidates.append(M3UPlaylistEntry(url: playlistURL, title: playlistURL.deletingPathExtension().lastPathComponent))
+                    return
+                }
+                entries = playlist.entries
             } else {
-                let supported = playlist.entries.filter { isSupportedMediaURL($0.url) }
-                candidates.append(contentsOf: supported)
-                let skipped = playlist.entries.count - supported.count
-                if skipped > 0 { warnings.append("Skipped \(skipped) unsupported entries in \(playlistURL.lastPathComponent).") }
+                entries = try PlaylistFileParser.parse(data: data, playlistURL: playlistURL)
             }
+            let supported = entries.filter { isSupportedMediaURL($0.url) }
+            candidates.append(contentsOf: supported)
+            let skipped = entries.count - supported.count
+            if skipped > 0 { warnings.append("Skipped \(skipped) unsupported entries in \(playlistURL.lastPathComponent).") }
         } catch {
             warnings.append("Could not read \(playlistURL.lastPathComponent): \(error.localizedDescription)")
         }
@@ -101,7 +108,7 @@ enum LocalMediaImporter {
         let album = await stringValue(for: .commonKeyAlbumName, in: metadata)
         let artworkData = await dataValue(for: .commonKeyArtwork, in: metadata)
         let audioFile: AVAudioFile?
-        if entry.url.isFileURL {
+        if entry.url.isFileURL, entry.url.pathExtension.lowercased() != "m3u8" {
             do { audioFile = try AVAudioFile(forReading: entry.url) }
             catch {
                 throw ProviderError(code: .itemUnavailable, message: "\(entry.url.lastPathComponent) could not be decoded by macOS as a supported audio file.")
@@ -110,13 +117,18 @@ enum LocalMediaImporter {
             audioFile = nil
         }
         let decodedDuration = audioFile.map { Duration.seconds(Double($0.length) / $0.processingFormat.sampleRate) }
-        let duration: Duration? = entry.duration ?? decodedDuration ?? durationTime.flatMap { time in
+        let segmentDuration = entry.sourceEndSeconds.flatMap { end in
+            entry.sourceStartSeconds.map { start in Duration.seconds(max(0, end - start)) }
+        } ?? decodedDuration.map { duration in
+            Duration.seconds(max(0, duration.secondsValue - (entry.sourceStartSeconds ?? 0)))
+        }
+        let duration: Duration? = entry.duration ?? segmentDuration ?? durationTime.flatMap { time in
             let seconds = time.seconds
             return seconds.isFinite && seconds >= 0 ? .seconds(seconds) : nil
         }
         let technical = technicalMetadata(for: entry.url, duration: duration, audioFile: audioFile)
         let rawID = entry.url.absoluteString
-        let itemID = PlaybackItemID(rawValue: "local:\(rawID)")
+        let itemID = PlaybackItemID(rawValue: "local:\(rawID)\(entry.occurrenceID.map { ":\($0)" } ?? "")")
         var item = PlaybackItem(
             id: itemID,
             providerID: .localMedia,
@@ -133,6 +145,9 @@ enum LocalMediaImporter {
         item.sampleRateHz = technical.sampleRateHz
         item.channelCount = technical.channelCount
         item.fileExtension = entry.url.pathExtension.lowercased()
+        item.sourceURL = entry.url
+        item.sourceStartSeconds = entry.sourceStartSeconds
+        item.sourceEndSeconds = entry.sourceEndSeconds
         return item
     }
 

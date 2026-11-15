@@ -163,12 +163,14 @@ struct PlaybackCoreTests {
             .appendingPathExtension("json")
         defer { try? FileManager.default.removeItem(at: root) }
         let store = PlaybackSessionStore(fileURL: root)
-        let item = PlaybackItem(
+        var item = PlaybackItem(
             id: "local:/Music/one.mp3", providerID: .localMedia,
             providerItemID: "file:///Music/one.mp3", title: "One",
             artist: "Artist", duration: .seconds(120), mediaKind: .localFile,
             isExplicit: false
         )
+        item.sourceStartSeconds = 30
+        item.sourceEndSeconds = 90
         let session = PersistedPlaybackSession(
             providerID: .localMedia,
             items: [PersistedQueueItem(item: item)],

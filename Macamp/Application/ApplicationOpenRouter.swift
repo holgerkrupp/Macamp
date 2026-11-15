@@ -104,7 +104,7 @@ final class ApplicationOpenRouter {
 enum ApplicationMediaImportPanel {
     private static let audioAndPlaylistTypes: [UTType] = LocalMediaImporter.importFileExtensions.sorted().compactMap { UTType(filenameExtension: $0) }
 
-    private static let playlistTypes: [UTType] = ["m3u", "m3u8"].compactMap { UTType(filenameExtension: $0) }
+    private static let playlistTypes: [UTType] = LocalMediaImporter.playlistExtensions.sorted().compactMap { UTType(filenameExtension: $0) }
 
     static func chooseFiles() -> [URL] {
         choose(title: "Add Files or Playlists", types: audioAndPlaylistTypes, canChooseFiles: true, canChooseDirectories: false)
