@@ -24,6 +24,59 @@ struct VisualizationTests {
         #expect(throws: ProviderError.self) { try preset.validated() }
     }
 
+    @Test func milkDropPresetParserConvertsOrderedEquationsToBundledRendererFormat() throws {
+        let preset = try MilkDropPresetParser.parse(text: """
+        [preset00]
+        fDecay=0.96
+        zoom=1.02
+        per_frame_2=a.zoom=1.02;
+        per_frame_1=a.wave_r=0.5;
+        per_pixel_1=a.warp=a.warp+0.01;
+        wave_0_per_frame_1=a.r=1;
+        wave_0_per_point_1=a.x=a.x+0.01;
+        """, fileName: "Test.milk")
+        let payload = try #require(JSONSerialization.jsonObject(with: Data(preset.rendererJSON.utf8)) as? [String: Any])
+        let baseValues = try #require(payload["baseVals"] as? [String: Double])
+        let waves = try #require(payload["waves"] as? [[String: Any]])
+        let firstWave = try #require(waves.first)
+
+        #expect(preset.title == "Test")
+        #expect(baseValues["decay"] == 0.96)
+        #expect(baseValues["zoom"] == 1.02)
+        #expect(payload["frame_eqs_str"] as? String == "a.wave_r=0.5; a.zoom=1.02;")
+        #expect(payload["pixel_eqs_str"] as? String == "a.warp=a.warp+0.01;")
+        #expect(firstWave["frame_eqs_str"] as? String == "a.r=1;")
+        #expect(firstWave["point_eqs_str"] as? String == "a.x=a.x+0.01;")
+    }
+
+    @Test func milkDropPresetParserRejectsMissingSectionsAndUnsafeEquations() {
+        #expect(throws: MilkDropPresetError.self) {
+            try MilkDropPresetParser.parse(text: "zoom=1.0", fileName: "invalid.milk")
+        }
+        #expect(throws: MilkDropPresetError.self) {
+            try MilkDropPresetParser.parse(text: "[preset00]\nper_frame_1=window.location=1;", fileName: "unsafe.milk")
+        }
+    }
+
+    @Test func milkDropPresetStoreCopiesAndRestoresUserPresets() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampMilkDrop-\(UUID().uuidString)", isDirectory: true)
+        let sourceDirectory = root.appendingPathComponent("source", isDirectory: true)
+        let storeDirectory = root.appendingPathComponent("stored", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = sourceDirectory.appendingPathComponent("Orbit.milk")
+        try "[preset00]\nzoom=1.01\nper_frame_1=a.zoom=1.01;\n".write(to: source, atomically: true, encoding: .utf8)
+        let store = MilkDropPresetStore(directory: storeDirectory)
+
+        let imported = store.importFiles([source])
+        let restored = store.allPresets()
+
+        #expect(imported.presets.map(\.title) == ["Orbit"])
+        #expect(imported.warnings.isEmpty)
+        #expect(restored.presets.map(\.title) == ["Orbit"])
+        #expect(restored.warnings.isEmpty)
+    }
+
     @Test func pcmAnalyzerReturnsSafeSilence() {
         let silent = VisualizationPCMAnalyzer.analyze(PCMFrame(samples: Array(repeating: 0, count: 2_048), sampleRate: 44_100))
         #expect(silent.bands.count == 48)

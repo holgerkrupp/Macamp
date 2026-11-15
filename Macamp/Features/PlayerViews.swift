@@ -295,6 +295,29 @@ struct VisualizationPickerView: View {
                     }.buttonStyle(.plain)
                 }
             }
+            GroupBox("MilkDrop presets") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Button("Import .milk…") { dependencies.visualizations.importMilkDropPresets() }
+                        Picker("Preset", selection: Binding(
+                            get: { min(dependencies.settings.selectedMilkDropPreset, max(0, dependencies.visualizations.milkDropPresetTitles.count - 1)) },
+                            set: { dependencies.visualizations.selectMilkDropPreset(at: $0) }
+                        )) {
+                            ForEach(Array(dependencies.visualizations.milkDropPresetTitles.enumerated()), id: \.offset) { index, title in
+                                Text(title).tag(index)
+                            }
+                        }
+                        .frame(maxWidth: 280)
+                        Button("Previous") { dependencies.visualizations.previousMilkDropPreset() }
+                        Button("Next") { dependencies.visualizations.nextMilkDropPreset() }
+                    }
+                    if !dependencies.visualizations.milkDropImportWarnings.isEmpty {
+                        ForEach(dependencies.visualizations.milkDropImportWarnings, id: \.self) { warning in
+                            Label(warning, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
             HStack { Picker("Frame-rate limit", selection: Binding(get: { dependencies.settings.visualizationFrameRate }, set: { dependencies.settings.visualizationFrameRate = $0; dependencies.visualizations.applySettings() })) { Text("30 fps").tag(30); Text("60 fps").tag(60) }.frame(width: 180); Slider(value: Binding(get: { dependencies.settings.visualizationIntensity }, set: { dependencies.settings.visualizationIntensity = $0; dependencies.visualizations.applySettings() }), in: 0...1); Text("Intensity") }
             Spacer()
         }.padding(24).navigationTitle("Visualizations")

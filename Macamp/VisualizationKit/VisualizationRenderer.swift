@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import UniformTypeIdentifiers
 
 enum BuiltInVisualization: String, CaseIterable, Identifiable, Sendable {
     case spectrum, oscilloscope, mirroredSpectrum, radialSpectrum, starfield, classicPeakHold, artworkAmbience, retroPattern, milkDrop
@@ -206,21 +207,42 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
     private let source: LocalPCMAudioAnalysisSource
     private let coordinator: PlaybackCoordinator
     private let renderView = VisualizationRenderView(frame: CGRect(x: 0, y: 0, width: 640, height: 360))
+    private let contentView = NSView(frame: CGRect(x: 0, y: 0, width: 640, height: 396))
+    private let presetControls = NSStackView()
+    private let presetPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let settings: SettingsStore
+    private let presetStore: MilkDropPresetStore
+    private let relatedWindows: () -> [NSWindow]
+    private let docking = WindowDockingController()
+    private var customMilkDropPresets: [MilkDropPreset] = []
+    private var presetImportWarnings: [String] = []
     private var framesTask: Task<Void, Never>?
     private var routeTask: Task<Void, Never>?
     private var milkDrop: MilkDropView?
     private var milkDropFailed = false
 
-    init(source: LocalPCMAudioAnalysisSource, coordinator: PlaybackCoordinator, settings: SettingsStore) {
+    init(
+        source: LocalPCMAudioAnalysisSource,
+        coordinator: PlaybackCoordinator,
+        settings: SettingsStore,
+        presetStore: MilkDropPresetStore = MilkDropPresetStore(),
+        relatedWindows: @escaping () -> [NSWindow] = { [] }
+    ) {
         self.source = source; self.coordinator = coordinator; self.settings = settings
+        self.presetStore = presetStore; self.relatedWindows = relatedWindows
+        let storedPresets = presetStore.allPresets()
+        customMilkDropPresets = storedPresets.presets
+        presetImportWarnings = storedPresets.warnings
         renderView.mode = BuiltInVisualization(rawValue: settings.selectedVisualization) ?? .spectrum
-        let window = NSWindow(contentRect: renderView.frame, styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: contentView.frame, styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Macamp Visualization"
-        window.contentView = renderView
+        window.contentView = contentView
         window.minSize = CGSize(width: 320, height: 180)
+        window.setFrameAutosaveName("MacampVisualizationWindow")
         super.init(window: window)
         window.delegate = self
+        configurePresetControls()
+        updatePresetControls()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -244,16 +266,55 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
     func select(_ mode: BuiltInVisualization) {
         settings.selectedVisualization = mode.rawValue
         renderView.mode = mode
+        presetControls.isHidden = mode != .milkDrop
         milkDropFailed = false
         window?.title = "Macamp Visualization"
         if mode != .milkDrop { stopMilkDrop() }
+        updatePresetControls()
     }
 
     func selectMilkDropPreset(at index: Int) {
-        guard MilkDropView.presets.indices.contains(index) else { return }
+        guard (0..<milkDropPresetCount).contains(index) else { return }
         settings.selectedMilkDropPreset = index
         select(.milkDrop)
         show()
+    }
+
+    var milkDropPresetTitles: [String] {
+        MilkDropView.presets + customMilkDropPresets.map(\.title)
+    }
+
+    var milkDropPresetCount: Int { MilkDropView.presets.count + customMilkDropPresets.count }
+
+    var milkDropImportWarnings: [String] { presetImportWarnings }
+
+    func importMilkDropPresets() {
+        let panel = NSOpenPanel()
+        panel.title = "Import MilkDrop Presets"
+        panel.allowedContentTypes = [UTType(filenameExtension: "milk") ?? .plainText]
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        let result = presetStore.importFiles(panel.urls)
+        let all = presetStore.allPresets()
+        customMilkDropPresets = all.presets
+        presetImportWarnings = result.warnings + all.warnings
+        updatePresetControls()
+        settings.selectedMilkDropPreset = settings.selectedMilkDropPreset
+        guard !result.presets.isEmpty else { return }
+        settings.selectedMilkDropPreset = MilkDropView.presets.count
+        select(.milkDrop)
+        show()
+    }
+
+    func previousMilkDropPreset() { stepMilkDropPreset(by: -1) }
+    func nextMilkDropPreset() { stepMilkDropPreset(by: 1) }
+
+    private func stepMilkDropPreset(by offset: Int) {
+        guard milkDropPresetCount > 0 else { return }
+        let selected = min(max(settings.selectedMilkDropPreset, 0), milkDropPresetCount - 1)
+        selectMilkDropPreset(at: (selected + offset + milkDropPresetCount) % milkDropPresetCount)
     }
 
     func applySettings() { source.configure(frameRate: settings.visualizationFrameRate) }
@@ -264,6 +325,56 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
         milkDropFailed = false
         window?.title = "Macamp Visualization"
     }
+
+    func windowDidMove(_ notification: Notification) {
+        guard let window, let screen = window.screen else { return }
+        let others = relatedWindows().filter { $0 !== window && $0.isVisible }
+        let origin = docking.snappedOrigin(for: window.frame, near: others.map(\.frame), screen: screen.visibleFrame, scale: 1)
+        if abs(origin.x - window.frame.origin.x) > 0.5 || abs(origin.y - window.frame.origin.y) > 0.5 {
+            window.setFrameOrigin(origin)
+        }
+        docking.update(window: window)
+    }
+
+    private func configurePresetControls() {
+        contentView.addSubview(renderView)
+        presetControls.orientation = .horizontal
+        presetControls.alignment = .centerY
+        presetControls.distribution = .fill
+        presetControls.spacing = 8
+        presetControls.edgeInsets = NSEdgeInsets(top: 5, left: 8, bottom: 5, right: 8)
+        let previous = NSButton(title: "Previous", target: self, action: #selector(previousPresetAction))
+        let next = NSButton(title: "Next", target: self, action: #selector(nextPresetAction))
+        presetPicker.target = self
+        presetPicker.action = #selector(presetPickerAction(_:))
+        presetControls.addArrangedSubview(previous)
+        presetControls.addArrangedSubview(presetPicker)
+        presetControls.addArrangedSubview(next)
+        contentView.addSubview(presetControls)
+        for view in [renderView, presetControls] { view.translatesAutoresizingMaskIntoConstraints = false }
+        NSLayoutConstraint.activate([
+            presetControls.topAnchor.constraint(equalTo: contentView.topAnchor),
+            presetControls.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            presetControls.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            presetControls.heightAnchor.constraint(equalToConstant: 36),
+            renderView.topAnchor.constraint(equalTo: presetControls.bottomAnchor),
+            renderView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            renderView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            renderView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        ])
+    }
+
+    private func updatePresetControls() {
+        presetPicker.removeAllItems()
+        presetPicker.addItems(withTitles: milkDropPresetTitles)
+        let selected = min(max(settings.selectedMilkDropPreset, 0), max(0, milkDropPresetTitles.count - 1))
+        presetPicker.selectItem(at: selected)
+        presetControls.isHidden = renderView.mode != .milkDrop
+    }
+
+    @objc private func previousPresetAction() { previousMilkDropPreset() }
+    @objc private func nextPresetAction() { nextMilkDropPreset() }
+    @objc private func presetPickerAction(_ sender: NSPopUpButton) { selectMilkDropPreset(at: sender.indexOfSelectedItem) }
 
     private func start() {
         applySettings()
@@ -317,7 +428,11 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
         }
         milkDrop?.webView.isHidden = false
         let preset = settings.selectedMilkDropPreset
-        milkDrop?.render(samples: samples, presetIndex: MilkDropView.presets.indices.contains(preset) ? preset : 0)
+        let index = (0..<MilkDropView.presets.count + customMilkDropPresets.count).contains(preset) ? preset : 0
+        let customJSON = customMilkDropPresets.indices.contains(index - MilkDropView.presets.count)
+            ? customMilkDropPresets[index - MilkDropView.presets.count].rendererJSON
+            : nil
+        milkDrop?.render(samples: samples, presetIndex: index, customPresetJSON: customJSON)
     }
 
     private func stopMilkDrop() {

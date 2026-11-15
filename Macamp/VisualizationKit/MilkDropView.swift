@@ -45,13 +45,13 @@ final class MilkDropView: NSObject, WKNavigationDelegate {
             """, baseURL: nil)
     }
 
-    func render(samples: [Float], presetIndex: Int) {
+    func render(samples: [Float], presetIndex: Int, customPresetJSON: String?) {
         guard isReady, renderTask == nil, !samples.isEmpty else { return }
         renderTask = Task { [weak self, webView] in
             do {
                 _ = try await webView.callAsyncJavaScript(
-                    "return await window.renderMacampMilkDrop(samples, presetIndex);",
-                    arguments: ["samples": samples, "presetIndex": presetIndex], in: nil, contentWorld: .page
+                    "return await window.renderMacampMilkDrop(samples, presetIndex, customPresetJSON);",
+                    arguments: ["samples": samples, "presetIndex": presetIndex, "customPresetJSON": customPresetJSON ?? ""], in: nil, contentWorld: .page
                 )
                 self?.renderTask = nil
             } catch {

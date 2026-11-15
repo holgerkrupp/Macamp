@@ -56,8 +56,15 @@ final class DependencyContainer {
     }
 
     @ObservationIgnored lazy var visualizations = VisualizationWindowController(
-        source: localPCMAnalysis, coordinator: playback, settings: settings
+        source: localPCMAnalysis,
+        coordinator: playback,
+        settings: settings,
+        relatedWindows: { [weak self] in self?.visualizationRelatedWindows() ?? [] }
     )
+
+    private func visualizationRelatedWindows() -> [NSWindow] {
+        classicPlayer.window.map { [$0] } ?? []
+    }
     @ObservationIgnored lazy var classicPlayer = SkinWindowController(
         coordinator: playback, skinStore: skins, settings: settings, visualizationFrames: visualizationFrames,
         openMedia: { [weak self] action in
