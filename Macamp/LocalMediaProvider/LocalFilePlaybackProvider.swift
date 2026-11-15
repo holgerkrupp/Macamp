@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Observation
+import Synchronization
 
 @MainActor
 @Observable
@@ -22,7 +23,10 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         return routeCapabilities
     }
     var effectCapabilities: AudioEffectCapabilities {
-        isCurrentRouteProcessed ? [.enable, .preamp, .equalizerBands, .pitch, .tempo, .reverb, .crossfade] : []
+        guard isCurrentRouteProcessed else { return [] }
+        var capabilities: AudioEffectCapabilities = [.enable, .preamp, .equalizerBands, .pitch, .tempo, .reverb]
+        if state.currentItem?.mediaKind != .radioStation { capabilities.insert(.crossfade) }
+        return capabilities
     }
     var effectUnavailableReason: String? {
         isCurrentRouteProcessed ? nil : "Equalizer is available for decoded local audio. Video and remote streams use AVPlayer and bypass the DSP."
@@ -41,6 +45,10 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     @ObservationIgnored private let audioEngine = AVAudioEngine()
     @ObservationIgnored private let audioPlayerNode = AVAudioPlayerNode()
     @ObservationIgnored private let crossfadePlayerNode = AVAudioPlayerNode()
+    @ObservationIgnored private let radioPCMBuffer = RadioPCMRingBuffer()
+    @ObservationIgnored private let radioRenderEnabled = RadioRenderGate()
+    @ObservationIgnored private let radioSourceNode: AVAudioSourceNode
+    @ObservationIgnored private let radioDecoder: RadioStreamDecoder
     @ObservationIgnored private let audioMixer = AVAudioMixerNode()
     @ObservationIgnored private let timePitch = AVAudioUnitTimePitch()
     @ObservationIgnored private let reverb = AVAudioUnitReverb()
@@ -51,6 +59,8 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     @ObservationIgnored private var crossfadeTask: Task<Void, Never>?
     @ObservationIgnored private var crossfadeNextItemID: PlaybackItemID?
     @ObservationIgnored private var usesAudioEngine = false
+    @ObservationIgnored private var usesRadioDecodeRoute = false
+    @ObservationIgnored private var radioDecodeReady = false
     @ObservationIgnored private let bookmarkStore: LocalMediaBookmarkStore
     @ObservationIgnored private let queueBookmarkStore: LocalMediaBookmarkStore
     @ObservationIgnored private let sessionStore: PlaybackSessionStore
@@ -78,18 +88,23 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         self.queueBookmarkStore = queueBookmarkStore
         self.sessionStore = sessionStore
         self.analysisSource = analysisSource
+        let radioFormat = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+        radioSourceNode = RadioAudioRenderer.makeSourceNode(format: radioFormat, ring: radioPCMBuffer, gate: radioRenderEnabled)
+        radioDecoder = RadioStreamDecoder(ring: radioPCMBuffer)
         effectState = settingsStore.equalizerState
         player.volume = 1
         audioPlayerNode.volume = 1
         crossfadePlayerNode.volume = 0
         audioEngine.attach(audioPlayerNode)
         audioEngine.attach(crossfadePlayerNode)
+        audioEngine.attach(radioSourceNode)
         audioEngine.attach(audioMixer)
         audioEngine.attach(timePitch)
         audioEngine.attach(reverb)
         audioEngine.attach(equalizer)
         audioEngine.connect(audioPlayerNode, to: audioMixer, format: nil)
         audioEngine.connect(crossfadePlayerNode, to: audioMixer, format: nil)
+        audioEngine.connect(radioSourceNode, to: audioMixer, format: radioFormat)
         audioEngine.connect(audioMixer, to: timePitch, format: nil)
         audioEngine.connect(timePitch, to: reverb, format: nil)
         audioEngine.connect(reverb, to: equalizer, format: nil)
@@ -97,6 +112,13 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         reverb.loadFactoryPreset(.smallRoom)
         LocalFileAudioEffectsDSP.configure(timePitch: timePitch, reverb: reverb, state: effectState)
         LocalFileEqualizerDSP.configure(equalizer, state: effectState)
+        radioDecoder.onReady = { [weak self] _ in self?.radioStreamBecameReady() }
+        radioDecoder.onMetadata = { [weak self] metadata in
+            guard let self, let title = metadata.title, !title.isEmpty else { return }
+            self.updateRadioMetadata(title, artist: metadata.artist)
+        }
+        radioDecoder.onUnsupported = { [weak self] message in self?.fallbackRadioToAVPlayer(message) }
+        radioDecoder.onFailure = { [weak self] message in self?.radioStreamFailed(message) }
     }
 
     deinit {
@@ -295,7 +317,9 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
             state.elapsed = .zero
             handledCurrentEnd = false
         }
-        if usesAudioEngine {
+        if usesRadioDecodeRoute {
+            try startRadioDecoder()
+        } else if usesAudioEngine {
             if !audioEngine.isRunning { try audioEngine.start() }
             activeAudioPlayerNode.play()
         } else {
@@ -312,7 +336,15 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         cancelRadioReconnect(resetAttempts: false)
         updateElapsed()
         cancelCrossfade()
-        if usesAudioEngine { activeAudioPlayerNode.pause() } else { player.pause() }
+        if usesRadioDecodeRoute {
+            radioRenderEnabled.enabled.store(false, ordering: .releasing)
+            radioDecoder.stop()
+            radioDecodeReady = false
+        } else if usesAudioEngine {
+            activeAudioPlayerNode.pause()
+        } else {
+            player.pause()
+        }
         state.status = .paused
         state.playbackRate = 0
         stopProgressUpdates()
@@ -322,7 +354,15 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     func stop() async throws {
         cancelRadioReconnect()
         cancelCrossfade()
-        if usesAudioEngine { stopAudioNodes() } else { player.pause() }
+        if usesRadioDecodeRoute {
+            radioRenderEnabled.enabled.store(false, ordering: .releasing)
+            radioDecoder.stop()
+            radioDecodeReady = false
+        } else if usesAudioEngine {
+            stopAudioNodes()
+        } else {
+            player.pause()
+        }
         try seekPlayer(to: .zero, resume: false)
         state.status = .stopped
         state.playbackRate = 0
@@ -528,6 +568,10 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
 
     private func loadCurrentItem(autoplay: Bool) throws {
         cancelRadioReconnect()
+        radioDecoder.stop()
+        radioRenderEnabled.enabled.store(false, ordering: .releasing)
+        radioDecodeReady = false
+        usesRadioDecodeRoute = false
         cancelCrossfade()
         radioReconnectAttempts = 0
         guard let item = queue.currentItem, let url = locations[item.id] else {
@@ -549,6 +593,13 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
             player.replaceCurrentItem(with: nil)
             installAnalysisTapIfNeeded()
             try scheduleAudioFile(from: 0, autoplay: autoplay)
+        } else if item.mediaKind == .radioStation, Self.isProgressiveRadioURL(url) {
+            audioFile = nil
+            usesAudioEngine = true
+            usesRadioDecodeRoute = true
+            player.replaceCurrentItem(with: nil)
+            installAnalysisTapIfNeeded()
+            if autoplay { try startRadioDecoder() }
         } else {
             removeAnalysisTapIfNeeded()
             audioFile = nil
@@ -560,7 +611,9 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
             player.replaceCurrentItem(with: playerItem)
         }
         state.currentItem = item
-        if let file = audioFile, item.sourceStartSeconds == nil, item.sourceEndSeconds == nil {
+        if item.mediaKind == .radioStation {
+            state.duration = nil
+        } else if let file = audioFile, item.sourceStartSeconds == nil, item.sourceEndSeconds == nil {
             state.duration = .seconds(Double(file.length) / file.processingFormat.sampleRate)
         } else {
             state.duration = item.duration
@@ -668,6 +721,81 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         progressTask = nil
     }
 
+    private static func isProgressiveRadioURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else { return false }
+        return !["m3u", "m3u8", "pls", "xspf"].contains(url.pathExtension.lowercased())
+    }
+
+    private func startRadioDecoder() throws {
+        guard usesRadioDecodeRoute,
+              let station = queue.currentItem,
+              station.mediaKind == .radioStation,
+              let url = locations[station.id] else {
+            throw ProviderError(code: .itemUnavailable, message: "The radio station URL is unavailable.")
+        }
+        if !audioEngine.isRunning { try audioEngine.start() }
+        radioRenderEnabled.enabled.store(false, ordering: .releasing)
+        radioDecodeReady = false
+        state.status = .connecting
+        state.playbackRate = 0
+        radioDecoder.start(url: url)
+    }
+
+    private func radioStreamBecameReady() {
+        guard usesRadioDecodeRoute,
+              let station = queue.currentItem,
+              station.mediaKind == .radioStation,
+              [.connecting, .buffering, .playing].contains(state.status) else { return }
+        do {
+            if !audioEngine.isRunning { try audioEngine.start() }
+            radioDecodeReady = true
+            radioRenderEnabled.enabled.store(true, ordering: .releasing)
+            radioReconnectAttempts = 0
+            state.status = .playing
+            state.playbackRate = 1
+            state.lastError = nil
+            publish()
+        } catch {
+            radioRenderEnabled.enabled.store(false, ordering: .releasing)
+            state.status = .failed
+            state.playbackRate = 0
+            state.lastError = ProviderError(code: .playbackFailed, message: "Could not start decoded radio audio: \(error.localizedDescription)")
+            publish()
+        }
+    }
+
+    private func fallbackRadioToAVPlayer(_ message: String) {
+        guard usesRadioDecodeRoute,
+              let station = queue.currentItem,
+              let url = locations[station.id] else { return }
+        let shouldPlay = ![.paused, .stopped].contains(state.status)
+        radioDecoder.stop()
+        radioRenderEnabled.enabled.store(false, ordering: .releasing)
+        radioDecodeReady = false
+        usesRadioDecodeRoute = false
+        usesAudioEngine = false
+        audioFile = nil
+        removeAnalysisTapIfNeeded()
+        let playerItem = AVPlayerItem(url: url)
+        attachRadioMetadataOutput(to: playerItem)
+        player.replaceCurrentItem(with: playerItem)
+        if shouldPlay { player.play() }
+        state.status = shouldPlay ? .connecting : .paused
+        state.playbackRate = 0
+        state.duration = nil
+        state.lastError = nil
+        publish()
+        _ = message // Unsupported decoder input is expected for AVPlayer fallback streams.
+    }
+
+    private func radioStreamFailed(_ message: String) {
+        guard usesRadioDecodeRoute,
+              let station = queue.currentItem,
+              let url = locations[station.id],
+              [.connecting, .buffering, .playing].contains(state.status) else { return }
+        scheduleRadioReconnect(url: url, itemID: station.id, message: message)
+    }
+
     private func attachRadioMetadataOutput(to item: AVPlayerItem) {
         let output = AVPlayerItemMetadataOutput(identifiers: nil)
         output.setDelegate(metadataDelegate, queue: .main)
@@ -678,15 +806,19 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
 
     private func updateRadioMetadata(_ rawTitle: String) {
         let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, let item = state.currentItem, item.mediaKind == .radioStation else { return }
+        let parts = title.components(separatedBy: " - ")
+        let artist = parts.count > 1 ? parts[0].trimmingCharacters(in: .whitespaces) : nil
+        let songTitle = parts.count > 1 ? parts.dropFirst().joined(separator: " - ").trimmingCharacters(in: .whitespaces) : title
+        updateRadioMetadata(songTitle, artist: artist)
+    }
+
+    private func updateRadioMetadata(_ rawTitle: String, artist: String?) {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, var item = state.currentItem, item.mediaKind == .radioStation else { return }
         if item.albumTitle == nil { item.albumTitle = item.title }
-        let parts = title.components(separatedBy: " - ")
-        if parts.count > 1 {
-            item.artist = parts[0].trimmingCharacters(in: .whitespaces)
-            item.title = parts.dropFirst().joined(separator: " - ").trimmingCharacters(in: .whitespaces)
-        } else {
-            item.title = title
-        }
+        if let artist, !artist.isEmpty { item.artist = artist }
+        item.title = title
         state.currentItem = item
         if let index = queue.currentIndex, queue.items.indices.contains(index) { queue.items[index] = item }
         publish()
@@ -707,6 +839,11 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         state.playbackRate = 0
         state.lastError = ProviderError(code: .network, message: "Radio connection interrupted. Reconnecting…")
         publish()
+        if usesRadioDecodeRoute {
+            radioRenderEnabled.enabled.store(false, ordering: .releasing)
+            radioDecodeReady = false
+            radioDecoder.stop()
+        }
         radioReconnectTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard let self, !Task.isCancelled else { return }
@@ -717,6 +854,18 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
             }
             self.radioReconnectAttempts += 1
             self.radioReconnectTask = nil
+            if self.usesRadioDecodeRoute {
+                do {
+                    try self.startRadioDecoder()
+                } catch {
+                    self.state.status = .failed
+                    self.state.playbackRate = 0
+                    self.state.lastError = ProviderError(code: .playbackFailed, message: error.localizedDescription)
+                    self.stopProgressUpdates()
+                    self.publish()
+                }
+                return
+            }
             if let oldOutput = self.metadataOutput, let oldItem = self.player.currentItem { oldItem.remove(oldOutput) }
             let item = AVPlayerItem(url: url)
             self.attachRadioMetadataOutput(to: item)
@@ -762,8 +911,12 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
                 let seconds = currentItem.duration.seconds
                 if seconds.isFinite && seconds >= 0 { state.duration = .seconds(seconds) }
             }
+            updateElapsed()
+        } else if usesRadioDecodeRoute {
+            if state.status == .playing { state.elapsed += .seconds(0.25) }
+        } else {
+            updateElapsed()
         }
-        updateElapsed()
         publish()
         maybeStartCrossfade()
         if let duration = state.duration?.secondsValue,
@@ -946,7 +1099,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     }
 
     private var isCurrentRouteProcessed: Bool {
-        usesAudioEngine && audioFile != nil && state.currentItem != nil
+        usesAudioEngine && (audioFile != nil || (usesRadioDecodeRoute && radioDecodeReady)) && state.currentItem != nil
     }
 
     private func publish() {

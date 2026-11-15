@@ -16,6 +16,7 @@ Links below are a navigation inventory, not a statement that every document is c
 - [Documentation/SecurityAndPrivacy.md](../Documentation/SecurityAndPrivacy.md)
 - [Documentation/SkinCompatibility.md](../Documentation/SkinCompatibility.md)
 - [Documentation/VisualizationCompatibility.md](../Documentation/VisualizationCompatibility.md)
+- [Documentation/ThirdPartyNotices.md](../Documentation/ThirdPartyNotices.md)
 
 ## Keeping guidance current
 
