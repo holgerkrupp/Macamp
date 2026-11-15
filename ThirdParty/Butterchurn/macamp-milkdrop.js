@@ -32,6 +32,8 @@
                 init_eqs_str: "",
                 frame_eqs_str: "a.wave_r += a.bass * 0.08; a.wave_b += a.treb * 0.08;",
                 pixel_eqs_str: "",
+                warp: "",
+                comp: "",
                 shapes: Array.from({ length: 4 }, () => ({ baseVals: { enabled: 0 } })),
                 waves: Array.from({ length: 4 }, () => ({ baseVals: { enabled: 0 } }))
             }, 0);
