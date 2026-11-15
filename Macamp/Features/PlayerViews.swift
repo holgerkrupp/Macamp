@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 
 struct NowPlayingBar: View {
     let dependencies: DependencyContainer
+    @State private var showingJumpToTime = false
+    @State private var jumpToTimeText = ""
 
     var body: some View {
         let playback = dependencies.playback
@@ -20,6 +22,23 @@ struct NowPlayingBar: View {
             if playback.capabilities.contains(.seek), let duration = playback.state.duration {
                 Slider(value: Binding(get: { playback.state.elapsed.secondsValue }, set: { value in Task { await playback.seek(to: .seconds(value)) } }), in: 0...max(1, duration.secondsValue))
                 Text(time(playback.state.elapsed)).font(.caption.monospacedDigit()).frame(width: 42)
+                Button {
+                    jumpToTimeText = time(playback.state.elapsed)
+                    showingJumpToTime = true
+                } label: { Image(systemName: "clock.arrow.circlepath") }
+                .accessibilityLabel("Jump to Time")
+                .popover(isPresented: $showingJumpToTime) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Jump to Time").font(.headline)
+                        TextField("m:ss", text: $jumpToTimeText)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { jumpToTime() }
+                        Button("Go") { jumpToTime() }
+                            .disabled(Self.seconds(from: jumpToTimeText).map { $0 > duration.secondsValue } ?? true)
+                    }
+                    .padding(14)
+                    .frame(width: 220)
+                }
             } else { Spacer() }
             if playback.capabilities.contains(.applicationVolume) {
                 Image(systemName: "speaker.wave.2")
@@ -33,6 +52,25 @@ struct NowPlayingBar: View {
     }
 
     private func time(_ duration: Duration) -> String { let value = Int(duration.secondsValue); return String(format: "%d:%02d", value / 60, value % 60) }
+
+    private func jumpToTime() {
+        guard let seconds = Self.seconds(from: jumpToTimeText),
+              let duration = dependencies.playback.state.duration,
+              seconds <= duration.secondsValue else { return }
+        Task { await dependencies.playback.seek(to: .seconds(seconds)) }
+        showingJumpToTime = false
+    }
+
+    private static func seconds(from value: String) -> Double? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = trimmed.split(separator: ":", omittingEmptySubsequences: false)
+        guard (1...3).contains(parts.count) else { return nil }
+        if parts.count == 1 { return Double(parts[0]).flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } }
+        let numbers = parts.map(String.init).compactMap(Double.init)
+        guard numbers.count == parts.count, numbers.allSatisfy({ $0.isFinite && $0 >= 0 }),
+              numbers.dropFirst().allSatisfy({ $0 < 60 }) else { return nil }
+        return numbers.reversed().enumerated().reduce(0.0) { $0 + $1.element * pow(60, Double($1.offset)) }
+    }
 }
 
 struct LocalMediaView: View {

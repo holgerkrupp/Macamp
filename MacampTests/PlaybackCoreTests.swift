@@ -315,6 +315,23 @@ struct PlaybackCoreTests {
         #expect(store.currentEntryID == occurrenceIDs[1])
     }
 
+    @Test func playlistSortingKeepsThePlayingOccurrenceStable() {
+        let store = makePlaylistStore()
+        let first = PlaybackItem(id: "first", providerID: .localMedia, providerItemID: "file:///same.mp3", title: "Zulu", artist: "B", duration: .seconds(20), mediaKind: .localFile, isExplicit: false)
+        let second = PlaybackItem(id: "second", providerID: .localMedia, providerItemID: "file:///same.mp3", title: "Alpha", artist: "A", duration: .seconds(10), mediaKind: .localFile, isExplicit: false)
+        let occurrenceIDs = store.append([first, second, first])
+        store.select(occurrenceIDs[2])
+
+        store.sort(by: .title)
+        #expect(store.entries.map(\.title) == ["Alpha", "Zulu", "Zulu"])
+        #expect(store.currentEntryID == occurrenceIDs[2])
+        #expect(store.queue.currentIndex == 2)
+
+        store.sort(by: .duration)
+        #expect(store.currentEntryID == occurrenceIDs[2])
+        #expect(store.queue.currentItem?.title == "Zulu")
+    }
+
     private func makePlaylistStore() -> UnifiedPlaylistStore {
         let suiteName = "MacampUnifiedPlaylistTest-\(UUID().uuidString)"
         return UnifiedPlaylistStore(defaults: UserDefaults(suiteName: suiteName)!, storageKey: "playlist")

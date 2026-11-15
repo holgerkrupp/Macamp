@@ -9,6 +9,14 @@ enum PlaylistEntryAvailability: String, Codable, Sendable {
     case unsupportedByProviderPolicy
 }
 
+enum UnifiedPlaylistSort: String, CaseIterable, Sendable {
+    case title
+    case artist
+    case duration
+
+    var title: String { rawValue.capitalized }
+}
+
 struct UnifiedPlaylistEntry: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let providerID: PlaybackProviderID
@@ -170,6 +178,25 @@ final class UnifiedPlaylistStore {
         let insertionIndex = min(max(0, destination - removedBeforeDestination), entries.count)
         entries.insert(contentsOf: moving, at: insertionIndex)
         currentEntryID = currentID
+        persist()
+    }
+
+    func sort(by key: UnifiedPlaylistSort) {
+        let playingID = currentEntryID
+        entries = entries.enumerated().sorted { lhs, rhs in
+            let comparison: ComparisonResult
+            switch key {
+            case .title: comparison = lhs.element.title.localizedStandardCompare(rhs.element.title)
+            case .artist: comparison = (lhs.element.artist ?? "").localizedStandardCompare(rhs.element.artist ?? "")
+            case .duration:
+                let left = lhs.element.durationSeconds ?? .infinity
+                let right = rhs.element.durationSeconds ?? .infinity
+                comparison = left == right ? .orderedSame : (left < right ? .orderedAscending : .orderedDescending)
+            }
+            if comparison == .orderedSame { return lhs.offset < rhs.offset }
+            return comparison == .orderedAscending
+        }.map(\.element)
+        currentEntryID = playingID
         persist()
     }
 

@@ -7,11 +7,30 @@ struct UnifiedPlaylistEditorView: View {
     let addFromService: () -> Void
     let exportPlaylist: ([PlaybackItem]) -> Void
     @State private var selection: Set<PlaybackItemID> = []
+    @State private var jumpToFileQuery = ""
 
     var body: some View {
+        let visibleItems = playback.queue.items.enumerated().filter { _, item in
+            jumpToFileQuery.isEmpty || [item.title, item.artist ?? "", item.albumTitle ?? ""]
+                .contains { $0.localizedCaseInsensitiveContains(jumpToFileQuery) }
+        }
         VStack(spacing: 0) {
+            HStack {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Jump to File", text: $jumpToFileQuery)
+                    .textFieldStyle(.plain)
+                    .accessibilityLabel("Jump to File")
+                if !jumpToFileQuery.isEmpty {
+                    Button { jumpToFileQuery = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        .accessibilityLabel("Clear search")
+                        .buttonStyle(.plain)
+                }
+                Text("\(visibleItems.count) of \(playback.queue.items.count)").font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            Divider()
             List(selection: $selection) {
-                ForEach(Array(playback.queue.items.enumerated()), id: \.element.id) { index, item in
+                ForEach(visibleItems, id: \.element.id) { index, item in
                     HStack(spacing: 10) {
                         Button { Task { await playback.playQueueEntry(at: index) } } label: {
                             Image(systemName: index == playback.queue.currentIndex ? "speaker.wave.2.fill" : "play.fill")
@@ -49,6 +68,12 @@ struct UnifiedPlaylistEditorView: View {
                     Button("Add Folder…") { add(kind: .folder, action: .appendToQueue) }
                     Button("Add Playlist…") { add(kind: .playlist, action: .appendToQueue) }
                     Button("Add from Streaming Service…", action: addFromService)
+                    Divider()
+                    Menu("Sort Playlist") {
+                        ForEach(UnifiedPlaylistSort.allCases, id: \.self) { key in
+                            Button(key.title) { playback.playlistStore.sort(by: key) }
+                        }
+                    }
                     Divider()
                     Button("Export Local Playlist…") { exportPlaylist(playback.queue.items) }
                         .disabled(playback.queue.items.isEmpty)
