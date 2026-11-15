@@ -415,7 +415,7 @@ struct VisualizationPickerView: View {
             Spacer()
         }.padding(24).navigationTitle("Visualizations")
     }
-    private func icon(_ mode: BuiltInVisualization) -> String { switch mode { case .spectrum, .classicPeakHold: "chart.bar.fill"; case .oscilloscope: "waveform.path"; case .mirroredSpectrum: "arrow.up.and.down"; case .radialSpectrum: "circle.hexagongrid.fill"; case .starfield, .milkDrop: "sparkles"; case .artworkAmbience: "photo.artframe"; case .retroPattern: "aqi.medium" } }
+    private func icon(_ mode: BuiltInVisualization) -> String { switch mode { case .spectrum, .classicPeakHold: "chart.bar.fill"; case .oscilloscope: "waveform.path"; case .mirroredSpectrum: "arrow.up.and.down"; case .radialSpectrum: "circle.hexagongrid.fill"; case .starfield, .milkDrop, .goom: "sparkles"; case .artworkAmbience: "photo.artframe"; case .retroPattern: "aqi.medium" } }
 }
 
 struct DiagnosticsView: View {

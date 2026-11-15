@@ -3,7 +3,7 @@ import Observation
 import UniformTypeIdentifiers
 
 enum BuiltInVisualization: String, CaseIterable, Identifiable, Sendable {
-    case spectrum, oscilloscope, mirroredSpectrum, radialSpectrum, starfield, classicPeakHold, artworkAmbience, retroPattern, milkDrop
+    case spectrum, oscilloscope, mirroredSpectrum, radialSpectrum, starfield, classicPeakHold, artworkAmbience, retroPattern, goom, milkDrop
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -15,6 +15,7 @@ enum BuiltInVisualization: String, CaseIterable, Identifiable, Sendable {
         case .classicPeakHold: "Classic Peak Hold"
         case .artworkAmbience: "Album-art Ambience"
         case .retroPattern: "Retro Pattern"
+        case .goom: "GOOM"
         case .milkDrop: "MilkDrop"
         }
     }
@@ -24,12 +25,15 @@ enum BuiltInVisualization: String, CaseIterable, Identifiable, Sendable {
 final class VisualizationRenderView: NSView {
     private(set) var frameData: VisualizationAudioData = .silent
     var mode: BuiltInVisualization = .spectrum { didSet { needsDisplay = true } }
+    var intensity: CGFloat = 0.7 { didSet { needsDisplay = true } }
     private var peakHold = PeakHoldEnvelope()
+    private var animationPhase: CGFloat = 0
     var peakHoldBands: [Float] { peakHold.values }
     override var isFlipped: Bool { true }
 
     func update(_ data: VisualizationAudioData) {
         frameData = data
+        if data.analysisFrame != nil { animationPhase += 0.045 }
         peakHold.update(data.analysisFrame?.bands)
         needsDisplay = true
     }
@@ -50,6 +54,7 @@ final class VisualizationRenderView: NSView {
         case .starfield: drawStarfield(frame)
         case .artworkAmbience: drawAmbience(frame.bands)
         case .retroPattern: drawPattern(frame)
+        case .goom: drawGoom(frame.bands)
         case .milkDrop: drawSpectrum(frame.bands, mirrored: false, peaks: false)
         }
         drawBadge()
@@ -126,6 +131,37 @@ final class VisualizationRenderView: NSView {
             let inset = CGFloat(index) * 6 + value * 18
             NSColor(calibratedHue: CGFloat(index) / 24, saturation: 0.85, brightness: 0.9, alpha: 0.35).setStroke()
             let path = NSBezierPath(ovalIn: bounds.insetBy(dx: inset, dy: inset * 0.6)); path.lineWidth = 1.5; path.stroke()
+        }
+    }
+
+    private func drawGoom(_ bands: [Float]) {
+        guard !bands.isEmpty else { return }
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let radius = min(bounds.width, bounds.height) * 0.18
+        let strength = min(max(intensity, 0), 1)
+        let count = 192
+
+        for layer in (0..<5).reversed() {
+            let depth = CGFloat(layer + 1) / 5
+            let path = NSBezierPath()
+            for step in 0...count {
+                let progress = CGFloat(step) / CGFloat(count)
+                let bandIndex = min(bands.count - 1, Int(progress * CGFloat(bands.count)))
+                let level = CGFloat(bands[bandIndex].isFinite ? bands[bandIndex] : 0)
+                let angle = progress * .pi * 2
+                let lobe = sin(angle * CGFloat(5 + layer * 2) + animationPhase * (1 + depth))
+                let audioPush = level * strength * min(bounds.width, bounds.height) * 0.28
+                let wave = radius * (0.34 + depth * 0.1) * lobe * strength
+                let pointRadius = radius + audioPush * (0.35 + depth * 0.65) + wave
+                let point = CGPoint(x: center.x + cos(angle) * pointRadius, y: center.y + sin(angle) * pointRadius)
+                step == 0 ? path.move(to: point) : path.line(to: point)
+            }
+            path.close()
+            NSColor(calibratedHue: (0.78 + animationPhase * 0.025 + depth * 0.16).truncatingRemainder(dividingBy: 1), saturation: 0.86, brightness: 0.94, alpha: 0.13 + depth * 0.1).setFill()
+            path.fill()
+            NSColor(calibratedHue: (0.48 + animationPhase * 0.018 + depth * 0.2).truncatingRemainder(dividingBy: 1), saturation: 0.72, brightness: 1, alpha: 0.24 + depth * 0.1).setStroke()
+            path.lineWidth = 1 + depth * 2.5
+            path.stroke()
         }
     }
 
@@ -234,6 +270,7 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
         customMilkDropPresets = storedPresets.presets
         presetImportWarnings = storedPresets.warnings
         renderView.mode = BuiltInVisualization(rawValue: settings.selectedVisualization) ?? .spectrum
+        renderView.intensity = CGFloat(settings.visualizationIntensity)
         let window = NSWindow(contentRect: contentView.frame, styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Macamp Visualization"
         window.contentView = contentView
@@ -317,7 +354,10 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
         selectMilkDropPreset(at: (selected + offset + milkDropPresetCount) % milkDropPresetCount)
     }
 
-    func applySettings() { source.configure(frameRate: settings.visualizationFrameRate) }
+    func applySettings() {
+        source.configure(frameRate: settings.visualizationFrameRate)
+        renderView.intensity = CGFloat(settings.visualizationIntensity)
+    }
 
     func windowWillClose(_ notification: Notification) {
         stop()
