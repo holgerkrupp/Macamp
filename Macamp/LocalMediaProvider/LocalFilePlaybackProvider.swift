@@ -597,10 +597,10 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         publish()
         radioReconnectTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
-            guard let self, !Task.isCancelled,
-                  self.queue.currentItem?.id == itemID,
+            guard let self, !Task.isCancelled else { return }
+            guard self.queue.currentItem?.id == itemID,
                   [.connecting, .buffering, .playing].contains(self.state.status) else {
-                self?.radioReconnectTask = nil
+                self.radioReconnectTask = nil
                 return
             }
             self.radioReconnectAttempts += 1
