@@ -1,6 +1,6 @@
 # Architecture
 
-Macamp is a new standalone macOS project. The initial repository contained only a cross-platform “Hello, world” target; it had no player architecture, docs, tests, or entitlements. The application is now macOS-only, targets macOS 15+, uses Swift 6 with main-actor UI isolation, automatic signing, the app sandbox, MusicKit, user-selected read-only files, and outgoing networking.
+Macamp is a new standalone macOS project. The initial repository contained only a cross-platform “Hello, world” target; it had no player architecture, docs, tests, or entitlements. The application is now macOS-only, targets macOS 15+, uses Swift 6 with main-actor UI isolation, automatic signing, the app sandbox, MusicKit, user-selected file access, and outgoing networking. MP3 tag editing requests a fresh selection of the exact file before writing.
 
 ## Dependency direction
 

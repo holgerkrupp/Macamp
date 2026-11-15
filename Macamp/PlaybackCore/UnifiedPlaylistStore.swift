@@ -153,6 +153,14 @@ final class UnifiedPlaylistStore {
         persist()
     }
 
+    func updateMetadata(for entryID: UUID, title: String, artist: String?, albumTitle: String?) {
+        guard let index = entries.firstIndex(where: { $0.id == entryID }) else { return }
+        entries[index].title = title
+        entries[index].artist = artist
+        entries[index].albumTitle = albumTitle
+        persist()
+    }
+
     func remove(at offsets: IndexSet) {
         let removedCurrent = currentIndex.map(offsets.contains) ?? false
         let oldCurrent = currentIndex ?? 0

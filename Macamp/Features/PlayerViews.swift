@@ -6,6 +6,7 @@ struct NowPlayingBar: View {
     let dependencies: DependencyContainer
     @State private var showingJumpToTime = false
     @State private var jumpToTimeText = ""
+    @State private var bookmarkError: String?
 
     var body: some View {
         let playback = dependencies.playback
@@ -44,11 +45,34 @@ struct NowPlayingBar: View {
                 Image(systemName: "speaker.wave.2")
                 Slider(value: Binding(get: { playback.state.volume }, set: { value in Task { await playback.setVolume(value) } }), in: 0...1).frame(width: 90)
             }
+            Menu {
+                Button("Bookmark Current Position") { saveBookmark() }
+                    .disabled(playback.state.currentItem?.mediaKind != .localFile)
+                if !dependencies.localTrackBookmarks.bookmarks.isEmpty {
+                    Divider()
+                    Menu("Saved Positions") {
+                        ForEach(dependencies.localTrackBookmarks.bookmarks.prefix(20)) { bookmark in
+                            Button(bookmark.displayTitle) { restoreBookmark(bookmark) }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "bookmark")
+            }
+            .accessibilityLabel("Bookmarks")
             Menu { ForEach(RepeatMode.allCases, id: \.self) { mode in Button(mode.rawValue.capitalized) { Task { await playback.setRepeat(mode) } } } } label: { Image(systemName: playback.state.repeatMode == .one ? "repeat.1" : "repeat") }
                 .disabled(!playback.capabilities.contains(.repeat))
         }
         .buttonStyle(.borderless).padding(.horizontal, 14).padding(.vertical, 8)
         .background(.ultraThickMaterial)
+        .alert("Bookmark unavailable", isPresented: Binding(
+            get: { bookmarkError != nil },
+            set: { if !$0 { bookmarkError = nil } }
+        )) {
+            Button("OK") { bookmarkError = nil }
+        } message: {
+            Text(bookmarkError ?? "")
+        }
     }
 
     private func time(_ duration: Duration) -> String { let value = Int(duration.secondsValue); return String(format: "%d:%02d", value / 60, value % 60) }
@@ -59,6 +83,37 @@ struct NowPlayingBar: View {
               seconds <= duration.secondsValue else { return }
         Task { await dependencies.playback.seek(to: .seconds(seconds)) }
         showingJumpToTime = false
+    }
+
+    private func saveBookmark() {
+        guard let item = dependencies.playback.state.currentItem,
+              item.mediaKind == .localFile,
+              let url = item.sourceURL ?? URL(string: item.providerItemID) else { return }
+        do {
+            try dependencies.localTrackBookmarks.add(
+                fileURL: url,
+                title: item.title,
+                positionSeconds: dependencies.playback.state.elapsed.secondsValue
+            )
+        } catch { bookmarkError = error.localizedDescription }
+    }
+
+    private func restoreBookmark(_ bookmark: LocalTrackBookmark) {
+        Task {
+            do {
+                let url = try dependencies.localTrackBookmarks.resolve(bookmark)
+                let items = await dependencies.localMedia.importURLs([url])
+                guard let item = items.first else { throw LocalTrackBookmarkError.missingFile }
+                await dependencies.playback.play(item: item)
+                guard dependencies.playback.activeProviderID == .localMedia,
+                      dependencies.playback.state.currentItem?.mediaKind == .localFile,
+                      dependencies.playback.state.currentItem?.providerItemID == item.providerItemID else {
+                    throw dependencies.playback.state.lastError ?? ProviderError(code: .playbackFailed, message: "Could not restore this local track.")
+                }
+                let duration = dependencies.playback.state.duration?.secondsValue ?? bookmark.positionSeconds
+                await dependencies.playback.seek(to: .seconds(min(bookmark.positionSeconds, duration)))
+            } catch { bookmarkError = error.localizedDescription }
+        }
     }
 
     private static func seconds(from value: String) -> Double? {

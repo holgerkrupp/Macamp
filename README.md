@@ -31,7 +31,7 @@ Streaming services appear in **Add from Streaming Service…** when their provid
 5. Use **Demo Library** from the sidebar provider menu when signing, App Service, subscription, or account configuration is unavailable.
 6. Choose **File → Open & Play…**, **Add Files…**, **Add Folder…**, **Add Playlist…**, or **Add from Streaming Service…** to import without opening the Library. The Classic playlist ADD menu also offers the service picker. Items append to the shared mixed-source playlist without autoplay; selecting a row routes playback to that source. Use **Local Files** in the sidebar or **Show Library** (Option-Command-L) to manage the remembered local library. MP3, ordinary M3U/M3U8 playlists with supported entries, and HLS M3U8 manifests are supported. Choose a folder when a playlist refers to sibling files so the sandbox can retain access to them.
 
-The app sandbox allows outgoing network requests and read-only access to files explicitly chosen by the user. Imported skins are copied into the app’s Application Support directory.
+The app sandbox allows outgoing network requests and access to files explicitly chosen by the user. Track Info asks the user to reselect an MP3 before writing its standard ID3v2 tags; other file operations remain read-only. Imported skins are copied into the app’s Application Support directory.
 
 Build and test without signing:
 

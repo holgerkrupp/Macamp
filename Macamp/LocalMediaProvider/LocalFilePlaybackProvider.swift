@@ -179,6 +179,40 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         await prepareImport(urls, persistBookmarks: true, isQueueOnly: true)
     }
 
+    func updateMP3Tags(
+        for item: PlaybackItem,
+        authorizedURL: URL,
+        title: String,
+        artist: String,
+        album: String
+    ) throws -> PlaybackItem {
+        guard item.providerID == id, item.mediaKind == .localFile,
+              authorizedURL.isFileURL, authorizedURL.pathExtension.lowercased() == "mp3",
+              let originalURL = locations[item.id] ?? item.sourceURL ?? URL(string: item.providerItemID),
+              originalURL.isFileURL,
+              originalURL.standardizedFileURL == authorizedURL.standardizedFileURL else {
+            throw ID3v2TagError.unsupportedFile
+        }
+        beginAccessing(authorizedURL)
+        try ID3v2TagEditor.updateFile(at: authorizedURL, title: title, artist: artist, album: album)
+
+        var updated = item
+        updated.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.artist = artist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.albumTitle = album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : album.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.sourceURL = authorizedURL
+        locations[item.id] = authorizedURL
+        if state.currentItem?.id == item.id { state.currentItem = updated }
+        if let index = queue.items.firstIndex(where: { $0.id == item.id }) { queue.items[index] = updated }
+        for index in libraryItems.indices where libraryItems[index].providerItemID == item.providerItemID {
+            libraryItems[index].title = updated.title
+            libraryItems[index].artist = updated.artist
+            libraryItems[index].albumTitle = updated.albumTitle
+        }
+        publish()
+        return updated
+    }
+
     func canResolve(_ item: PlaybackItem) -> Bool {
         guard item.providerID == id,
               let url = locations[item.id] ?? item.sourceURL ?? URL(string: item.providerItemID) else { return false }

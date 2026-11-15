@@ -8,6 +8,7 @@ struct UnifiedPlaylistEditorView: View {
     let exportPlaylist: ([PlaybackItem]) -> Void
     @State private var selection: Set<PlaybackItemID> = []
     @State private var jumpToFileQuery = ""
+    @State private var trackInfoItem: PlaybackItem?
 
     var body: some View {
         let visibleItems = playback.queue.items.enumerated().filter { _, item in
@@ -49,6 +50,9 @@ struct UnifiedPlaylistEditorView: View {
                     .tag(item.id)
                     .contextMenu {
                         Button("Play") { Task { await playback.playQueueEntry(at: index) } }
+                        if item.providerID == .localMedia, item.mediaKind == .localFile {
+                            Button("Track Info…") { trackInfoItem = item }
+                        }
                         Button("Remove") { Task { await playback.removeQueueItems(at: IndexSet(integer: index)) } }
                     }
                 }
@@ -91,6 +95,9 @@ struct UnifiedPlaylistEditorView: View {
             .padding(10)
         }
         .frame(minWidth: 600, minHeight: 420)
+        .sheet(item: $trackInfoItem) { item in
+            LocalTrackInfoSheet(item: item, playback: playback)
+        }
         .dropDestination(for: URL.self) { urls, _ in
             Self.acceptDroppedURLs(urls, importURLs: importURLs)
         }

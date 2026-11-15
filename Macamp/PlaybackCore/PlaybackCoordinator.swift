@@ -365,6 +365,26 @@ final class PlaybackCoordinator {
         await performAudioEffect(required: .crossfade) { try await $0.setCrossfadeDuration(value.clamped(to: 0...12)) }
     }
 
+    func updateLocalMP3Tags(
+        for item: PlaybackItem,
+        authorizedURL: URL,
+        title: String,
+        artist: String,
+        album: String
+    ) async throws {
+        guard let provider = providers[.localMedia] as? LocalFilePlaybackProvider else {
+            throw ProviderError(code: .providerUnavailable, message: "Local file playback is unavailable.")
+        }
+        let updated = try provider.updateMP3Tags(for: item, authorizedURL: authorizedURL, title: title, artist: artist, album: album)
+        if let entry = playlistStore.entries.first(where: { $0.playbackItem.id == item.id }) {
+            playlistStore.updateMetadata(for: entry.id, title: updated.title, artist: updated.artist, albumTitle: updated.albumTitle)
+        } else if let entry = playlistStore.entries.first(where: {
+            $0.providerID == item.providerID && $0.providerItemID == item.providerItemID
+        }) {
+            playlistStore.updateMetadata(for: entry.id, title: updated.title, artist: updated.artist, albumTitle: updated.albumTitle)
+        }
+    }
+
     func resetEqualizer() async {
         guard let effects = activeProvider as? any AudioEffectController else { return }
         do {

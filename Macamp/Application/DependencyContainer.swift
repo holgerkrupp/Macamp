@@ -13,6 +13,7 @@ final class DependencyContainer {
     let appleMusic = AppleMusicPlaybackProvider()
     let preview = MockPlaybackProvider()
     let localMedia: LocalFilePlaybackProvider
+    let localTrackBookmarks = LocalTrackBookmarkStore()
     let spotify: SpotifyPlaybackProvider
     let tidal: TidalPlaybackProvider
     let soundCloud: SoundCloudPlaybackProvider
