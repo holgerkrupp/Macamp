@@ -34,13 +34,27 @@ struct PlaybackCoreTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let settings = SettingsStore(defaults: defaults)
 
-        var profile = AudioEffectState(isEnabled: true, preampGain: 99, bandGains: [EqualizerBand.winamp10[0]: -99])
+        var profile = AudioEffectState(
+            isEnabled: true,
+            preampGain: 99,
+            pitchSemitones: 50,
+            tempoRate: 0.1,
+            reverbMix: 200,
+            advancedEffectsEnabled: true,
+            crossfadeDuration: 90,
+            bandGains: [EqualizerBand.winamp10[0]: -99]
+        )
         profile.setGain(.infinity, for: EqualizerBand.winamp10[1])
         settings.equalizerState = profile
 
         let restored = SettingsStore(defaults: defaults).equalizerState
         #expect(restored.isEnabled)
         #expect(restored.preampGain == 12)
+        #expect(restored.pitchSemitones == 12)
+        #expect(restored.tempoRate == 0.5)
+        #expect(restored.reverbMix == 100)
+        #expect(restored.advancedEffectsEnabled)
+        #expect(restored.crossfadeDuration == 12)
         #expect(restored.bandGains.count == 10)
         #expect(restored.gain(for: EqualizerBand.winamp10[0]) == -12)
         #expect(restored.gain(for: EqualizerBand.winamp10[1]) == 0)
@@ -440,6 +454,45 @@ struct PlaybackCoreTests {
         #expect(local.state.status == .playing)
         #expect(coordinator.queue.currentIndex == 0)
         #expect(coordinator.state.lastError?.code == .policyRestriction)
+    }
+
+    @Test func localCrossfadeUsesOnlyAdjacentSharedPlaylistTracks() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampSharedCrossfade-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let firstURL = root.appendingPathComponent("first.wav")
+        let secondURL = root.appendingPathComponent("second.wav")
+        try writeSilentWaveFixture(to: firstURL, duration: 3)
+        try writeSilentWaveFixture(to: secondURL, duration: 3)
+        let imported = await LocalMediaImporter.importURLs([firstURL, secondURL])
+        #expect(imported.items.count == 2)
+
+        let local = LocalFilePlaybackProvider()
+        let hosted = TestPlaybackProvider(id: .spotify, capabilities: [.playback])
+        let coordinator = PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore())
+        coordinator.register(local)
+        coordinator.register(hosted)
+        let hostedItem = PlaybackItem(id: "hosted", providerID: .spotify, providerItemID: "hosted-track", title: "Hosted", mediaKind: .song, isExplicit: false)
+        await coordinator.play(items: imported.items + [hostedItem], startingAt: 0)
+
+        #expect(local.queue.items.count == 2)
+        await coordinator.setCrossfadeDuration(0.5)
+        try await local.seek(to: .seconds(1.9))
+        let localDeadline = Date().addingTimeInterval(5)
+        while coordinator.queue.currentIndex != 1, Date() < localDeadline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #expect(coordinator.queue.currentIndex == 1)
+        #expect(coordinator.state.currentItem?.providerItemID == imported.items[1].providerItemID)
+
+        try await local.seek(to: .seconds(2.7))
+        let handoffDeadline = Date().addingTimeInterval(5)
+        while hosted.playCount == 0, Date() < handoffDeadline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #expect(hosted.playCount == 1)
+        #expect(coordinator.activeProviderID == .spotify)
+        #expect(coordinator.queue.currentIndex == 2)
     }
 }
 

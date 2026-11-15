@@ -52,7 +52,7 @@ struct UnifiedPlaylistEditorView: View {
                         Button("Remove") { Task { await playback.removeQueueItems(at: IndexSet(integer: index)) } }
                     }
                 }
-                .onMove { playback.playlistStore.move(fromOffsets: $0, toOffset: $1) }
+                .onMove { playback.moveQueueItems(fromOffsets: $0, toOffset: $1) }
                 .onDelete { offsets in Task { await playback.removeQueueItems(at: offsets) } }
             }
             .overlay {
@@ -71,7 +71,7 @@ struct UnifiedPlaylistEditorView: View {
                     Divider()
                     Menu("Sort Playlist") {
                         ForEach(UnifiedPlaylistSort.allCases, id: \.self) { key in
-                            Button(key.title) { playback.playlistStore.sort(by: key) }
+                            Button(key.title) { playback.sortQueue(by: key) }
                         }
                     }
                     Divider()

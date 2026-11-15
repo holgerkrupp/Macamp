@@ -890,7 +890,7 @@ final class ClassicPlaylistSurface: NSView {
         guard let first = selectedIndexes.first, let last = selectedIndexes.last else { return }
         let previousItems = coordinator.queue.items
         let destination = direction < 0 ? max(0, first - 1) : min(coordinator.queue.items.count, last + 2)
-        coordinator.playlistStore.move(fromOffsets: selectedIndexes, toOffset: destination)
+        coordinator.moveQueueItems(fromOffsets: selectedIndexes, toOffset: destination)
         selectedIndexes = Self.selectionAfterReorder(
             selectedIndexes,
             previousItems: previousItems,

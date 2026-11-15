@@ -248,4 +248,62 @@ struct LocalMediaTests {
             #expect(error.code == .unsupported)
         }
     }
+
+    @Test @MainActor func localEffectsSeekAndCrossfadeAdvanceWithoutCrossingIntoRadioRoute() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampCrossfade-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let firstURL = root.appendingPathComponent("first.wav")
+        let secondURL = root.appendingPathComponent("second.wav")
+        let thirdURL = root.appendingPathComponent("third.wav")
+        try writeSilentWaveFixture(to: firstURL, duration: 3)
+        try writeSilentWaveFixture(to: secondURL, duration: 3)
+        try writeSilentWaveFixture(to: thirdURL, duration: 3)
+        let imported = await LocalMediaImporter.importURLs([firstURL, secondURL, thirdURL])
+        #expect(imported.items.count == 3)
+
+        let provider = LocalFilePlaybackProvider()
+        try await provider.play(items: imported.items, startingAt: 0)
+        #expect(provider.effectCapabilities.contains(.pitch))
+        #expect(provider.effectCapabilities.contains(.tempo))
+        #expect(provider.effectCapabilities.contains(.reverb))
+        #expect(provider.effectCapabilities.contains(.crossfade))
+        try await provider.setPitchSemitones(2)
+        try await provider.setTempoRate(1.1)
+        try await provider.setReverbMix(18)
+        try await provider.setAdvancedEffectsEnabled(true)
+        try await provider.setCrossfadeDuration(0.5)
+        try await provider.seek(to: .seconds(1.9))
+        let deadline = Date().addingTimeInterval(4)
+        while provider.queue.currentIndex != 1, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #expect(provider.queue.currentIndex == 1)
+        #expect(provider.state.currentItem?.id == imported.items[1].id)
+
+        try await provider.setCrossfadeDuration(0.5)
+        try await provider.seek(to: .seconds(2.7))
+        try await Task.sleep(for: .milliseconds(350))
+        try await provider.pause()
+        try await Task.sleep(for: .milliseconds(700))
+        #expect(provider.queue.currentIndex == 1)
+        #expect(provider.state.status == .paused)
+
+        try await provider.setAdvancedEffectsEnabled(false)
+        try await provider.setCrossfadeDuration(0)
+        try await provider.play()
+        let secondDeadline = Date().addingTimeInterval(4)
+        while provider.queue.currentIndex != 2, Date() < secondDeadline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #expect(provider.queue.currentIndex == 2)
+        #expect(provider.state.currentItem?.id == imported.items[2].id)
+
+        let radio = PlaybackItem(id: "radio-route", providerID: .localMedia, providerItemID: "https://radio.example/live.mp3", title: "Radio", mediaKind: .radioStation, isExplicit: false)
+        try await provider.play(item: radio)
+        #expect(!provider.effectCapabilities.contains(.pitch))
+        #expect(!provider.effectCapabilities.contains(.crossfade))
+        await #expect(throws: ProviderError.self) { try await provider.setPitchSemitones(4) }
+        try await provider.stop()
+    }
 }

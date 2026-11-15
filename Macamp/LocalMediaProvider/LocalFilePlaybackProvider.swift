@@ -16,7 +16,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         isCurrentRouteProcessed ? baseCapabilities.union([.nativeEqualizer, .pcmAudio]) : baseCapabilities
     }
     var effectCapabilities: AudioEffectCapabilities {
-        isCurrentRouteProcessed ? [.enable, .preamp, .equalizerBands] : []
+        isCurrentRouteProcessed ? [.enable, .preamp, .equalizerBands, .pitch, .tempo, .reverb, .crossfade] : []
     }
     var effectUnavailableReason: String? {
         isCurrentRouteProcessed ? nil : "Equalizer is available for decoded local audio. Video and remote streams use AVPlayer and bypass the DSP."
@@ -34,9 +34,16 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     var videoPlayer: AVPlayer { player }
     @ObservationIgnored private let audioEngine = AVAudioEngine()
     @ObservationIgnored private let audioPlayerNode = AVAudioPlayerNode()
+    @ObservationIgnored private let crossfadePlayerNode = AVAudioPlayerNode()
+    @ObservationIgnored private let audioMixer = AVAudioMixerNode()
+    @ObservationIgnored private let timePitch = AVAudioUnitTimePitch()
+    @ObservationIgnored private let reverb = AVAudioUnitReverb()
     @ObservationIgnored private let equalizer = AVAudioUnitEQ(numberOfBands: EqualizerBand.winamp10.count)
     @ObservationIgnored private var audioFile: AVAudioFile?
     @ObservationIgnored private var scheduledStartFrame: AVAudioFramePosition = 0
+    @ObservationIgnored private var activeAudioNodeIndex = 0
+    @ObservationIgnored private var crossfadeTask: Task<Void, Never>?
+    @ObservationIgnored private var crossfadeNextItemID: PlaybackItemID?
     @ObservationIgnored private var usesAudioEngine = false
     @ObservationIgnored private let bookmarkStore: LocalMediaBookmarkStore
     @ObservationIgnored private let queueBookmarkStore: LocalMediaBookmarkStore
@@ -68,10 +75,21 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         effectState = settingsStore.equalizerState
         player.volume = 1
         audioPlayerNode.volume = 1
+        crossfadePlayerNode.volume = 0
         audioEngine.attach(audioPlayerNode)
+        audioEngine.attach(crossfadePlayerNode)
+        audioEngine.attach(audioMixer)
+        audioEngine.attach(timePitch)
+        audioEngine.attach(reverb)
         audioEngine.attach(equalizer)
-        audioEngine.connect(audioPlayerNode, to: equalizer, format: nil)
+        audioEngine.connect(audioPlayerNode, to: audioMixer, format: nil)
+        audioEngine.connect(crossfadePlayerNode, to: audioMixer, format: nil)
+        audioEngine.connect(audioMixer, to: timePitch, format: nil)
+        audioEngine.connect(timePitch, to: reverb, format: nil)
+        audioEngine.connect(reverb, to: equalizer, format: nil)
         audioEngine.connect(equalizer, to: audioEngine.mainMixerNode, format: nil)
+        reverb.loadFactoryPreset(.smallRoom)
+        LocalFileAudioEffectsDSP.configure(timePitch: timePitch, reverb: reverb, state: effectState)
         LocalFileEqualizerDSP.configure(equalizer, state: effectState)
     }
 
@@ -239,7 +257,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         }
         if usesAudioEngine {
             if !audioEngine.isRunning { try audioEngine.start() }
-            audioPlayerNode.play()
+            activeAudioPlayerNode.play()
         } else {
             player.play()
         }
@@ -253,7 +271,8 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     func pause() async throws {
         cancelRadioReconnect(resetAttempts: false)
         updateElapsed()
-        if usesAudioEngine { audioPlayerNode.pause() } else { player.pause() }
+        cancelCrossfade()
+        if usesAudioEngine { activeAudioPlayerNode.pause() } else { player.pause() }
         state.status = .paused
         state.playbackRate = 0
         stopProgressUpdates()
@@ -262,7 +281,8 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
 
     func stop() async throws {
         cancelRadioReconnect()
-        if usesAudioEngine { audioPlayerNode.stop() } else { player.pause() }
+        cancelCrossfade()
+        if usesAudioEngine { stopAudioNodes() } else { player.pause() }
         try seekPlayer(to: .zero, resume: false)
         state.status = .stopped
         state.playbackRate = 0
@@ -291,6 +311,10 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     func removeQueueItems(at offsets: IndexSet) async throws {
         let removed = offsets.filter { queue.items.indices.contains($0) }
         guard !removed.isEmpty else { return }
+        if let nextID = crossfadeNextItemID,
+           removed.contains(where: { queue.items[$0].id == nextID }) {
+            cancelCrossfade()
+        }
         let current = queue.currentIndex
         if current.map(removed.contains) == true { try await stop() }
         queue.items = queue.items.enumerated().compactMap { removed.contains($0.offset) ? nil : $0.element }
@@ -344,6 +368,14 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         publish()
     }
 
+    func refreshQueuePreservingCurrent(_ items: [PlaybackItem]) {
+        guard let current = state.currentItem,
+              let currentIndex = items.firstIndex(where: { $0.id == current.id }) else { return }
+        cancelCrossfade()
+        queue = PlaybackQueue(items: items, currentIndex: currentIndex)
+        publish()
+    }
+
     func seek(to position: Duration) async throws {
         guard usesAudioEngine ? audioFile != nil : player.currentItem != nil else { throw ProviderError(code: .itemUnavailable, message: "Nothing is loaded.") }
         let maximum = state.duration?.secondsValue ?? position.secondsValue
@@ -373,7 +405,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     func setVolume(_ volume: Double) async throws {
         state.volume = min(max(volume, 0), 1)
         player.volume = Float(state.volume)
-        audioPlayerNode.volume = Float(state.volume)
+        audioMixer.outputVolume = Float(state.volume)
         publish()
     }
 
@@ -403,6 +435,41 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         publish()
     }
 
+    func setPitchSemitones(_ value: Float) async throws {
+        try requireAudioEngineRoute()
+        effectState.pitchSemitones = value.isFinite ? min(max(value, -12), 12) : 0
+        timePitch.pitch = effectState.advancedEffectsEnabled ? effectState.pitchSemitones * 100 : 0
+        publish()
+    }
+
+    func setTempoRate(_ value: Float) async throws {
+        try requireAudioEngineRoute()
+        effectState.tempoRate = value.isFinite ? min(max(value, 0.5), 2) : 1
+        timePitch.rate = effectState.advancedEffectsEnabled ? effectState.tempoRate : 1
+        publish()
+    }
+
+    func setReverbMix(_ value: Float) async throws {
+        try requireAudioEngineRoute()
+        effectState.reverbMix = value.isFinite ? min(max(value, 0), 100) : 0
+        reverb.wetDryMix = effectState.advancedEffectsEnabled ? effectState.reverbMix : 0
+        publish()
+    }
+
+    func setAdvancedEffectsEnabled(_ enabled: Bool) async throws {
+        try requireAudioEngineRoute()
+        effectState.advancedEffectsEnabled = enabled
+        LocalFileAudioEffectsDSP.configure(timePitch: timePitch, reverb: reverb, state: effectState)
+        publish()
+    }
+
+    func setCrossfadeDuration(_ value: Float) async throws {
+        try requireAudioEngineRoute()
+        effectState.crossfadeDuration = value.isFinite ? min(max(value, 0), 12) : 0
+        if effectState.crossfadeDuration == 0 { cancelCrossfade() }
+        publish()
+    }
+
     private func requireAudioEngineRoute() throws {
         guard isCurrentRouteProcessed else {
             throw ProviderError.unsupported("equalizer for this source")
@@ -421,11 +488,16 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
 
     private func loadCurrentItem(autoplay: Bool) throws {
         cancelRadioReconnect()
+        cancelCrossfade()
         radioReconnectAttempts = 0
         guard let item = queue.currentItem, let url = locations[item.id] else {
             throw ProviderError(code: .itemUnavailable, message: "The selected local file is no longer available.")
         }
         audioPlayerNode.stop()
+        crossfadePlayerNode.stop()
+        activeAudioNodeIndex = 0
+        audioPlayerNode.volume = 1
+        crossfadePlayerNode.volume = 0
         player.pause()
         if let oldOutput = metadataOutput, let oldItem = player.currentItem { oldItem.remove(oldOutput) }
         metadataOutput = nil
@@ -529,7 +601,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
             nextIndex = nil
         }
         guard let nextIndex else {
-            if usesAudioEngine { audioPlayerNode.stop() } else { player.pause() }
+            if usesAudioEngine { stopAudioNodes() } else { player.pause() }
             state.status = .stopped
             state.playbackRate = 0
             stopProgressUpdates()
@@ -653,6 +725,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         }
         updateElapsed()
         publish()
+        maybeStartCrossfade()
         if let duration = state.duration?.secondsValue,
            duration > 0,
            state.elapsed.secondsValue >= duration - 0.15,
@@ -662,12 +735,114 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         }
     }
 
+    private func maybeStartCrossfade() {
+        guard crossfadeTask == nil, usesAudioEngine,
+              effectState.crossfadeDuration > 0,
+              state.currentItem?.mediaKind == .localFile,
+              let currentIndex = queue.currentIndex,
+              let duration = state.duration?.secondsValue,
+              duration > 0,
+              let nextIndex = nextIndexForCrossfade(from: currentIndex),
+              queue.items.indices.contains(nextIndex) else { return }
+
+        let next = queue.items[nextIndex]
+        guard next.mediaKind == .localFile,
+              let url = locations[next.id], url.isFileURL,
+              let nextFile = try? AVAudioFile(forReading: url) else { return }
+        let sampleRate = nextFile.processingFormat.sampleRate
+        let segmentStart = max(0, next.sourceStartSeconds ?? 0)
+        let segmentEnd = min(Double(nextFile.length) / sampleRate,
+                             max(segmentStart, next.sourceEndSeconds ?? (Double(nextFile.length) / sampleRate)))
+        let startFrame = min(max(AVAudioFramePosition(segmentStart * sampleRate), 0), nextFile.length)
+        let endFrame = min(nextFile.length, AVAudioFramePosition(segmentEnd * sampleRate))
+        let frameCount = AVAudioFrameCount(min(max(0, endFrame - startFrame), AVAudioFramePosition(UInt32.max)))
+        guard frameCount > 0 else { return }
+
+        let fadeDuration = min(Double(effectState.crossfadeDuration), duration)
+        guard fadeDuration > 0, duration - state.elapsed.secondsValue <= fadeDuration else { return }
+
+        let currentID = queue.currentItem?.id
+        let nextID = next.id
+        let oldNode = activeAudioPlayerNode
+        let newNode = inactiveAudioPlayerNode
+        newNode.stop()
+        newNode.volume = 0
+        newNode.scheduleSegment(nextFile, startingFrame: startFrame, frameCount: frameCount, at: nil)
+        newNode.play()
+        handledCurrentEnd = true
+
+        let stepCount = max(1, Int(ceil(fadeDuration * 50)))
+        let stepDelay = max(1, Int64(fadeDuration * 1_000_000_000 / Double(stepCount)))
+        crossfadeTask = Task { [weak self] in
+            for step in 1...stepCount {
+                try? await Task.sleep(for: .nanoseconds(stepDelay))
+                guard let self, !Task.isCancelled,
+                      self.queue.currentItem?.id == currentID else { return }
+                let progress = Float(step) / Float(stepCount)
+                oldNode.volume = 1 - progress
+                newNode.volume = progress
+            }
+            guard let self, !Task.isCancelled,
+                  self.queue.currentItem?.id == currentID,
+                  let targetIndex = self.queue.items.firstIndex(where: { $0.id == nextID }) else { return }
+            oldNode.stop()
+            oldNode.volume = 0
+            newNode.volume = 1
+            self.activeAudioNodeIndex = self.activeAudioNodeIndex == 0 ? 1 : 0
+            self.queue.currentIndex = targetIndex
+            self.audioFile = nextFile
+            self.scheduledStartFrame = startFrame
+            self.state.currentItem = next
+            self.state.duration = next.duration ?? .seconds(Double(frameCount) / sampleRate)
+            self.state.elapsed = .zero
+            self.handledCurrentEnd = false
+            self.crossfadeNextItemID = nil
+            self.crossfadeTask = nil
+            self.publish()
+        }
+        crossfadeNextItemID = nextID
+    }
+
+    private func nextIndexForCrossfade(from current: Int) -> Int? {
+        if state.repeatMode == .one { return current }
+        if state.shuffleMode == .songs, queue.items.count > 1 {
+            return queue.items.indices.filter { $0 != current }.randomElement()
+        }
+        if current + 1 < queue.items.count { return current + 1 }
+        return state.repeatMode == .all ? 0 : nil
+    }
+
+    private var activeAudioPlayerNode: AVAudioPlayerNode {
+        activeAudioNodeIndex == 0 ? audioPlayerNode : crossfadePlayerNode
+    }
+
+    private var inactiveAudioPlayerNode: AVAudioPlayerNode {
+        activeAudioNodeIndex == 0 ? crossfadePlayerNode : audioPlayerNode
+    }
+
+    private func cancelCrossfade() {
+        crossfadeTask?.cancel()
+        crossfadeTask = nil
+        crossfadeNextItemID = nil
+        inactiveAudioPlayerNode.stop()
+        inactiveAudioPlayerNode.volume = 0
+        activeAudioPlayerNode.volume = 1
+        handledCurrentEnd = false
+    }
+
+    private func stopAudioNodes() {
+        audioPlayerNode.stop()
+        crossfadePlayerNode.stop()
+        audioPlayerNode.volume = activeAudioNodeIndex == 0 ? 1 : 0
+        crossfadePlayerNode.volume = activeAudioNodeIndex == 1 ? 1 : 0
+    }
+
     private func updateElapsed() {
         let seconds: Double
         if usesAudioEngine,
            let file = audioFile,
-           let nodeTime = audioPlayerNode.lastRenderTime,
-           let playerTime = audioPlayerNode.playerTime(forNodeTime: nodeTime) {
+           let nodeTime = activeAudioPlayerNode.lastRenderTime,
+           let playerTime = activeAudioPlayerNode.playerTime(forNodeTime: nodeTime) {
             seconds = max(0, Double(scheduledStartFrame) / file.processingFormat.sampleRate - (queue.currentItem?.sourceStartSeconds ?? 0))
                 + Double(playerTime.sampleTime) / playerTime.sampleRate
         } else {
@@ -686,7 +861,8 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
 
     private func scheduleAudioFile(from seconds: Double, autoplay: Bool) throws {
         guard let file = audioFile else { return }
-        audioPlayerNode.stop()
+        cancelCrossfade()
+        activeAudioPlayerNode.stop()
         let sampleRate = file.processingFormat.sampleRate
         let item = queue.currentItem
         let segmentStart = max(0, item?.sourceStartSeconds ?? 0)
@@ -697,11 +873,11 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         let remaining = max(0, endFrame - start)
         let frameCount = AVAudioFrameCount(min(remaining, AVAudioFramePosition(UInt32.max)))
         if frameCount > 0 {
-            audioPlayerNode.scheduleSegment(file, startingFrame: start, frameCount: frameCount, at: nil)
+            activeAudioPlayerNode.scheduleSegment(file, startingFrame: start, frameCount: frameCount, at: nil)
         }
         audioEngine.prepare()
         if !audioEngine.isRunning { try audioEngine.start() }
-        if autoplay, frameCount > 0 { audioPlayerNode.play() }
+        if autoplay, frameCount > 0 { activeAudioPlayerNode.play() }
     }
 
     private func installAnalysisTapIfNeeded() {

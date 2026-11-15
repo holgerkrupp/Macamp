@@ -392,6 +392,59 @@ struct SettingsView: View {
             Form { Picker("Active provider", selection: Binding(get: { dependencies.playback.activeProviderID ?? .appleMusic }, set: { dependencies.selectProvider($0) })) { ForEach(dependencies.providerRegistry.availableDescriptors) { descriptor in Text(descriptor.displayName).tag(descriptor.id) } }; LabeledContent("Active status", value: dependencies.playback.authenticationState.rawValue); Text("Provider capabilities and account limitations are shown by Music Services. Unavailable services remain out of the connection menu until their official integration is configured.").font(.caption).foregroundStyle(.secondary) }.padding().tabItem { Label("Providers", systemImage: "dot.radiowaves.left.and.right") }
             Form { Picker("Integer scale", selection: Binding(get: { dependencies.settings.skinScale }, set: { dependencies.settings.skinScale = $0; dependencies.classicPlayer.applySettings() })) { ForEach(1...4, id: \.self) { Text("\($0)×").tag($0) } }; Toggle("Transparent-pixel click-through", isOn: Binding(get: { dependencies.settings.clickThroughTransparentPixels }, set: { dependencies.settings.clickThroughTransparentPixels = $0 })); Toggle("Shadow", isOn: Binding(get: { dependencies.settings.playerShadow }, set: { dependencies.settings.playerShadow = $0; dependencies.classicPlayer.applySettings() })) }.padding().tabItem { Label("Skin", systemImage: "paintbrush") }
             Form { Picker("Mode", selection: Binding(get: { BuiltInVisualization(rawValue: dependencies.settings.selectedVisualization) ?? .spectrum }, set: { dependencies.visualizations.select($0) })) { ForEach(BuiltInVisualization.allCases) { Text($0.title).tag($0) } }; Text("Visualizations are available for decoded local audio.") }.padding().tabItem { Label("Visualization", systemImage: "waveform") }
+            Form {
+                if let reason = dependencies.playback.audioEffectUnavailableReason,
+                   !dependencies.playback.audioEffectCapabilities.contains(.pitch) {
+                    Text(reason).font(.caption).foregroundStyle(.secondary)
+                }
+                Toggle("Enable pitch, tempo and reverb", isOn: Binding(
+                    get: { dependencies.playback.audioEffectState.advancedEffectsEnabled },
+                    set: { enabled in Task { await dependencies.playback.setAdvancedEffectsEnabled(enabled) } }
+                ))
+                .disabled(!dependencies.playback.audioEffectCapabilities.contains(.pitch))
+                effectSlider(
+                    "Pitch", value: dependencies.playback.audioEffectState.pitchSemitones,
+                    range: -12...12, suffix: " st", capability: .pitch,
+                    update: dependencies.playback.setPitchSemitones
+                )
+                effectSlider(
+                    "Tempo", value: dependencies.playback.audioEffectState.tempoRate,
+                    range: 0.5...2, suffix: "×", capability: .tempo,
+                    update: dependencies.playback.setTempoRate
+                )
+                effectSlider(
+                    "Reverb", value: dependencies.playback.audioEffectState.reverbMix,
+                    range: 0...100, suffix: "%", capability: .reverb,
+                    update: dependencies.playback.setReverbMix
+                )
+                effectSlider(
+                    "Crossfade", value: dependencies.playback.audioEffectState.crossfadeDuration,
+                    range: 0...12, suffix: " s", capability: .crossfade,
+                    update: dependencies.playback.setCrossfadeDuration
+                )
+                Text("Effects apply to decoded local audio. Disable pitch, tempo and reverb to bypass those units; set crossfade to 0 s to turn it off. Video, radio and hosted audio keep their own playback route.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.padding().tabItem { Label("Audio Effects", systemImage: "slider.horizontal.3") }
         }.padding()
+    }
+
+    private func effectSlider(
+        _ title: String,
+        value: Float,
+        range: ClosedRange<Double>,
+        suffix: String,
+        capability: AudioEffectCapabilities,
+        update: @escaping (Float) async -> Void
+    ) -> some View {
+        HStack {
+            Text(title).frame(width: 72, alignment: .leading)
+            Slider(value: Binding(
+                get: { Double(value) },
+                set: { newValue in Task { await update(Float(newValue)) } }
+            ), in: range)
+            Text(String(format: "%.2f%@", value, suffix))
+                .monospacedDigit().frame(width: 58, alignment: .trailing)
+        }
+        .disabled(!dependencies.playback.audioEffectCapabilities.contains(capability))
     }
 }

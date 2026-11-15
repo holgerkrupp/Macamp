@@ -217,7 +217,16 @@ final class PlaybackCoordinator {
                 try await target.setShuffleMode(.off)
                 try await target.setRepeatMode(.off)
             }
-            try await target.play(item: item)
+            if let localProvider = target as? LocalFilePlaybackProvider, item.mediaKind == .localFile {
+                let localRun = contiguousLocalAudioEntries(startingAt: index, provider: localProvider)
+                if localRun.isEmpty {
+                    try await target.play(item: item)
+                } else {
+                    try await localProvider.play(items: localRun.map(\.playbackItem), startingAt: 0)
+                }
+            } else {
+                try await target.play(item: item)
+            }
             playlistStore.select(entry.id)
             syncPlaylistQueue()
             apply(ProviderSnapshot(authenticationState: target.authenticationState, state: target.state, queue: target.queue))
@@ -238,6 +247,7 @@ final class PlaybackCoordinator {
         case .next: playlistStore.insertNext(items)
         }
         syncPlaylistQueue()
+        refreshActiveLocalAudioRun()
         return true
     }
     func removeQueueItems(at offsets: IndexSet) async {
@@ -246,6 +256,7 @@ final class PlaybackCoordinator {
         if removesCurrent, let activeProvider, activeProvider.state.status == .playing { try? await activeProvider.stop() }
         playlistStore.remove(at: offsets)
         syncPlaylistQueue()
+        refreshActiveLocalAudioRun()
     }
 
     /// Adds items to the active provider's queue without invoking its playback
@@ -273,6 +284,18 @@ final class PlaybackCoordinator {
         if let activeProvider, activeProvider.state.status == .playing { try? await activeProvider.stop() }
         playlistStore.clear()
         syncPlaylistQueue()
+    }
+
+    func moveQueueItems(fromOffsets offsets: IndexSet, toOffset destination: Int) {
+        playlistStore.move(fromOffsets: offsets, toOffset: destination)
+        syncPlaylistQueue()
+        refreshActiveLocalAudioRun()
+    }
+
+    func sortQueue(by key: UnifiedPlaylistSort) {
+        playlistStore.sort(by: key)
+        syncPlaylistQueue()
+        refreshActiveLocalAudioRun()
     }
     func seek(to position: Duration) async { await perform(required: .seek) { try await $0.seek(to: position) } }
     func next() async {
@@ -320,6 +343,26 @@ final class PlaybackCoordinator {
 
     func setPreampGain(_ gain: Float) async {
         await performAudioEffect(required: .preamp) { try await $0.setPreampGain(gain.clamped(to: -12...12)) }
+    }
+
+    func setPitchSemitones(_ value: Float) async {
+        await performAudioEffect(required: .pitch) { try await $0.setPitchSemitones(value.clamped(to: -12...12)) }
+    }
+
+    func setAdvancedEffectsEnabled(_ enabled: Bool) async {
+        await performAudioEffect(required: .pitch) { try await $0.setAdvancedEffectsEnabled(enabled) }
+    }
+
+    func setTempoRate(_ value: Float) async {
+        await performAudioEffect(required: .tempo) { try await $0.setTempoRate(value.clamped(to: 0.5...2)) }
+    }
+
+    func setReverbMix(_ value: Float) async {
+        await performAudioEffect(required: .reverb) { try await $0.setReverbMix(value.clamped(to: 0...100)) }
+    }
+
+    func setCrossfadeDuration(_ value: Float) async {
+        await performAudioEffect(required: .crossfade) { try await $0.setCrossfadeDuration(value.clamped(to: 0...12)) }
     }
 
     func resetEqualizer() async {
@@ -450,7 +493,9 @@ final class PlaybackCoordinator {
             let selectedEntry = playlistStore.currentEntryID.flatMap { id in
                 playlistStore.entries.first(where: { $0.id == id })
             }
-            if selectedEntry?.providerID != currentItem.providerID || selectedEntry?.providerItemID != currentItem.providerItemID {
+            if let exactEntry = playlistStore.entries.first(where: { $0.playbackItem.id == currentItem.id }) {
+                playlistStore.select(exactEntry.id)
+            } else if selectedEntry?.providerID != currentItem.providerID || selectedEntry?.providerItemID != currentItem.providerItemID {
                 let matchingEntry = playlistStore.entries.first(where: {
                     $0.providerID == currentItem.providerID && $0.providerItemID == currentItem.providerItemID
                 })
@@ -479,6 +524,29 @@ final class PlaybackCoordinator {
     }
 
     private func syncPlaylistQueue() { _ = playlistStore.queue }
+
+    private func contiguousLocalAudioEntries(
+        startingAt index: Int,
+        provider: LocalFilePlaybackProvider
+    ) -> [UnifiedPlaylistEntry] {
+        var result: [UnifiedPlaylistEntry] = []
+        for entry in playlistStore.entries.dropFirst(index) {
+            guard entry.providerID == .localMedia, entry.mediaKind == .localFile,
+                  provider.canResolve(entry.playbackItem) else { break }
+            result.append(entry)
+        }
+        return result
+    }
+
+    private func refreshActiveLocalAudioRun() {
+        guard activeProviderID == .localMedia,
+              let provider = providers[.localMedia] as? LocalFilePlaybackProvider,
+              provider.state.status != .stopped,
+              let currentItem = provider.state.currentItem,
+              let index = playlistStore.entries.firstIndex(where: { $0.playbackItem.id == currentItem.id }) else { return }
+        let run = contiguousLocalAudioEntries(startingAt: index, provider: provider).map(\.playbackItem)
+        provider.refreshQueuePreservingCurrent(run)
+    }
 
     private func persistMeaningfulChanges(
         from previous: (providerID: PlaybackProviderID?, state: PlaybackState, queue: PlaybackQueue),

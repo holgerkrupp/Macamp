@@ -6,6 +6,10 @@ struct AudioEffectCapabilities: OptionSet, Sendable {
     static let enable = Self(rawValue: 1 << 0)
     static let preamp = Self(rawValue: 1 << 1)
     static let equalizerBands = Self(rawValue: 1 << 2)
+    static let pitch = Self(rawValue: 1 << 3)
+    static let tempo = Self(rawValue: 1 << 4)
+    static let reverb = Self(rawValue: 1 << 5)
+    static let crossfade = Self(rawValue: 1 << 6)
 }
 
 struct EqualizerBand: Hashable, Codable, Sendable {
@@ -19,11 +23,30 @@ struct EqualizerBand: Hashable, Codable, Sendable {
 struct AudioEffectState: Equatable, Codable, Sendable {
     var isEnabled = false
     var preampGain: Float = 0
+    var pitchSemitones: Float = 0
+    var tempoRate: Float = 1
+    var reverbMix: Float = 0
+    var advancedEffectsEnabled = false
+    var crossfadeDuration: Float = 0
     private(set) var bandGains: [EqualizerBand: Float] = [:]
 
-    init(isEnabled: Bool = false, preampGain: Float = 0, bandGains: [EqualizerBand: Float] = [:]) {
+    init(
+        isEnabled: Bool = false,
+        preampGain: Float = 0,
+        pitchSemitones: Float = 0,
+        tempoRate: Float = 1,
+        reverbMix: Float = 0,
+        advancedEffectsEnabled: Bool = false,
+        crossfadeDuration: Float = 0,
+        bandGains: [EqualizerBand: Float] = [:]
+    ) {
         self.isEnabled = isEnabled
         self.preampGain = Self.validGain(preampGain)
+        self.pitchSemitones = Self.validPitch(pitchSemitones)
+        self.tempoRate = Self.validTempo(tempoRate)
+        self.reverbMix = Self.validReverb(reverbMix)
+        self.advancedEffectsEnabled = advancedEffectsEnabled
+        self.crossfadeDuration = Self.validCrossfade(crossfadeDuration)
         self.bandGains = Dictionary(uniqueKeysWithValues: EqualizerBand.winamp10.map { band in
             (band, Self.validGain(bandGains[band] ?? 0))
         })
@@ -40,6 +63,10 @@ struct AudioEffectState: Equatable, Codable, Sendable {
 
     mutating func validate() {
         preampGain = Self.validGain(preampGain)
+        pitchSemitones = Self.validPitch(pitchSemitones)
+        tempoRate = Self.validTempo(tempoRate)
+        reverbMix = Self.validReverb(reverbMix)
+        crossfadeDuration = Self.validCrossfade(crossfadeDuration)
         bandGains = Dictionary(uniqueKeysWithValues: EqualizerBand.winamp10.map { band in
             (band, Self.validGain(bandGains[band] ?? 0))
         })
@@ -50,13 +77,23 @@ struct AudioEffectState: Equatable, Codable, Sendable {
         return min(max(gain, -12), 12)
     }
 
-    private enum CodingKeys: String, CodingKey { case isEnabled, preampGain, bandGains }
+    private static func validPitch(_ value: Float) -> Float { value.isFinite ? min(max(value, -12), 12) : 0 }
+    private static func validTempo(_ value: Float) -> Float { value.isFinite ? min(max(value, 0.5), 2) : 1 }
+    private static func validReverb(_ value: Float) -> Float { value.isFinite ? min(max(value, 0), 100) : 0 }
+    private static func validCrossfade(_ value: Float) -> Float { value.isFinite ? min(max(value, 0), 12) : 0 }
+
+    private enum CodingKeys: String, CodingKey { case isEnabled, preampGain, pitchSemitones, tempoRate, reverbMix, advancedEffectsEnabled, crossfadeDuration, bandGains }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             isEnabled: try values.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false,
             preampGain: try values.decodeIfPresent(Float.self, forKey: .preampGain) ?? 0,
+            pitchSemitones: try values.decodeIfPresent(Float.self, forKey: .pitchSemitones) ?? 0,
+            tempoRate: try values.decodeIfPresent(Float.self, forKey: .tempoRate) ?? 1,
+            reverbMix: try values.decodeIfPresent(Float.self, forKey: .reverbMix) ?? 0,
+            advancedEffectsEnabled: try values.decodeIfPresent(Bool.self, forKey: .advancedEffectsEnabled) ?? false,
+            crossfadeDuration: try values.decodeIfPresent(Float.self, forKey: .crossfadeDuration) ?? 0,
             bandGains: try values.decodeIfPresent([EqualizerBand: Float].self, forKey: .bandGains) ?? [:]
         )
     }
@@ -70,6 +107,19 @@ protocol AudioEffectController: AnyObject {
     func setEnabled(_ enabled: Bool) async throws
     func setPreampGain(_ value: Float) async throws
     func setBandGain(_ value: Float, band: EqualizerBand) async throws
+    func setPitchSemitones(_ value: Float) async throws
+    func setTempoRate(_ value: Float) async throws
+    func setReverbMix(_ value: Float) async throws
+    func setAdvancedEffectsEnabled(_ enabled: Bool) async throws
+    func setCrossfadeDuration(_ value: Float) async throws
+}
+
+extension AudioEffectController {
+    func setPitchSemitones(_ value: Float) async throws { throw ProviderError.unsupported("pitch") }
+    func setTempoRate(_ value: Float) async throws { throw ProviderError.unsupported("tempo") }
+    func setReverbMix(_ value: Float) async throws { throw ProviderError.unsupported("reverb") }
+    func setAdvancedEffectsEnabled(_ enabled: Bool) async throws { throw ProviderError.unsupported("local effects bypass") }
+    func setCrossfadeDuration(_ value: Float) async throws { throw ProviderError.unsupported("crossfade") }
 }
 
 /// Apple Music does not expose protected decoded audio to this app, so its skinned EQ
@@ -97,5 +147,13 @@ enum LocalFileEqualizerDSP {
         }
         equalizer.globalGain = state.preampGain
         equalizer.bypass = !state.isEnabled
+    }
+}
+
+enum LocalFileAudioEffectsDSP {
+    static func configure(timePitch: AVAudioUnitTimePitch, reverb: AVAudioUnitReverb, state: AudioEffectState) {
+        timePitch.pitch = state.advancedEffectsEnabled ? state.pitchSemitones * 100 : 0
+        timePitch.rate = state.advancedEffectsEnabled ? state.tempoRate : 1
+        reverb.wetDryMix = state.advancedEffectsEnabled ? state.reverbMix : 0
     }
 }

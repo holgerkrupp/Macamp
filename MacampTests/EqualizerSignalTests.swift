@@ -32,6 +32,21 @@ struct EqualizerSignalTests {
         #expect(decibels(rms(bypassed) / inputRMS).magnitude < 0.15)
     }
 
+    @Test func localPitchTempoAndReverbUnitsUsePersistedValues() {
+        let pitch = AVAudioUnitTimePitch()
+        let reverb = AVAudioUnitReverb()
+        let state = AudioEffectState(pitchSemitones: 3, tempoRate: 1.25, reverbMix: 42, advancedEffectsEnabled: true)
+        LocalFileAudioEffectsDSP.configure(timePitch: pitch, reverb: reverb, state: state)
+        #expect(pitch.pitch == 300)
+        #expect(pitch.rate == 1.25)
+        #expect(reverb.wetDryMix == 42)
+
+        LocalFileAudioEffectsDSP.configure(timePitch: pitch, reverb: reverb, state: AudioEffectState(pitchSemitones: 3, tempoRate: 1.25, reverbMix: 42))
+        #expect(pitch.pitch == 0)
+        #expect(pitch.rate == 1)
+        #expect(reverb.wetDryMix == 0)
+    }
+
     private func render(_ input: [Float], state: AudioEffectState) throws -> [Float] {
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2))
         let engine = AVAudioEngine()
