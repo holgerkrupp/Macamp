@@ -62,6 +62,20 @@ struct UnifiedPlaylistEditorView: View {
             .padding(10)
         }
         .frame(minWidth: 600, minHeight: 420)
+        .dropDestination(for: URL.self) { urls, _ in
+            Self.acceptDroppedURLs(urls, importURLs: importURLs)
+        }
+    }
+
+    @discardableResult
+    static func acceptDroppedURLs(
+        _ urls: [URL],
+        importURLs: ([URL], MediaImportAction) -> Void
+    ) -> Bool {
+        let accepted = ClassicPlaylistDropPayload.acceptedURLs(from: urls)
+        guard !accepted.isEmpty else { return false }
+        importURLs(accepted, .appendToQueue)
+        return true
     }
 
     private func add(kind: ClassicPlaylistImportKind, action: MediaImportAction) {

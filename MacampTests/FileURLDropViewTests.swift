@@ -62,4 +62,31 @@ struct FileURLDropViewTests {
 
         #expect(FileURLDropPayloadParser.parse([remote]) == .failure(.nonFileURL))
     }
+
+    @Test func unifiedPlaylistDropAppendsMediaOnceAndIgnoresSkinArchives() {
+        let first = URL(fileURLWithPath: "/Music/first.mp3")
+        let skin = URL(fileURLWithPath: "/Downloads/player.wsz")
+        let last = URL(fileURLWithPath: "/Music/last.m3u")
+        var receivedURLs: [URL] = []
+        var receivedAction: MediaImportAction?
+
+        let accepted = UnifiedPlaylistEditorView.acceptDroppedURLs([first, skin, last]) { urls, action in
+            receivedURLs = urls
+            receivedAction = action
+        }
+
+        #expect(accepted)
+        #expect(receivedURLs == [first.standardizedFileURL, last.standardizedFileURL])
+        #expect(receivedAction == .appendToQueue)
+    }
+
+    @Test func unifiedPlaylistDropRejectsArchiveOnlyPayload() {
+        var wasImported = false
+        let accepted = UnifiedPlaylistEditorView.acceptDroppedURLs([URL(fileURLWithPath: "/Downloads/player.wsz")]) { _, _ in
+            wasImported = true
+        }
+
+        #expect(!accepted)
+        #expect(!wasImported)
+    }
 }
