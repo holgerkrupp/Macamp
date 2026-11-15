@@ -8,8 +8,9 @@ struct LocalMediaImportReport: Sendable {
 }
 
 enum LocalMediaImporter {
-    static let mediaExtensions: Set<String> = ["mp3"]
+    static let mediaExtensions: Set<String> = ["mp3", "aac", "m4a", "alac", "flac", "wav", "aif", "aiff"]
     static let playlistExtensions: Set<String> = ["m3u", "m3u8"]
+    static let importFileExtensions = mediaExtensions.union(playlistExtensions)
 
     static func importURLs(_ urls: [URL]) async -> LocalMediaImportReport {
         var candidates: [M3UPlaylistEntry] = []
@@ -99,11 +100,21 @@ enum LocalMediaImporter {
         let metadataArtist = await stringValue(for: .commonKeyArtist, in: metadata)
         let album = await stringValue(for: .commonKeyAlbumName, in: metadata)
         let artworkData = await dataValue(for: .commonKeyArtwork, in: metadata)
-        let duration: Duration? = entry.duration ?? durationTime.flatMap { time in
+        let audioFile: AVAudioFile?
+        if entry.url.isFileURL {
+            do { audioFile = try AVAudioFile(forReading: entry.url) }
+            catch {
+                throw ProviderError(code: .itemUnavailable, message: "\(entry.url.lastPathComponent) could not be decoded by macOS as a supported audio file.")
+            }
+        } else {
+            audioFile = nil
+        }
+        let decodedDuration = audioFile.map { Duration.seconds(Double($0.length) / $0.processingFormat.sampleRate) }
+        let duration: Duration? = entry.duration ?? decodedDuration ?? durationTime.flatMap { time in
             let seconds = time.seconds
             return seconds.isFinite && seconds >= 0 ? .seconds(seconds) : nil
         }
-        let technical = technicalMetadata(for: entry.url, duration: duration)
+        let technical = technicalMetadata(for: entry.url, duration: duration, audioFile: audioFile)
         let rawID = entry.url.absoluteString
         let itemID = PlaybackItemID(rawValue: "local:\(rawID)")
         var item = PlaybackItem(
@@ -125,9 +136,8 @@ enum LocalMediaImporter {
         return item
     }
 
-    private static func technicalMetadata(for url: URL, duration: Duration?) -> (bitrateKbps: Int?, sampleRateHz: Int?, channelCount: Int?) {
+    private static func technicalMetadata(for url: URL, duration: Duration?, audioFile: AVAudioFile?) -> (bitrateKbps: Int?, sampleRateHz: Int?, channelCount: Int?) {
         guard url.isFileURL else { return (nil, nil, nil) }
-        let audioFile = try? AVAudioFile(forReading: url)
         let format = audioFile?.processingFormat
         let sampleRate = format.map { Int($0.sampleRate.rounded()) }
         let channels = format.map { Int($0.channelCount) }

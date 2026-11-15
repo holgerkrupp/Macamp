@@ -117,8 +117,8 @@ struct LocalMediaView: View {
 enum LocalMediaImportPanel {
     static func chooseFilesAndPlaylists() -> [URL] {
         let panel = NSOpenPanel()
-        panel.title = "Choose MP3 Files or Playlists"
-        panel.allowedContentTypes = ["mp3", "m3u", "m3u8"].compactMap { UTType(filenameExtension: $0) }
+        panel.title = "Choose Audio Files or Playlists"
+        panel.allowedContentTypes = LocalMediaImporter.importFileExtensions.sorted().compactMap { UTType(filenameExtension: $0) }
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = true
         panel.canChooseDirectories = false

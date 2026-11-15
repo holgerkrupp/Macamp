@@ -40,15 +40,30 @@ struct LocalMediaTests {
         #expect(playlist.entries.isEmpty)
     }
 
+    @Test func importerAdvertisesCommonAVFoundationAudioFormatsAndReportsDecodeErrors() async throws {
+        #expect(LocalMediaImporter.mediaExtensions == ["mp3", "aac", "m4a", "alac", "flac", "wav", "aif", "aiff"])
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampUnsupportedAudio-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let corruptFLAC = root.appendingPathComponent("broken.flac")
+        try Data("not a flac stream".utf8).write(to: corruptFLAC)
+
+        let report = await LocalMediaImporter.importURLs([corruptFLAC])
+
+        #expect(report.items.isEmpty)
+        #expect(report.warnings.count == 1)
+        #expect(report.warnings[0].contains("could not be decoded by macOS"))
+    }
+
     @Test func importerPreservesRepeatedPlaylistOccurrences() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampRepeatedPlaylist-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let track = root.appendingPathComponent("track.mp3")
-        try Data([0x49, 0x44, 0x33]).write(to: track)
+        let track = root.appendingPathComponent("track.wav")
+        try writeSilentWaveFixture(to: track)
         let playlist = root.appendingPathComponent("repeat.m3u")
-        try "#EXTM3U\ntrack.mp3\ntrack.mp3\n".write(to: playlist, atomically: true, encoding: .utf8)
+        try "#EXTM3U\ntrack.wav\ntrack.wav\n".write(to: playlist, atomically: true, encoding: .utf8)
 
         let report = await LocalMediaImporter.importURLs([playlist])
 

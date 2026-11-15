@@ -98,8 +98,8 @@ struct PlaybackCoreTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampQueueImport-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let mediaURLs = (1...3).map { root.appendingPathComponent("queued-\($0).mp3") }
-        for mediaURL in mediaURLs { try Data([0x49, 0x44, 0x33]).write(to: mediaURL) }
+        let mediaURLs = (1...3).map { root.appendingPathComponent("queued-\($0).wav") }
+        for mediaURL in mediaURLs { try writeSilentWaveFixture(to: mediaURL) }
         let unsupportedURL = root.appendingPathComponent("skin.wsz")
 
         let current = PlaybackItem(id: "stream-current", providerID: .spotify, providerItemID: "stream-current", title: "Streaming", mediaKind: .song, isExplicit: false)

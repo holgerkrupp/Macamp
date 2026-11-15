@@ -32,7 +32,7 @@ Skin archive decoding runs in an actor. AppKit image creation, window state, hit
 - `Application`: app lifecycle, dependency container, commands
 - `PlaybackCore`: neutral IDs/models, capabilities, provider protocol, coordinator, mock, effects and future boundaries
 - `AppleMusicProvider`: authorization, catalogue/library services, MusicKit mapping and player adapter
-- `LocalMediaProvider`: MP3/playlist import, security-scoped bookmarks, metadata and AVFoundation player adapter
+- `LocalMediaProvider`: AVFoundation-supported MP3/AAC/M4A/ALAC/FLAC/WAV/AIFF import, playlist parsing, security-scoped bookmarks, metadata, decoded local playback and remote stream fallback
 - `WinampSkinKit`: archive loader, assets, validation, region parsing, renderer, window and docking policy
 - `VisualizationKit`: data/preset contracts, deterministic analysis source and built-in renderer
 - `Persistence`: settings and classic-window restoration

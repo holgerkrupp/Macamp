@@ -23,7 +23,7 @@ Every import entry point sends one explicit intent to the shared media importer:
 | **Replace and play** | Replace the shared playlist with the imported tracks and start the first track. |
 | **Add to library** | Remember imported files and playlists in Local Files without changing the shared playlist or starting playback. |
 
-Local media import accepts MP3 files, folders, M3U/M3U8 playlists, and HLS M3U8 manifests. Folder imports scan for MP3 and playlist files. Ordinary playlist entries are resolved relative to their playlist; unsupported entries are skipped with warnings. HLS manifests are queued as stream items. Imported file access is persisted with security-scoped bookmarks. Files opened from Finder and **Open & Play** use **Replace and play**. The Classic player's file, folder, playlist, and drop actions use **Append to queue**, except where the menu explicitly says **Insert files next** or **Add files to library**.
+Local media import accepts MP3, AAC, M4A, ALAC, FLAC, WAV, AIF, and AIFF files when AVFoundation can decode them, plus folders, M3U/M3U8 playlists, and HLS M3U8 manifests. Folder imports scan for those audio formats and playlist files. Ordinary playlist entries are resolved relative to their playlist; unsupported entries are skipped with warnings, and supported extensions with corrupt/unsupported contents report a per-file decode warning. HLS manifests are queued as stream items. Imported file access is persisted with security-scoped bookmarks. Files opened from Finder and **Open & Play** use **Replace and play**. The Classic player's file, folder, playlist, and drop actions use **Append to queue**, except where the menu explicitly says **Insert files next** or **Add files to library**.
 
 An import does not require the Library window to be open. Use the Classic player's right-click menu, the **File** menu, or the menu bar item's **Add Music** menu to add items directly. **Open & Play…** starts the selected media.
 
@@ -55,7 +55,7 @@ MAKI click handlers run through the bounded interpreter. When a script handles t
 | Classic playlist track area | Append dropped files, folders, and playlists to the shared playlist. The toolbar and shaded list do not accept drops. |
 | **Local Files** library view | Import into the Local Files library without changing the current queue. |
 
-Drops use Finder file URLs. MP3, M3U/M3U8, and folders are passed to the media importer. A skin/archive-only drop is rejected; in a mixed drop, media items still reach the importer and unsupported entries produce import warnings.
+Drops use Finder file URLs. Supported local audio formats, M3U/M3U8, and folders are passed to the media importer. A skin/archive-only drop is rejected; in a mixed drop, media items still reach the importer and unsupported entries produce import warnings.
 
 ## Startup and Library access
 

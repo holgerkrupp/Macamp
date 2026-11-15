@@ -75,8 +75,7 @@ final class ApplicationOpenRouter {
     private static func isSupportedMediaURL(_ url: URL) -> Bool {
         guard url.isFileURL else { return false }
         if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { return true }
-        let supportedExtensions: Set<String> = ["mp3", "m3u", "m3u8"]
-        return supportedExtensions.contains(url.pathExtension.lowercased())
+        return LocalMediaImporter.importFileExtensions.contains(url.pathExtension.lowercased())
     }
 
     private static var defaultOAuthRedirectURIs: [URL] {
@@ -103,7 +102,7 @@ final class ApplicationOpenRouter {
 
 @MainActor
 enum ApplicationMediaImportPanel {
-    private static let audioAndPlaylistTypes: [UTType] = ["mp3", "m3u", "m3u8"].compactMap { UTType(filenameExtension: $0) }
+    private static let audioAndPlaylistTypes: [UTType] = LocalMediaImporter.importFileExtensions.sorted().compactMap { UTType(filenameExtension: $0) }
 
     private static let playlistTypes: [UTType] = ["m3u", "m3u8"].compactMap { UTType(filenameExtension: $0) }
 
