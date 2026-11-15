@@ -65,6 +65,7 @@ private final class ApplicationStartupCoordinator {
         await dependencies.localMedia.restoreLibrary()
         dependencies.localMedia.restoreQueueAccess()
         await dependencies.playback.restorePersistedSession()
+        dependencies.observeLocalVideoPlayback()
         if dependencies.settings.showPlayerOnLaunch {
             dependencies.classicPlayer.show()
         }

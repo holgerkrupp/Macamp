@@ -8,7 +8,9 @@ struct LocalMediaImportReport: Sendable {
 }
 
 enum LocalMediaImporter {
-    static let mediaExtensions: Set<String> = ["mp3", "aac", "m4a", "alac", "flac", "wav", "aif", "aiff"]
+    static let audioExtensions: Set<String> = ["mp3", "aac", "m4a", "alac", "flac", "wav", "aif", "aiff"]
+    static let videoExtensions: Set<String> = ["mp4", "mov", "m4v"]
+    static let mediaExtensions = audioExtensions.union(videoExtensions)
     static let playlistExtensions: Set<String> = ["m3u", "m3u8", "pls", "xspf", "cue"]
     static let importFileExtensions = mediaExtensions.union(playlistExtensions)
 
@@ -101,6 +103,7 @@ enum LocalMediaImporter {
 
     private static func makeItem(_ entry: M3UPlaylistEntry) async throws -> PlaybackItem {
         let isRemote = ["http", "https"].contains(entry.url.scheme?.lowercased() ?? "")
+        let isVideo = !isRemote && videoExtensions.contains(entry.url.pathExtension.lowercased())
         let metadata: [AVMetadataItem]
         let durationTime: CMTime?
         if isRemote {
@@ -119,7 +122,7 @@ enum LocalMediaImporter {
         let album = isRemote ? nil : await stringValue(for: .commonKeyAlbumName, in: metadata)
         let artworkData = isRemote ? nil : await dataValue(for: .commonKeyArtwork, in: metadata)
         let audioFile: AVAudioFile?
-        if entry.url.isFileURL, entry.url.pathExtension.lowercased() != "m3u8" {
+        if entry.url.isFileURL, !isVideo, entry.url.pathExtension.lowercased() != "m3u8" {
             do { audioFile = try AVAudioFile(forReading: entry.url) }
             catch {
                 throw ProviderError(code: .itemUnavailable, message: "\(entry.url.lastPathComponent) could not be decoded by macOS as a supported audio file.")
@@ -149,7 +152,7 @@ enum LocalMediaImporter {
             albumTitle: album,
             duration: duration,
             artwork: artworkData.map(ArtworkReference.embedded) ?? .systemSymbol("music.note"),
-            mediaKind: isRemote || entry.url.pathExtension.lowercased() == "m3u8" ? .radioStation : .localFile,
+            mediaKind: isVideo ? .localVideo : (isRemote || entry.url.pathExtension.lowercased() == "m3u8" ? .radioStation : .localFile),
             isExplicit: false
         )
         item.bitrateKbps = technical.bitrateKbps

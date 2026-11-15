@@ -1,5 +1,7 @@
 import Foundation
 import Testing
+import AVFoundation
+import AppKit
 @testable import Macamp
 
 @Suite("Local media")
@@ -63,7 +65,7 @@ struct LocalMediaTests {
     }
 
     @Test func importerAdvertisesCommonAVFoundationAudioFormatsAndReportsDecodeErrors() async throws {
-        #expect(LocalMediaImporter.mediaExtensions == ["mp3", "aac", "m4a", "alac", "flac", "wav", "aif", "aiff"])
+        #expect(LocalMediaImporter.audioExtensions == ["mp3", "aac", "m4a", "alac", "flac", "wav", "aif", "aiff"])
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampUnsupportedAudio-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -75,6 +77,61 @@ struct LocalMediaTests {
         #expect(report.items.isEmpty)
         #expect(report.warnings.count == 1)
         #expect(report.warnings[0].contains("could not be decoded by macOS"))
+    }
+
+    @Test @MainActor func importsAndRoutesLocalVideoThroughTheSharedAVPlayer() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampVideoImport-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let video = root.appendingPathComponent("sample.MOV")
+        try Data().write(to: video)
+
+        let report = await LocalMediaImporter.importURLs([video])
+
+        #expect(LocalMediaImporter.videoExtensions == ["mp4", "mov", "m4v"])
+        #expect(report.items.count == 1)
+        #expect(report.items[0].mediaKind == .localVideo)
+        #expect(report.items[0].sourceURL == video)
+        #expect(report.warnings.isEmpty)
+
+        let provider = LocalFilePlaybackProvider()
+        try await provider.play(items: report.items, startingAt: 0)
+        #expect(provider.videoPlayer.currentItem != nil)
+        #expect(provider.state.currentItem?.mediaKind == .localVideo)
+        #expect(!provider.capabilities.contains(.pcmAudio))
+        #expect(provider.effectUnavailableReason?.contains("Video") == true)
+        try await provider.pause()
+        #expect(provider.state.status == .paused)
+        try await provider.stop()
+    }
+
+    @Test @MainActor func localVideoWindowTracksPlaybackAndRespectsDismissal() {
+        let player = AVPlayer()
+        let controller = LocalVideoWindowController(player: player, relatedWindows: { [] })
+        let video = PlaybackItem(
+            id: "video",
+            providerID: .localMedia,
+            providerItemID: "file:///tmp/video.mp4",
+            title: "Video",
+            mediaKind: .localVideo,
+            isExplicit: false
+        )
+
+        controller.update(currentItem: video, isActive: true)
+        #expect(controller.window?.isVisible == true)
+        #expect(controller.window?.title == "Video")
+
+        if let window = controller.window {
+            controller.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window))
+            window.orderOut(nil)
+        }
+        controller.update(currentItem: video, isActive: true)
+        #expect(controller.window?.isVisible == false)
+
+        controller.update(currentItem: nil, isActive: false)
+        controller.update(currentItem: video, isActive: true)
+        #expect(controller.window?.isVisible == true)
+        controller.window?.orderOut(nil)
     }
 
     @Test func parsesPLSAndXSPFInSourceOrderWithRelativeReferences() throws {

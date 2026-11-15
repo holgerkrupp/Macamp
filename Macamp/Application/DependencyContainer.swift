@@ -23,6 +23,38 @@ final class DependencyContainer {
     @ObservationIgnored lazy var musicCatalogPicker = MusicCatalogPickerWindowController(dependencies: self)
     func showMusicCatalogPicker() { musicCatalogPicker.show() }
 
+    @ObservationIgnored lazy var localVideoWindow = LocalVideoWindowController(
+        player: localMedia.videoPlayer,
+        relatedWindows: { [weak self] in self?.classicPlayer.window.map { [$0] } ?? [] }
+    )
+    @ObservationIgnored private var localVideoObservationStarted = false
+
+    func observeLocalVideoPlayback() {
+        guard !localVideoObservationStarted else { return }
+        localVideoObservationStarted = true
+        observeLocalVideoPlaybackChanges()
+    }
+
+    private func observeLocalVideoPlaybackChanges() {
+        withObservationTracking {
+            _ = playback.activeProviderID
+            _ = playback.state.currentItem?.id
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.localVideoWindow.update(
+                    currentItem: self.playback.state.currentItem,
+                    isActive: self.playback.activeProviderID == .localMedia
+                )
+                self.observeLocalVideoPlaybackChanges()
+            }
+        }
+        localVideoWindow.update(
+            currentItem: playback.state.currentItem,
+            isActive: playback.activeProviderID == .localMedia
+        )
+    }
+
     @ObservationIgnored lazy var visualizations = VisualizationWindowController(
         source: localPCMAnalysis, coordinator: playback, settings: settings
     )

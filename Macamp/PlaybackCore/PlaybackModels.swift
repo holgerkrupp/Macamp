@@ -24,7 +24,7 @@ struct PlaybackItemID: RawRepresentable, Hashable, Codable, Sendable, Expressibl
 }
 
 enum MediaKind: String, Codable, CaseIterable, Sendable {
-    case song, album, artist, playlist, podcastEpisode, radioStation, localFile, unknown
+    case song, album, artist, playlist, podcastEpisode, radioStation, localFile, localVideo, unknown
 }
 
 enum ArtworkReference: Hashable, Sendable {

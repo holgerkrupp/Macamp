@@ -43,7 +43,7 @@ struct LocalMediaView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Local Files").font(.largeTitle.bold())
-                    Text("Play MP3 files and M3U/M3U8 playlists. Folder access is remembered securely.")
+                    Text("Play local audio and MP4, MOV, or M4V video files. Folder access is remembered securely.")
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -54,14 +54,14 @@ struct LocalMediaView: View {
 
             if dependencies.localMedia.libraryItems.isEmpty {
                 ContentUnavailableView(
-                    "No local music",
+                    "No local media",
                     systemImage: "internaldrive",
-                    description: Text("Choose MP3 files, a playlist, or a folder containing your music.")
+                    description: Text("Choose audio, video, a playlist, or a folder containing your media.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
-                    Section("\(dependencies.localMedia.libraryItems.count) Tracks") {
+                    Section("\(dependencies.localMedia.libraryItems.count) Items") {
                         ForEach(dependencies.localMedia.libraryItems) { item in
                             TrackRow(
                                 item: item,
@@ -117,7 +117,7 @@ struct LocalMediaView: View {
 enum LocalMediaImportPanel {
     static func chooseFilesAndPlaylists() -> [URL] {
         let panel = NSOpenPanel()
-        panel.title = "Choose Audio Files or Playlists"
+        panel.title = "Choose Audio, Video, or Playlists"
         panel.allowedContentTypes = LocalMediaImporter.importFileExtensions.sorted().compactMap { UTType(filenameExtension: $0) }
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = true

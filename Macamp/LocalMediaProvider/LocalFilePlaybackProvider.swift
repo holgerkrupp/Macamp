@@ -19,7 +19,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         isCurrentRouteProcessed ? [.enable, .preamp, .equalizerBands] : []
     }
     var effectUnavailableReason: String? {
-        isCurrentRouteProcessed ? nil : "Equalizer unavailable until a local file uses the decoded audio engine. Remote streams use AVPlayer and bypass the DSP."
+        isCurrentRouteProcessed ? nil : "Equalizer is available for decoded local audio. Video and remote streams use AVPlayer and bypass the DSP."
     }
     private(set) var effectState: AudioEffectState
 
@@ -31,6 +31,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
     private(set) var isImporting = false
 
     @ObservationIgnored private let player = AVPlayer()
+    var videoPlayer: AVPlayer { player }
     @ObservationIgnored private let audioEngine = AVAudioEngine()
     @ObservationIgnored private let audioPlayerNode = AVAudioPlayerNode()
     @ObservationIgnored private let equalizer = AVAudioUnitEQ(numberOfBands: EqualizerBand.winamp10.count)
@@ -417,7 +418,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         }
         audioPlayerNode.stop()
         player.pause()
-        if url.isFileURL, item.mediaKind != .radioStation {
+        if url.isFileURL, item.mediaKind == .localFile {
             let file = try AVAudioFile(forReading: url)
             audioFile = file
             usesAudioEngine = true
