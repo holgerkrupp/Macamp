@@ -30,12 +30,19 @@ struct VisualizationTests {
         #expect(silent.waveform.count == 96)
         #expect(silent.bands.allSatisfy { $0.isFinite && $0 == 0 })
         #expect(silent.waveform.allSatisfy { $0.isFinite && $0 == 0 })
+        #expect(silent.pcm == Array(repeating: Float.zero, count: 1_024))
 
         let short = VisualizationPCMAnalyzer.analyze(PCMFrame(samples: [0.25], sampleRate: 48_000))
         #expect(short.bands.count == 48)
         #expect(short.waveform.count == 96)
         #expect(short.bands.allSatisfy { $0.isFinite })
         #expect(short.waveform.allSatisfy { $0.isFinite && (-1...1).contains($0) })
+    }
+
+    @Test func visualizerPCMRetainsTheNewestContiguousSamples() {
+        let samples = (0..<2_048).map { Float($0) / 2_048 }
+        let frame = VisualizationPCMAnalyzer.analyze(PCMFrame(samples: samples, sampleRate: 48_000))
+        #expect(frame.pcm == Array(samples.suffix(1_024)))
     }
 
     @Test func pcmAnalyzerPlacesTonesInExpectedLogBands() {

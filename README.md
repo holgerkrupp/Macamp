@@ -12,7 +12,7 @@ Macamp is a native macOS music player that pairs a modern SwiftUI library with a
 - Provider-neutral playback state and capability-driven controls
 - Borderless transparent classic player at 1×–4× integer scales
 - Defensive `.wsz`, `.wal`, and `.zip` import with content detection, bounded extraction, case-insensitive nested assets, validation, and application-managed storage
-- Eight built-in visualizations, with post-EQ PCM analysis for local audio-engine playback
+- Eight native visualizations and a Butterchurn-powered MilkDrop mode, with post-EQ PCM analysis for local audio-engine playback
 - Diagnostics, settings, keyboard/menu commands, persistence, and a mock development library
 - Swift 6 test coverage using synthetic skin archives and no real Apple Music account
 

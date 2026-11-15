@@ -53,6 +53,6 @@ enum VisualizationPCMAnalyzer {
             let sampleIndex = min(samples.count - 1, index * (samples.count - 1) / (waveformCount - 1))
             return min(1, max(-1, samples[sampleIndex]))
         }
-        return VisualizationAnalysisFrame(bands: bands, waveform: waveform)
+        return VisualizationAnalysisFrame(bands: bands, waveform: waveform, pcm: Array(samples.suffix(1_024)))
     }
 }

@@ -24,7 +24,7 @@ final class DependencyContainer {
     func showMusicCatalogPicker() { musicCatalogPicker.show() }
 
     @ObservationIgnored lazy var visualizations = VisualizationWindowController(
-        source: localPCMAnalysis, coordinator: playback, frameStore: visualizationFrames, settings: settings
+        source: localPCMAnalysis, coordinator: playback, settings: settings
     )
     @ObservationIgnored lazy var classicPlayer = SkinWindowController(
         coordinator: playback, skinStore: skins, settings: settings, visualizationFrames: visualizationFrames,

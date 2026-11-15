@@ -287,7 +287,7 @@ struct VisualizationPickerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Visualizations").font(.largeTitle.bold())
-            Label("Providers without decoded PCM access use deterministic simulated data. Apple Music audio is never captured.", systemImage: "info.circle.fill").foregroundStyle(.orange)
+            Label("Visualizations react to decoded local audio. Apple Music and other hosted sources do not expose audio for visualization.", systemImage: "info.circle")
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 180))], spacing: 12) {
                 ForEach(BuiltInVisualization.allCases) { mode in
                     Button { dependencies.visualizations.select(mode); if dependencies.visualizations.window?.isVisible != true { dependencies.visualizations.toggle() } } label: {
@@ -299,7 +299,7 @@ struct VisualizationPickerView: View {
             Spacer()
         }.padding(24).navigationTitle("Visualizations")
     }
-    private func icon(_ mode: BuiltInVisualization) -> String { switch mode { case .spectrum, .classicPeakHold: "chart.bar.fill"; case .oscilloscope: "waveform.path"; case .mirroredSpectrum: "arrow.up.and.down"; case .radialSpectrum: "circle.hexagongrid.fill"; case .starfield: "sparkles"; case .artworkAmbience: "photo.artframe"; case .retroPattern: "aqi.medium" } }
+    private func icon(_ mode: BuiltInVisualization) -> String { switch mode { case .spectrum, .classicPeakHold: "chart.bar.fill"; case .oscilloscope: "waveform.path"; case .mirroredSpectrum: "arrow.up.and.down"; case .radialSpectrum: "circle.hexagongrid.fill"; case .starfield, .milkDrop: "sparkles"; case .artworkAmbience: "photo.artframe"; case .retroPattern: "aqi.medium" } }
 }
 
 struct DiagnosticsView: View {
@@ -314,7 +314,10 @@ struct DiagnosticsView: View {
                 LabeledContent("Capabilities", value: dependencies.playback.capabilities.labels.joined(separator: ", "))
             }
             Section("Skin") { LabeledContent("Active", value: dependencies.skins.activeCatalog.name); LabeledContent("Warnings", value: "\(dependencies.skins.activeCatalog.report.warnings.count)") }
-            Section("Analysis") { LabeledContent("Source", value: "Simulated (no PCM)"); LabeledContent("Target frame rate", value: "\(dependencies.settings.visualizationFrameRate) fps"); LabeledContent("Dropped frames", value: "0") }
+            Section("Analysis") {
+                LabeledContent("Source", value: dependencies.playback.capabilities.contains(.pcmAudio) ? "Decoded local PCM (post-EQ)" : "Unavailable for this source")
+                LabeledContent("Target frame rate", value: "\(dependencies.settings.visualizationFrameRate) fps")
+            }
             Section("Recent non-sensitive errors") { if dependencies.playback.recentErrors.isEmpty { Text("None").foregroundStyle(.secondary) } else { ForEach(dependencies.playback.recentErrors, id: \.self, content: Text.init) } }
         }.navigationTitle("Diagnostics")
     }
@@ -327,7 +330,7 @@ struct SettingsView: View {
             Form { Toggle("Show classic player on launch", isOn: Binding(get: { dependencies.settings.showPlayerOnLaunch }, set: { dependencies.settings.showPlayerOnLaunch = $0 })); Toggle("Keep classic player above other windows", isOn: Binding(get: { dependencies.settings.playerFloating }, set: { dependencies.settings.playerFloating = $0; dependencies.classicPlayer.applySettings() })); Text("Launch at login and menu-bar-only mode are not enabled in this milestone.").font(.caption).foregroundStyle(.secondary) }.padding().tabItem { Label("General", systemImage: "gear") }
             Form { Picker("Active provider", selection: Binding(get: { dependencies.playback.activeProviderID ?? .appleMusic }, set: { dependencies.selectProvider($0) })) { ForEach(dependencies.providerRegistry.availableDescriptors) { descriptor in Text(descriptor.displayName).tag(descriptor.id) } }; LabeledContent("Active status", value: dependencies.playback.authenticationState.rawValue); Text("Provider capabilities and account limitations are shown by Music Services. Unavailable services remain out of the connection menu until their official integration is configured.").font(.caption).foregroundStyle(.secondary) }.padding().tabItem { Label("Providers", systemImage: "dot.radiowaves.left.and.right") }
             Form { Picker("Integer scale", selection: Binding(get: { dependencies.settings.skinScale }, set: { dependencies.settings.skinScale = $0; dependencies.classicPlayer.applySettings() })) { ForEach(1...4, id: \.self) { Text("\($0)×").tag($0) } }; Toggle("Transparent-pixel click-through", isOn: Binding(get: { dependencies.settings.clickThroughTransparentPixels }, set: { dependencies.settings.clickThroughTransparentPixels = $0 })); Toggle("Shadow", isOn: Binding(get: { dependencies.settings.playerShadow }, set: { dependencies.settings.playerShadow = $0; dependencies.classicPlayer.applySettings() })) }.padding().tabItem { Label("Skin", systemImage: "paintbrush") }
-            Form { Picker("Mode", selection: Binding(get: { BuiltInVisualization(rawValue: dependencies.settings.selectedVisualization) ?? .spectrum }, set: { dependencies.visualizations.select($0) })) { ForEach(BuiltInVisualization.allCases) { Text($0.title).tag($0) } }; Text("Playback providers currently use simulated visualization data.").foregroundStyle(.orange) }.padding().tabItem { Label("Visualization", systemImage: "waveform") }
+            Form { Picker("Mode", selection: Binding(get: { BuiltInVisualization(rawValue: dependencies.settings.selectedVisualization) ?? .spectrum }, set: { dependencies.visualizations.select($0) })) { ForEach(BuiltInVisualization.allCases) { Text($0.title).tag($0) } }; Text("Visualizations are available for decoded local audio.") }.padding().tabItem { Label("Visualization", systemImage: "waveform") }
         }.padding()
     }
 }

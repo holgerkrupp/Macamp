@@ -15,6 +15,7 @@ final class SettingsStore {
         static let frameRate = "visualizationFrameRate"
         static let intensity = "visualizationIntensity"
         static let visualization = "selectedVisualization"
+        static let milkDropPreset = "selectedMilkDropPreset"
         static let playerFrame = "classicPlayerFrame"
         static let playerLogicalFrame = "classicPlayerLogicalFrame"
         static let equalizerLogicalFrame = "classicEqualizerLogicalFrame"
@@ -33,6 +34,7 @@ final class SettingsStore {
     var visualizationFrameRate: Int { didSet { defaults.set(visualizationFrameRate, forKey: Keys.frameRate) } }
     var visualizationIntensity: Double { didSet { defaults.set(visualizationIntensity, forKey: Keys.intensity) } }
     var selectedVisualization: String { didSet { defaults.set(selectedVisualization, forKey: Keys.visualization) } }
+    var selectedMilkDropPreset: Int { didSet { defaults.set(selectedMilkDropPreset, forKey: Keys.milkDropPreset) } }
     var equalizerState: AudioEffectState {
         get { storedEqualizerState }
         set {
@@ -56,6 +58,7 @@ final class SettingsStore {
         visualizationFrameRate = defaults.object(forKey: Keys.frameRate) as? Int ?? 30
         visualizationIntensity = defaults.object(forKey: Keys.intensity) as? Double ?? 0.7
         selectedVisualization = defaults.string(forKey: Keys.visualization) ?? "spectrum"
+        selectedMilkDropPreset = defaults.integer(forKey: Keys.milkDropPreset)
         if let data = defaults.data(forKey: Keys.equalizerState),
            let restored = try? JSONDecoder().decode(AudioEffectState.self, from: data) {
             var restored = restored

@@ -2,7 +2,7 @@ import AppKit
 import Observation
 
 enum BuiltInVisualization: String, CaseIterable, Identifiable, Sendable {
-    case spectrum, oscilloscope, mirroredSpectrum, radialSpectrum, starfield, classicPeakHold, artworkAmbience, retroPattern
+    case spectrum, oscilloscope, mirroredSpectrum, radialSpectrum, starfield, classicPeakHold, artworkAmbience, retroPattern, milkDrop
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -14,6 +14,7 @@ enum BuiltInVisualization: String, CaseIterable, Identifiable, Sendable {
         case .classicPeakHold: "Classic Peak Hold"
         case .artworkAmbience: "Album-art Ambience"
         case .retroPattern: "Retro Pattern"
+        case .milkDrop: "MilkDrop"
         }
     }
 }
@@ -27,15 +28,18 @@ final class VisualizationRenderView: NSView {
 
     func update(_ data: VisualizationAudioData) {
         frameData = data
-        if case let .simulated(frame) = data {
+        if let frame = data.analysisFrame {
+            if peaks.count != frame.bands.count { peaks = Array(repeating: 0, count: frame.bands.count) }
             for index in frame.bands.indices { peaks[index] = max(frame.bands[index], peaks[index] - 0.025) }
+        } else {
+            peaks = Array(repeating: 0, count: peaks.count)
         }
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
         NSColor(calibratedRed: 0.015, green: 0.02, blue: 0.035, alpha: 0.96).setFill(); bounds.fill()
-        guard let frame = frameData.analysisFrame else {
+        guard let frame = frameData.analysisFrame, !frame.bands.isEmpty else {
             if case let .unavailable(reason) = frameData { drawUnavailable(reason) }
             else { drawPaused() }
             return
@@ -49,6 +53,7 @@ final class VisualizationRenderView: NSView {
         case .starfield: drawStarfield(frame)
         case .artworkAmbience: drawAmbience(frame.bands)
         case .retroPattern: drawPattern(frame)
+        case .milkDrop: drawSpectrum(frame.bands, mirrored: false, peaks: false)
         }
         drawBadge()
     }
@@ -191,17 +196,18 @@ final class VisualizationFrameStore {
 final class VisualizationWindowController: NSWindowController, NSWindowDelegate {
     private let source: LocalPCMAudioAnalysisSource
     private let coordinator: PlaybackCoordinator
-    let frameStore: VisualizationFrameStore
     private let renderView = VisualizationRenderView(frame: CGRect(x: 0, y: 0, width: 640, height: 360))
     private let settings: SettingsStore
     private var framesTask: Task<Void, Never>?
     private var routeTask: Task<Void, Never>?
+    private var milkDrop: MilkDropView?
+    private var milkDropFailed = false
 
-    init(source: LocalPCMAudioAnalysisSource, coordinator: PlaybackCoordinator, frameStore: VisualizationFrameStore, settings: SettingsStore) {
-        self.source = source; self.coordinator = coordinator; self.frameStore = frameStore; self.settings = settings
+    init(source: LocalPCMAudioAnalysisSource, coordinator: PlaybackCoordinator, settings: SettingsStore) {
+        self.source = source; self.coordinator = coordinator; self.settings = settings
         renderView.mode = BuiltInVisualization(rawValue: settings.selectedVisualization) ?? .spectrum
         let window = NSWindow(contentRect: renderView.frame, styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "Macamp Visualization — Local PCM"
+        window.title = "Macamp Visualization"
         window.contentView = renderView
         window.minSize = CGSize(width: 320, height: 180)
         super.init(window: window)
@@ -213,27 +219,52 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
     func toggle() {
         guard let window else { return }
         if window.isVisible { window.close() }
-        else { showWindow(nil); window.makeKeyAndOrderFront(nil); start() }
+        else { show() }
     }
 
-    func select(_ mode: BuiltInVisualization) { settings.selectedVisualization = mode.rawValue; renderView.mode = mode }
+    func show() {
+        guard let window else { return }
+        if !window.isVisible {
+            showWindow(nil)
+            start()
+        }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+    }
+
+    func select(_ mode: BuiltInVisualization) {
+        settings.selectedVisualization = mode.rawValue
+        renderView.mode = mode
+        milkDropFailed = false
+        window?.title = "Macamp Visualization"
+        if mode != .milkDrop { stopMilkDrop() }
+    }
+
+    func selectMilkDropPreset(at index: Int) {
+        guard MilkDropView.presets.indices.contains(index) else { return }
+        settings.selectedMilkDropPreset = index
+        select(.milkDrop)
+        show()
+    }
 
     func applySettings() { source.configure(frameRate: settings.visualizationFrameRate) }
 
-    func windowWillClose(_ notification: Notification) { stop() }
+    func windowWillClose(_ notification: Notification) {
+        stop()
+        stopMilkDrop()
+        milkDropFailed = false
+        window?.title = "Macamp Visualization"
+    }
 
     private func start() {
         applySettings()
-        source.configure(frameRate: settings.visualizationFrameRate)
         framesTask?.cancel()
         framesTask = Task { [weak self] in
-            guard let self else { return }
-            try? await self.source.start()
-            for await frame in self.source.frames() {
+            guard let stream = self?.source.frames() else { return }
+            for await frame in stream {
                 guard !Task.isCancelled else { break }
-                guard self.canUsePCMRoute else { continue }
-                self.frameStore.update(frame)
-                self.renderView.update(frame)
+                guard let self, self.canUsePCMRoute, self.coordinator.state.isPlaying else { continue }
+                self.display(frame)
             }
         }
         routeTask?.cancel()
@@ -244,11 +275,9 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
                     let reason = self.coordinator.activeProviderID == .localMedia
                         ? "Start local file playback to analyze post-EQ PCM."
                         : "The active playback provider does not expose decoded PCM."
-                    self.frameStore.unavailable(reason)
-                    self.renderView.update(.unavailable(reason))
+                    self.display(.unavailable(reason))
                 } else if !self.coordinator.state.isPlaying {
-                    self.frameStore.update(.silent)
-                    self.renderView.update(.silent)
+                    self.display(.silent)
                 }
                 try? await Task.sleep(for: .milliseconds(250))
             }
@@ -258,6 +287,40 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
     private func stop() {
         framesTask?.cancel(); framesTask = nil
         routeTask?.cancel(); routeTask = nil
+    }
+
+    private func display(_ data: VisualizationAudioData) {
+        renderView.update(data)
+        guard window?.isMiniaturized == false, renderView.mode == .milkDrop, !milkDropFailed,
+              let samples = data.analysisFrame?.pcm, !samples.isEmpty else {
+            milkDrop?.webView.isHidden = true
+            return
+        }
+        if milkDrop == nil {
+            guard let view = MilkDropView(onFailure: { [weak self] in self?.handleMilkDropFailure() }) else {
+                handleMilkDropFailure()
+                return
+            }
+            view.webView.frame = renderView.bounds
+            view.webView.autoresizingMask = [.width, .height]
+            renderView.addSubview(view.webView)
+            milkDrop = view
+        }
+        milkDrop?.webView.isHidden = false
+        let preset = settings.selectedMilkDropPreset
+        milkDrop?.render(samples: samples, presetIndex: MilkDropView.presets.indices.contains(preset) ? preset : 0)
+    }
+
+    private func stopMilkDrop() {
+        milkDrop?.stop()
+        milkDrop?.webView.removeFromSuperview()
+        milkDrop = nil
+    }
+
+    private func handleMilkDropFailure() {
+        stopMilkDrop()
+        milkDropFailed = true
+        window?.title = "Macamp Visualization — MilkDrop unavailable"
     }
 
     private var canUsePCMRoute: Bool {
