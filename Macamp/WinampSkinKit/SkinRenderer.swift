@@ -35,7 +35,7 @@ final class SkinRendererView: NSView {
     private let skinStore: SkinLibraryStore
     private let settings: SettingsStore
     private let visualizationFrames: VisualizationFrameStore
-    private let openMedia: () -> Void
+    private let openMedia: (MediaImportAction) -> Void
     private let mediaAction: (SkinAction) -> Void
     var onFileURLsDropped: (([URL]) -> Void)?
     private let playlistToggle: () -> Void
@@ -69,7 +69,7 @@ final class SkinRendererView: NSView {
         skinStore: SkinLibraryStore,
         settings: SettingsStore,
         visualizationFrames: VisualizationFrameStore = VisualizationFrameStore(),
-        openMedia: @escaping () -> Void,
+        openMedia: @escaping (MediaImportAction) -> Void,
         mediaAction: @escaping (SkinAction) -> Void = { _ in },
         playlistToggle: @escaping () -> Void,
         equalizerToggle: @escaping () -> Void,
@@ -256,7 +256,7 @@ final class SkinRendererView: NSView {
 
     @objc private func performContextMenuCommand(_ sender: NSMenuItem) {
         switch sender.tag {
-        case 0: openMedia()
+        case 0: openMedia(.replaceAndPlay)
         case 1: mediaAction(.addFiles)
         case 2: mediaAction(.addFolder)
         case 3: mediaAction(.addPlaylist)
@@ -760,7 +760,7 @@ final class SkinRendererView: NSView {
         case .pause: await coordinator.pause()
         case .stop: await coordinator.stop()
         case .next: await coordinator.next()
-        case .open: openMedia()
+        case .open: openMedia(.replaceAndPlay)
         case .addFiles, .addFolder, .addPlaylist, .addFromService: mediaAction(control.action)
         case .seek:
             let fraction = (point.x - frame.minX) / frame.width

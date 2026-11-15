@@ -186,7 +186,7 @@ struct SkinTests {
             coordinator: PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore()),
             skinStore: skins,
             settings: SettingsStore(defaults: defaults),
-            openMedia: {},
+            openMedia: { _ in },
             playlistToggle: {},
             equalizerToggle: {},
             visualizationToggle: {}
@@ -594,7 +594,7 @@ struct SkinTests {
             coordinator: PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore()),
             skinStore: skins,
             settings: SettingsStore(defaults: defaults),
-            openMedia: {},
+            openMedia: { _ in },
             playlistToggle: {},
             equalizerToggle: {},
             visualizationToggle: {}
@@ -1800,7 +1800,7 @@ struct SkinTests {
             coordinator: PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore()),
             skinStore: skins,
             settings: settings,
-            openMedia: {},
+            openMedia: { _ in },
             playlistToggle: {},
             equalizerToggle: {},
             visualizationToggle: {}
@@ -1884,7 +1884,7 @@ struct SkinTests {
             coordinator: coordinator,
             skinStore: skins,
             settings: settings,
-            openMedia: {},
+            openMedia: { _ in },
             playlistToggle: {},
             equalizerToggle: {},
             visualizationToggle: {}
@@ -1950,7 +1950,7 @@ struct SkinTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let skins = SkinLibraryStore(defaults: defaults, root: root)
         await skins.importSkin(from: source)
-        let view = SkinRendererView(coordinator: PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore()), skinStore: skins, settings: SettingsStore(defaults: defaults), openMedia: {}, playlistToggle: {}, equalizerToggle: {}, visualizationToggle: {})
+        let view = SkinRendererView(coordinator: PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore()), skinStore: skins, settings: SettingsStore(defaults: defaults), openMedia: { _ in }, playlistToggle: {}, equalizerToggle: {}, visualizationToggle: {})
         #expect(view.injectMouseDown(at: CGPoint(x: 24, y: 16)) == "scriptonly")
         view.injectMouseUp(at: CGPoint(x: 24, y: 16))
     }
@@ -1971,7 +1971,7 @@ struct SkinTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let skins = SkinLibraryStore(defaults: defaults, root: root)
         await skins.importSkin(from: source)
-        let view = SkinRendererView(coordinator: coordinator, skinStore: skins, settings: settings, openMedia: {}, playlistToggle: {}, equalizerToggle: {}, visualizationToggle: {})
+        let view = SkinRendererView(coordinator: coordinator, skinStore: skins, settings: settings, openMedia: { _ in }, playlistToggle: {}, equalizerToggle: {}, visualizationToggle: {})
 
         for index in [0, 1, 9] {
             for value in [0, 128, 255] {

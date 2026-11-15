@@ -15,7 +15,7 @@ final class SkinWindowController: NSWindowController {
         skinStore: SkinLibraryStore,
         settings: SettingsStore,
         visualizationFrames: VisualizationFrameStore,
-        openMedia: @escaping () -> Void,
+        openMedia: @escaping (MediaImportAction) -> Void,
         visualizationToggle: @escaping () -> Void,
         mediaAction: @escaping (SkinAction) -> Void = { _ in },
         onDroppedURLs: @escaping ([URL]) -> Void = { _ in },

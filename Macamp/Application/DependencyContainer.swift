@@ -28,8 +28,8 @@ final class DependencyContainer {
     )
     @ObservationIgnored lazy var classicPlayer = SkinWindowController(
         coordinator: playback, skinStore: skins, settings: settings, visualizationFrames: visualizationFrames,
-        openMedia: { [weak self] in
-            self?.chooseAndImportMedia(action: .replaceAndPlay, kind: .files)
+        openMedia: { [weak self] action in
+            self?.chooseAndImportMedia(action: action, kind: .files)
         },
         visualizationToggle: { [weak self] in self?.visualizations.toggle() },
         mediaAction: { [weak self] action in self?.requestSkinMediaImport(action) },
