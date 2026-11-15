@@ -35,6 +35,16 @@ struct VisualizationTests {
         #expect(SettingsStore(defaults: defaults).selectedVisualization == "goom")
     }
 
+    @Test func milkDropPresetCyclingPreferencePersists() throws {
+        let suite = "MacampMilkDropCycleTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SettingsStore(defaults: defaults)
+        #expect(!settings.milkDropPresetCycling)
+        settings.milkDropPresetCycling = true
+        #expect(SettingsStore(defaults: defaults).milkDropPresetCycling)
+    }
+
     @Test func milkDropPresetParserConvertsOrderedEquationsToBundledRendererFormat() throws {
         let preset = try MilkDropPresetParser.parse(text: """
         [preset00]

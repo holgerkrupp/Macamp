@@ -246,6 +246,7 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
     private let contentView = NSView(frame: CGRect(x: 0, y: 0, width: 640, height: 396))
     private let presetControls = NSStackView()
     private let presetPicker = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let presetCyclingButton = NSButton(checkboxWithTitle: "Cycle", target: nil, action: nil)
     private let settings: SettingsStore
     private let presetStore: MilkDropPresetStore
     private let relatedWindows: () -> [NSWindow]
@@ -254,6 +255,7 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
     private var presetImportWarnings: [String] = []
     private var framesTask: Task<Void, Never>?
     private var routeTask: Task<Void, Never>?
+    private var presetCycleTask: Task<Void, Never>?
     private var milkDrop: MilkDropView?
     private var milkDropFailed = false
 
@@ -390,6 +392,10 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
         presetControls.addArrangedSubview(previous)
         presetControls.addArrangedSubview(presetPicker)
         presetControls.addArrangedSubview(next)
+        presetCyclingButton.target = self
+        presetCyclingButton.action = #selector(presetCyclingAction(_:))
+        presetCyclingButton.state = settings.milkDropPresetCycling ? .on : .off
+        presetControls.addArrangedSubview(presetCyclingButton)
         contentView.addSubview(presetControls)
         for view in [renderView, presetControls] { view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
@@ -415,9 +421,14 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
     @objc private func previousPresetAction() { previousMilkDropPreset() }
     @objc private func nextPresetAction() { nextMilkDropPreset() }
     @objc private func presetPickerAction(_ sender: NSPopUpButton) { selectMilkDropPreset(at: sender.indexOfSelectedItem) }
+    @objc private func presetCyclingAction(_ sender: NSButton) {
+        settings.milkDropPresetCycling = sender.state == .on
+        updatePresetCycling()
+    }
 
     private func start() {
         applySettings()
+        updatePresetCycling()
         framesTask?.cancel()
         framesTask = Task { [weak self] in
             guard let stream = self?.source.frames() else { return }
@@ -447,6 +458,21 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
     private func stop() {
         framesTask?.cancel(); framesTask = nil
         routeTask?.cancel(); routeTask = nil
+        presetCycleTask?.cancel(); presetCycleTask = nil
+    }
+
+    private func updatePresetCycling() {
+        presetCycleTask?.cancel()
+        presetCycleTask = nil
+        guard settings.milkDropPresetCycling else { return }
+        presetCycleTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled, let self else { return }
+                guard self.window?.isVisible == true, self.renderView.mode == .milkDrop else { continue }
+                self.nextMilkDropPreset()
+            }
+        }
     }
 
     private func display(_ data: VisualizationAudioData) {
