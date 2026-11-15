@@ -111,6 +111,24 @@ struct VisualizationTests {
         #expect(restored.warnings.isEmpty)
     }
 
+    @Test func milkDropPresetStoreReportsUnsupportedCustomShaders() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampMilkDropShader-\(UUID().uuidString)", isDirectory: true)
+        let sourceDirectory = root.appendingPathComponent("source", isDirectory: true)
+        let storeDirectory = root.appendingPathComponent("stored", isDirectory: true)
+        let source = sourceDirectory.appendingPathComponent("Shader.milk")
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "[preset00]\nzoom=1.0\nwarp_1=`sampler sampler_custom;\nwarp_2=`ret=tex2D(sampler_custom,uv);\n".write(to: source, atomically: true, encoding: .utf8)
+        let store = MilkDropPresetStore(directory: storeDirectory)
+
+        let imported = store.importFiles([source])
+        let restored = store.allPresets()
+
+        #expect(imported.presets.count == 1)
+        #expect(restored.warnings.contains { $0.localizedCaseInsensitiveContains("custom warp/composite shader") })
+        #expect(restored.warnings.contains { $0.localizedCaseInsensitiveContains("external texture references") })
+    }
+
     @Test func pcmAnalyzerReturnsSafeSilence() {
         let silent = VisualizationPCMAnalyzer.analyze(PCMFrame(samples: Array(repeating: 0, count: 2_048), sampleRate: 44_100))
         #expect(silent.bands.count == 48)

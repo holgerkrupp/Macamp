@@ -4,6 +4,7 @@ struct MilkDropPreset: Equatable, Sendable, Identifiable {
     let id: String
     let title: String
     let rendererJSON: String
+    let unsupportedFeatures: [String]
 }
 
 enum MilkDropPresetError: Error, LocalizedError {
@@ -80,6 +81,7 @@ enum MilkDropPresetParser {
         var shapeValues: [Int: [String: Double]] = [:]
         var shapeInitEquations: [Int: [(Int, String)]] = [:]
         var shapeFrameEquations: [Int: [(Int, String)]] = [:]
+        var hasCustomShader = false
 
         for rawLine in lines {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -94,6 +96,10 @@ enum MilkDropPresetParser {
             let key = line[..<separator].trimmingCharacters(in: .whitespaces).lowercased()
             let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespaces)
             let keyRange = NSRange(key.startIndex..., in: key)
+
+            if key.range(of: #"^(warp|comp)_\d+$"#, options: .regularExpression) != nil {
+                hasCustomShader = true
+            }
 
             if let match = initPattern.firstMatch(in: key, range: keyRange), let number = int(match, 1, in: key) {
                 try appendEquation(value, number, to: &initEquations)
@@ -153,7 +159,15 @@ enum MilkDropPresetParser {
         ]
         let json = try JSONSerialization.data(withJSONObject: rendererObject, options: [.sortedKeys])
         let name = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
-        return MilkDropPreset(id: UUID().uuidString, title: name.isEmpty ? "MilkDrop Preset" : name, rendererJSON: String(decoding: json, as: UTF8.self))
+        let unsupportedFeatures = hasCustomShader
+            ? ["Custom warp/composite shader blocks and their external texture references are not supported; the preset uses Butterchurn's standard feedback shader."]
+            : []
+        return MilkDropPreset(
+            id: UUID().uuidString,
+            title: name.isEmpty ? "MilkDrop Preset" : name,
+            rendererJSON: String(decoding: json, as: UTF8.self),
+            unsupportedFeatures: unsupportedFeatures
+        )
     }
 
     private static func appendEquation(_ value: String, _ index: Int, to values: inout [(Int, String)]) throws {
@@ -251,8 +265,14 @@ final class MilkDropPresetStore {
                 guard size > 0, size <= 2 * 1_024 * 1_024 else { throw MilkDropPresetError.tooLarge }
                 let data = try Data(contentsOf: url, options: [.mappedIfSafe])
                 var preset = try MilkDropPresetParser.parse(data: data, fileName: url.lastPathComponent)
-                preset = MilkDropPreset(id: url.deletingPathExtension().lastPathComponent, title: preset.title, rendererJSON: preset.rendererJSON)
+                preset = MilkDropPreset(
+                    id: url.deletingPathExtension().lastPathComponent,
+                    title: preset.title,
+                    rendererJSON: preset.rendererJSON,
+                    unsupportedFeatures: preset.unsupportedFeatures
+                )
                 presets.append(preset)
+                warnings.append(contentsOf: preset.unsupportedFeatures.map { "\(preset.title): \($0)" })
             } catch {
                 warnings.append("Skipped invalid preset \(url.lastPathComponent): \(error.localizedDescription)")
             }
