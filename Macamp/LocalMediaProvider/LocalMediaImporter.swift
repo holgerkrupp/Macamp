@@ -32,10 +32,12 @@ enum LocalMediaImporter {
             }
         }
 
-        var seen: Set<URL> = []
         var items: [PlaybackItem] = []
         var locations: [PlaybackItemID: URL] = [:]
-        for candidate in candidates where seen.insert(candidate.url).inserted {
+        // A playlist is an ordered list of occurrences. Keep repeated URLs as
+        // distinct entries; the app-owned playlist assigns each occurrence its
+        // own identity even when the underlying file is the same.
+        for candidate in candidates {
             do {
                 let item = try await makeItem(candidate)
                 items.append(item)

@@ -18,7 +18,7 @@ Every import entry point sends one explicit intent to the shared media importer:
 
 | Intent | Result |
 | --- | --- |
-| **Append to queue** | Add imported tracks after the current row in the shared playlist. Do not start playback or interrupt the active provider. |
+| **Append to queue** | Add imported tracks at the end of the shared playlist. Do not start playback or interrupt the active provider. |
 | **Insert next** | Put imported tracks at the next shared-playlist position. Do not interrupt the current track. |
 | **Replace and play** | Replace the shared playlist with the imported tracks and start the first track. |
 | **Add to library** | Remember imported files and playlists in Local Files without changing the shared playlist or starting playback. |

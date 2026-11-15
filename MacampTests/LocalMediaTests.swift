@@ -40,6 +40,23 @@ struct LocalMediaTests {
         #expect(playlist.entries.isEmpty)
     }
 
+    @Test func importerPreservesRepeatedPlaylistOccurrences() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampRepeatedPlaylist-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let track = root.appendingPathComponent("track.mp3")
+        try Data([0x49, 0x44, 0x33]).write(to: track)
+        let playlist = root.appendingPathComponent("repeat.m3u")
+        try "#EXTM3U\ntrack.mp3\ntrack.mp3\n".write(to: playlist, atomically: true, encoding: .utf8)
+
+        let report = await LocalMediaImporter.importURLs([playlist])
+
+        #expect(report.items.count == 2)
+        #expect(report.items[0].providerItemID == report.items[1].providerItemID)
+        #expect(report.items[0].id == report.items[1].id)
+    }
+
     @Test @MainActor func localProviderAdvertisesImplementedAudioBoundaries() async throws {
         let defaults = UserDefaults(suiteName: #function)!
         defaults.removePersistentDomain(forName: #function)
