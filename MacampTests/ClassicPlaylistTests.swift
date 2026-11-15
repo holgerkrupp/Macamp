@@ -40,4 +40,30 @@ struct ClassicPlaylistTests {
             playlist.standardizedFileURL
         ])
     }
+
+    @Test @MainActor func reorderSelectionTracksOneDuplicateOccurrenceByPlaylistIdentity() {
+        let store = makeIsolatedUnifiedPlaylistStore()
+        let track = PlaybackItem(
+            id: "local-track",
+            providerID: .localMedia,
+            providerItemID: "file:///Music/track.mp3",
+            title: "Track",
+            mediaKind: .localFile,
+            isExplicit: false
+        )
+        store.append([track, track, track])
+        let before = store.queue.items
+
+        store.move(fromOffsets: IndexSet(integer: 0), toOffset: 3)
+        let after = store.queue.items
+        let selected = ClassicPlaylistSurface.selectionAfterReorder(
+            IndexSet(integer: 0),
+            previousItems: before,
+            currentItems: after
+        )
+
+        #expect(after.map(\.providerItemID) == Array(repeating: track.providerItemID, count: 3))
+        #expect(after.map(\.id).count == Set(after.map(\.id)).count)
+        #expect(selected == IndexSet(integer: 2))
+    }
 }

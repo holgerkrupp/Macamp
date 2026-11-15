@@ -786,14 +786,27 @@ final class ClassicPlaylistSurface: NSView {
 
     private func moveSelectedRows(direction: Int) {
         guard let first = selectedIndexes.first, let last = selectedIndexes.last else { return }
-        let itemIDs = Set(selectedIndexes.compactMap { index in
-            coordinator.queue.items.indices.contains(index) ? coordinator.queue.items[index].id : nil
-        })
+        let previousItems = coordinator.queue.items
         let destination = direction < 0 ? max(0, first - 1) : min(coordinator.queue.items.count, last + 2)
         coordinator.playlistStore.move(fromOffsets: selectedIndexes, toOffset: destination)
-        selectedIndexes = IndexSet(coordinator.queue.items.indices.filter { itemIDs.contains(coordinator.queue.items[$0].id) })
+        selectedIndexes = Self.selectionAfterReorder(
+            selectedIndexes,
+            previousItems: previousItems,
+            currentItems: coordinator.queue.items
+        )
         selectionAnchor = selectedIndexes.first
         needsDisplay = true
+    }
+
+    static func selectionAfterReorder(
+        _ selection: IndexSet,
+        previousItems: [PlaybackItem],
+        currentItems: [PlaybackItem]
+    ) -> IndexSet {
+        let selectedOccurrences = Set(selection.compactMap { index in
+            previousItems.indices.contains(index) ? previousItems[index].id : nil
+        })
+        return IndexSet(currentItems.indices.filter { selectedOccurrences.contains(currentItems[$0].id) })
     }
 
     private func saveCurrentPlaylist() {
