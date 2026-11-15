@@ -1,4 +1,5 @@
 import Foundation
+import MediaPlayer
 import Testing
 @testable import Macamp
 
@@ -10,6 +11,21 @@ struct PlaybackCoreTests {
         #expect(apple.contains(.playback))
         #expect(!apple.contains(.applicationVolume))
         #expect(!apple.contains(.pcmAudio))
+    }
+
+    @Test func nowPlayingMetadataTracksLocalPlaybackStateAndLiveStreams() {
+        let station = PlaybackItem(id: "station", providerID: .localMedia, providerItemID: "https://radio.example/live.mp3", title: "Station", artist: "Broadcaster", albumTitle: "Radio", mediaKind: .radioStation, isExplicit: false)
+        var state = PlaybackState(status: .playing, currentItem: station, elapsed: .seconds(18), duration: nil, playbackRate: 1, volume: 1)
+        var info = LocalNowPlayingIntegration.info(for: station, state: state)
+        #expect(info[MPMediaItemPropertyTitle] as? String == "Station")
+        #expect(info[MPMediaItemPropertyArtist] as? String == "Broadcaster")
+        #expect(info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double == 18)
+        #expect(info[MPNowPlayingInfoPropertyPlaybackRate] as? Double == 1)
+        #expect(info[MPNowPlayingInfoPropertyIsLiveStream] as? Bool == true)
+
+        state.status = .paused
+        info = LocalNowPlayingIntegration.info(for: station, state: state)
+        #expect(info[MPNowPlayingInfoPropertyPlaybackRate] as? Double == 0)
     }
 
     @Test func equalizerProfileIsValidatedAndPersistedAsOneGlobalProfile() {

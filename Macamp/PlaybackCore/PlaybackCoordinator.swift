@@ -26,6 +26,7 @@ final class PlaybackCoordinator {
     @ObservationIgnored private var lastAppliedProviderID: PlaybackProviderID?
     @ObservationIgnored private var isAutoAdvancing = false
     @ObservationIgnored private let logger = Logger(subsystem: "dev.holgerkrupp.Macamp", category: "Playback")
+    @ObservationIgnored private var nowPlayingIntegration: LocalNowPlayingIntegration?
 
     init(
         sessionStore: PlaybackSessionStore = PlaybackSessionStore(),
@@ -45,6 +46,11 @@ final class PlaybackCoordinator {
     func register(_ provider: any PlaybackProvider) {
         providers[provider.id] = provider
         if activeProviderID == nil { activate(provider.id) }
+    }
+
+    func installLocalNowPlayingIntegration() {
+        nowPlayingIntegration = LocalNowPlayingIntegration(coordinator: self)
+        nowPlayingIntegration?.update()
     }
 
     var registeredProviders: [(id: PlaybackProviderID, name: String, capabilities: PlaybackCapabilities, authentication: ProviderAuthenticationState)] {
@@ -456,6 +462,7 @@ final class PlaybackCoordinator {
             to: snapshot
         )
         lastAppliedProviderID = activeProviderID
+        nowPlayingIntegration?.update()
         if !isAutoAdvancing,
            previousState.status == .playing,
            snapshot.state.status == .stopped,

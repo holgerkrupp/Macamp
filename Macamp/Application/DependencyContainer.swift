@@ -78,6 +78,7 @@ final class DependencyContainer {
         let active = providerRegistry.isAvailable(selected) ? selected : .appleMusic
         if !providerRegistry.isAvailable(selected) { settings.activeProviderID = active.rawValue }
         playback.activate(active)
+        playback.installLocalNowPlayingIntegration()
         visualizationFrames.start(source: localPCMAnalysis, coordinator: playback)
     }
 
