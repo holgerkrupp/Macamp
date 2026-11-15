@@ -57,6 +57,8 @@ final class SkinRendererView: NSView {
     private var pressedObject: HitObject?
     private var balanceValue = 0.5
     private var sceneAnimationTasks: [WasabiHandle: Task<Void, Never>] = [:]
+    private var auxiliaryHosts: [String: WeakSkinWindowHost] = [:]
+    private var auxiliarySurfaces = NSHashTable<WasabiAuxiliaryContainerView>.weakObjects()
     private var artworkTask: Task<Void, Never>?
     private var artworkURL: URL?
     private var remoteArtwork: NSImage?
@@ -105,6 +107,7 @@ final class SkinRendererView: NSView {
                 self?.updateMakiPlaybackState()
                 self?.updateRemoteArtwork()
                 self?.needsDisplay = true
+                self?.auxiliarySurfaces.allObjects.forEach { $0.needsDisplay = true }
                 self?.setAccessibilityValue(self?.coordinator.state.currentItem.map { "\($0.title), \($0.artist ?? "Unknown artist")" } ?? "Nothing playing")
             }
         }
@@ -280,7 +283,8 @@ final class SkinRendererView: NSView {
         let candidates = skinStore.activeCatalog.controls.filter { control in
             if let elementID = control.elementID {
                 let visibleInstances = liveScene.handles(for: elementID).filter {
-                    liveScene.effectiveVisible($0) && liveScene.isInActiveLayout($0)
+                    liveScene.effectiveVisible($0) && liveScene.isInActiveLayout($0) &&
+                    liveScene.containerID(containing: $0) == primaryContainerID
                 }
                 guard visibleInstances.contains(where: { liveScene.worldFrame(of: $0)?.contains(point) == true }) else { return false }
                 return true
@@ -303,11 +307,15 @@ final class SkinRendererView: NSView {
     /// Deterministic logical-coordinate input used by compatibility fixtures.
     /// It enters the same object hit-test and MAKI event path as AppKit input.
     @discardableResult
-    func injectMouseDown(at point: CGPoint) -> String? {
-        let object = hitObject(at: point)
+    func injectMouseDown(at point: CGPoint, within containerID: String? = nil) -> String? {
+        let object = hitObject(at: point, within: containerID)
         pressedObject = object
         _ = object.map { dispatchMouseDown(to: $0, at: point) }
-        guard let control = skinStore.activeCatalog.controls.first(where: { effectiveFrame(for: $0).contains(point) && isElementVisible($0.elementID, initiallyVisible: $0.initiallyVisible) }) else { return object?.id }
+        guard let control = skinStore.activeCatalog.controls.first(where: { control in
+            effectiveFrame(for: control).contains(point) &&
+            isElementVisible(control.elementID, initiallyVisible: control.initiallyVisible) &&
+            (containerID == nil || control.elementID.flatMap { liveScene.firstHandle(for: $0) }.map { liveScene.containerID(containing: $0) == containerID?.lowercased() } == true)
+        }) else { return object?.id }
         pressedControl = control.id
         activeControl = control
         return object?.id ?? control.elementID
@@ -325,7 +333,7 @@ final class SkinRendererView: NSView {
         }
     }
 
-    func injectMouseUp(at point: CGPoint) {
+    func injectMouseUp(at point: CGPoint, within containerID: String? = nil) {
         if let control = activeControl, case .setEqualizerBand = control.action,
            !coordinator.audioEffectCapabilities.contains(.equalizerBands) {
             pressedControl = nil
@@ -334,7 +342,7 @@ final class SkinRendererView: NSView {
             needsDisplay = true
             return
         }
-        let object = hitObject(at: point)
+        let object = hitObject(at: point, within: containerID)
         let makiHandled = dispatchMouseUp(to: object, at: point)
         if let control = activeControl, control.orientation != nil, let elementID = control.elementID {
             let fraction = sliderValueFrom(point, frame: effectiveFrame(for: control), orientation: control.orientation)
@@ -342,7 +350,7 @@ final class SkinRendererView: NSView {
             let handled = dispatchSliderPosition(control: control, elementID: elementID, value: value, final: true)
             if !handled { applyNativeSliderValue(control, fraction: fraction) }
         }
-        activatePressedControl(ifReleasedAt: point, makiHandled: makiHandled)
+        activatePressedControl(ifReleasedAt: point, makiHandled: makiHandled, within: containerID)
         pressedControl = nil
         pressedObject = nil
         activeControl = nil
@@ -398,10 +406,10 @@ final class SkinRendererView: NSView {
         else { _ = makiRuntime?.dispatchMouseLeave(objectID: object.id) }
     }
 
-    private func activatePressedControl(ifReleasedAt point: CGPoint, makiHandled: Bool) {
+    private func activatePressedControl(ifReleasedAt point: CGPoint, makiHandled: Bool, within containerID: String? = nil) {
         guard let control = activeControl else { return }
         if let pressedObject {
-            guard let releasedObject = hitObject(at: point),
+            guard let releasedObject = hitObject(at: point, within: containerID),
                   releasedObject.handle == pressedObject.handle,
                   releasedObject.id == pressedObject.id else { return }
         } else {
@@ -413,21 +421,191 @@ final class SkinRendererView: NSView {
 
     private func drawModernScene() {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
-        paintModernScene(liveScene, in: context)
+        paintModernScene(liveScene, in: context, container: primaryContainerHandle)
     }
 
-    private func paintModernScene(_ scene: WasabiScene, in context: CGContext) {
+    private var primaryContainerHandle: WasabiHandle? {
+        liveScene.primaryContainer(matching: skinStore.activeCatalog.canvasSize)
+    }
+
+    private var primaryContainerID: String {
+        primaryContainerHandle.flatMap { liveScene.node($0)?.id } ?? "main"
+    }
+
+    func attachAuxiliaryHost(_ host: WinampSkinWindowHost, for containerID: String) {
+        auxiliaryHosts[containerID.lowercased()] = WeakSkinWindowHost(host)
+    }
+
+    func registerAuxiliarySurface(_ surface: WasabiAuxiliaryContainerView) {
+        auxiliarySurfaces.add(surface)
+    }
+
+    func unregisterAuxiliarySurface(_ surface: WasabiAuxiliaryContainerView) {
+        auxiliarySurfaces.remove(surface)
+    }
+
+    func auxiliaryHost(for containerID: String) -> WinampSkinWindowHost? {
+        auxiliaryHosts[containerID.lowercased()]?.value
+    }
+
+    func detachAuxiliaryHost(for containerID: String) {
+        auxiliaryHosts.removeValue(forKey: containerID.lowercased())
+    }
+
+    func auxiliaryContainerIDs() -> [(id: String, size: CGSize, initiallyVisible: Bool)] {
+        liveScene.rootHandles.compactMap { handle in
+            guard let node = liveScene.node(handle), node.kind == .container,
+                  handle != primaryContainerHandle,
+                  let size = liveScene.containerSize(handle),
+                  size.width > 0, size.height > 0 else { return nil }
+            return (node.id, size, node.visible)
+        }
+    }
+
+    func auxiliaryContainerID(forRole role: String) -> String? {
+        liveScene.allNodes.first { node in
+            node.kind == .content && node.attributes["role"]?.caseInsensitiveCompare(role) == .orderedSame &&
+            liveScene.containerID(containing: node.handle) != primaryContainerID
+        }.flatMap { liveScene.containerID(containing: $0.handle) }
+    }
+
+    func auxiliaryContainerIDForEqualizer() -> String? {
+        liveScene.allNodes.first { node in
+            node.attributes["action"] == SkinAction.setEqualizerBand.rawValue &&
+            liveScene.containerID(containing: node.handle) != primaryContainerID
+        }.flatMap { liveScene.containerID(containing: $0.handle) }
+    }
+
+    func setAuxiliaryContainer(_ containerID: String, visible: Bool) {
+        guard let container = liveScene.containerHandle(id: containerID) else { return }
+        if let makiRuntime {
+            makiRuntime.setVisible(receiver: container, objectID: containerID, isVisible: visible)
+        } else {
+            liveScene.setVisible(visible, for: container)
+            auxiliaryContainerVisibilityChanged(containerID)
+            auxiliarySurfaces.allObjects.forEach { $0.needsDisplay = true }
+        }
+    }
+
+    func drawAuxiliaryContainer(_ containerID: String) {
+        guard skinStore.activeCatalog.format == .modern,
+              let context = NSGraphicsContext.current?.cgContext,
+              let container = liveScene.containerHandle(id: containerID) else { return }
+        auxiliaryHost(for: containerID)?.regionPath = auxiliaryRegionPath(for: containerID)
+        paintModernScene(liveScene, in: context, container: container)
+    }
+
+    @discardableResult
+    func auxiliaryMouseDown(at point: CGPoint, in containerID: String) -> Bool {
+        activeControl = nil
+        pressedControl = nil
+        let object = hitObject(at: point, within: containerID)
+        pressedObject = object
+        let mouseDownHandled = object.map { dispatchMouseDown(to: $0, at: point) } ?? false
+        let declaredControl = skinStore.activeCatalog.controls.first(where: { control in
+            guard let elementID = control.elementID,
+                  let handle = liveScene.firstHandle(for: elementID) else { return false }
+            return liveScene.containerID(containing: handle) == containerID.lowercased() &&
+                effectiveFrame(for: control).contains(point) &&
+                isElementVisible(elementID, initiallyVisible: control.initiallyVisible)
+        })
+        let control = declaredControl ?? object?.handle.flatMap(auxiliaryControlDefinition(for:))
+        if let control {
+            pressedControl = control.id
+            activeControl = control
+        }
+        return mouseDownHandled || activeControl != nil
+    }
+
+    private func auxiliaryControlDefinition(for handle: WasabiHandle) -> SkinControlDefinition? {
+        guard let node = liveScene.node(handle),
+              liveScene.containerID(containing: handle) != primaryContainerID,
+              let action = SkinAction(rawValue: node.attributes["action"] ?? ""),
+              action != .none, action != .scripted,
+              let frame = liveScene.worldFrame(of: handle) else { return nil }
+        let id: SkinControlID = switch action {
+        case .previous: .previous
+        case .play: .play
+        case .pause: .pause
+        case .stop: .stop
+        case .next: .next
+        case .open: .open
+        case .seek: .seek
+        case .setVolume: .volume
+        case .setBalance: .balance
+        case .toggleShuffle: .shuffle
+        case .cycleRepeat: .repeat
+        case .togglePlaylist: .playlist
+        case .toggleEqualizer: .equalizer
+        case .toggleVisualization: .visualization
+        case .minimize: .minimize
+        case .close: .close
+        default: .scripted
+        }
+        guard id != .scripted else { return nil }
+        return SkinControlDefinition(
+            id: id,
+            frame: frame,
+            normalSprite: nil,
+            pressedSprite: nil,
+            disabledSprite: nil,
+            action: action,
+            elementID: node.id,
+            initiallyVisible: liveScene.effectiveVisible(handle),
+            parameter: Int(node.attributes["parameter"] ?? ""),
+            orientation: node.attributes["orientation"] == "vertical" ? .vertical : (node.attributes["orientation"] == "horizontal" ? .horizontal : nil)
+        )
+    }
+
+    func auxiliaryMouseDragged(at point: CGPoint) { injectMouseDrag(at: point) }
+    func auxiliaryMouseUp(at point: CGPoint, in containerID: String) { injectMouseUp(at: point, within: containerID) }
+
+    func appendDroppedFiles(_ urls: [URL]) {
+        onFileURLsDropped?(urls)
+    }
+
+    func isVisible(at point: CGPoint, in containerID: String) -> Bool {
+        guard let host = auxiliaryHost(for: containerID) else { return false }
+        if let region = host.regionPath { return region.contains(point) }
+        return liveScene.hitTest(point, within: containerID) != nil
+    }
+
+    func auxiliaryRegionPath(for containerID: String) -> NSBezierPath? {
+        guard let container = liveScene.containerHandle(id: containerID) else { return nil }
+        let shapes = liveScene.allNodes.compactMap { node -> ModernWindowRegionShape? in
+            guard liveScene.containerID(containing: node.handle) == containerID.lowercased(),
+                  liveScene.isInActiveLayout(node.handle),
+                  liveScene.effectiveVisible(node.handle), liveScene.effectiveAlpha(node.handle) > 0,
+                  let raw = Int(node.attributes["sysregion"] ?? ""), raw != 0,
+                  let frame = liveScene.worldFrame(of: node.handle), !frame.isEmpty else { return nil }
+            return ModernWindowRegionShape(frame: frame, additive: raw > 0, sysRegion: raw)
+        }
+        let bitmapAlpha = skinStore.activeCatalog.modernWindowUsesBitmapAlpha
+            ? alphaPath(for: container)
+            : nil
+        return ModernWindowRegionComposer.path(base: bitmapAlpha, shapes: shapes)
+    }
+
+    func auxiliaryContainerVisibilityChanged(_ containerID: String) {
+        guard let container = liveScene.containerHandle(id: containerID),
+              let window = auxiliaryHosts[containerID.lowercased()]?.value?.window else { return }
+        if liveScene.effectiveVisible(container) { window.makeKeyAndOrderFront(nil) }
+        else { window.orderOut(nil) }
+        auxiliarySurfaces.allObjects.forEach { $0.needsDisplay = true }
+    }
+
+    private func paintModernScene(_ scene: WasabiScene, in context: CGContext, container: WasabiHandle?) {
         let catalog = skinStore.activeCatalog
 
-        if WasabiScenePainter.renderNodes(in: scene).isEmpty {
-            if let image = catalog.modernBaseImage ?? catalog.mainImage {
+        if WasabiScenePainter.renderNodes(in: scene, container: container).isEmpty {
+            if container == primaryContainerHandle, let image = catalog.modernBaseImage ?? catalog.mainImage {
                 context.interpolationQuality = .none
                 image.draw(in: CGRect(origin: .zero, size: catalog.canvasSize), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.none])
             }
             return
         }
 
-        WasabiScenePainter.paint(scene, in: context) { node in
+        WasabiScenePainter.paint(scene, container: container, in: context) { node in
             let localFrame = CGRect(origin: .zero, size: node.localFrame.size)
             switch node.kind {
             case .layer, .animatedLayer:
@@ -447,11 +625,13 @@ final class SkinRendererView: NSView {
     private func updateModernWindowRegion() {
         guard skinStore.activeCatalog.format == .modern else { return }
         let catalog = skinStore.activeCatalog
+        let mainContainer = primaryContainerHandle
         var shapes: [ModernWindowRegionShape] = []
         // Structural Wasabi objects can carry sysregion too.  Walking the
         // live scene (rather than the flattened parser arrays) keeps group
         // transforms, active layouts, visibility and MAKI geometry aligned.
-        for node in liveScene.allNodes where liveScene.isInActiveLayout(node.handle) &&
+        for node in liveScene.allNodes where liveScene.containerID(containing: node.handle) == primaryContainerID &&
+            liveScene.isInActiveLayout(node.handle) &&
             liveScene.effectiveVisible(node.handle) && liveScene.effectiveAlpha(node.handle) > 0 {
             guard let value = Int(node.attributes["sysregion"] ?? ""), value != 0,
                   let frame = liveScene.worldFrame(of: node.handle), !frame.isEmpty else { continue }
@@ -459,7 +639,7 @@ final class SkinRendererView: NSView {
         }
         let alphaPath: NSBezierPath?
         if catalog.modernWindowUsesBitmapAlpha {
-            alphaPath = liveSceneAlphaPath()
+            alphaPath = mainContainer.flatMap(alphaPath(for:))
         } else {
             alphaPath = nil
         }
@@ -469,8 +649,13 @@ final class SkinRendererView: NSView {
         ) ?? catalog.regionPath
     }
 
-    private func liveSceneAlphaPath() -> NSBezierPath? {
-        let size = skinStore.activeCatalog.canvasSize
+    private func host(for containerID: String) -> WinampSkinWindowHost? {
+        let normalized = containerID.lowercased()
+        return normalized == primaryContainerID ? windowHost : auxiliaryHost(for: normalized)
+    }
+
+    private func alphaPath(for container: WasabiHandle) -> NSBezierPath? {
+        let size = liveScene.containerSize(container) ?? skinStore.activeCatalog.canvasSize
         let width = max(1, Int(ceil(size.width)))
         let height = max(1, Int(ceil(size.height)))
         guard let bitmap = NSBitmapImageRep(
@@ -490,7 +675,7 @@ final class SkinRendererView: NSView {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = graphics
         graphics.cgContext.clear(CGRect(origin: .zero, size: size))
-        paintModernScene(liveScene, in: graphics.cgContext)
+        paintModernScene(liveScene, in: graphics.cgContext, container: container)
         graphics.flushGraphics()
         NSGraphicsContext.restoreGraphicsState()
 
@@ -1138,7 +1323,7 @@ final class SkinRendererView: NSView {
         // prefer the host's current composed path over the import-time
         // catalog path so hit testing cannot lag behind the mask.
         if let region = windowHost?.regionPath ?? skinStore.activeCatalog.regionPath, !region.contains(point) { return false }
-        if skinStore.activeCatalog.format == .modern, liveScene.hitTest(point) != nil { return true }
+        if skinStore.activeCatalog.format == .modern, liveScene.hitTest(point, within: primaryContainerID) != nil { return true }
         if skinStore.activeCatalog.contentRegions.contains(where: { $0.frame.contains(point) }) { return true }
         if skinStore.activeCatalog.modernWindowUsesBitmapAlpha {
             return isOpaquePixel(at: point)
@@ -1190,10 +1375,10 @@ final class SkinRendererView: NSView {
         return result
     }
 
-    private func hitObject(at point: CGPoint) -> HitObject? {
-        if skinStore.activeCatalog.format == .modern,
-           let sceneNode = liveScene.hitTest(point),
-           let worldFrame = liveScene.worldFrame(of: sceneNode.handle) {
+    private func hitObject(at point: CGPoint, within containerID: String? = nil) -> HitObject? {
+        if skinStore.activeCatalog.format == .modern {
+            guard let sceneNode = liveScene.hitTest(point, within: containerID ?? primaryContainerID),
+                  let worldFrame = liveScene.worldFrame(of: sceneNode.handle) else { return nil }
             return HitObject(
                 id: sceneNode.id,
                 kind: sceneNode.kind,
@@ -1302,6 +1487,88 @@ final class SkinRendererView: NSView {
     }
 }
 
+@MainActor
+private final class WeakSkinWindowHost {
+    weak var value: WinampSkinWindowHost?
+    init(_ value: WinampSkinWindowHost) { self.value = value }
+}
+
+@MainActor
+final class WasabiAuxiliaryContainerView: NSView {
+    private let renderer: SkinRendererView
+    let containerID: String
+    private var draggingWindow = false
+
+    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { renderer.unregisterAuxiliarySurface(self) }
+        else { renderer.registerAuxiliarySurface(self) }
+    }
+
+    init(renderer: SkinRendererView, containerID: String, size: CGSize) {
+        self.renderer = renderer
+        self.containerID = containerID
+        super.init(frame: CGRect(origin: .zero, size: size))
+        bounds = CGRect(origin: .zero, size: size)
+        autoresizingMask = [.width, .height]
+        registerForDraggedTypes([.fileURL])
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Modern skin \(containerID) window")
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        renderer.drawAuxiliaryContainer(containerID)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if case .success = FileURLDropPayloadParser.read(from: sender.draggingPasteboard) { return .copy }
+        return []
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        draggingEntered(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if case .success = FileURLDropPayloadParser.read(from: sender.draggingPasteboard) { return true }
+        return false
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard case let .success(urls) = FileURLDropPayloadParser.read(from: sender.draggingPasteboard) else { return false }
+        renderer.appendDroppedFiles(urls)
+        return true
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard bounds.contains(point) else { return nil }
+        if renderer.auxiliaryHost(for: containerID)?.clickThroughTransparentPixels == true,
+           !renderer.isVisible(at: point, in: containerID) { return nil }
+        return self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        draggingWindow = !renderer.auxiliaryMouseDown(at: point, in: containerID)
+        if draggingWindow { renderer.auxiliaryHost(for: containerID)?.performDrag(with: event) }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        if draggingWindow { renderer.auxiliaryHost(for: containerID)?.performDrag(with: event) }
+        else { renderer.auxiliaryMouseDragged(at: convert(event.locationInWindow, from: nil)) }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        defer { draggingWindow = false }
+        guard !draggingWindow else { return }
+        renderer.auxiliaryMouseUp(at: convert(event.locationInWindow, from: nil), in: containerID)
+    }
+}
+
 extension SkinRendererView: MakiRuntimeHost {
     func makiPlaybackStatus() -> Int { coordinator.state.isPlaying ? 1 : 0 }
 
@@ -1321,9 +1588,16 @@ extension SkinRendererView: MakiRuntimeHost {
 
     func makiVisibilityChanged(objectID: String, isVisible: Bool) {
         if let handle = liveScene.firstHandle(for: objectID) {
-            liveScene.setVisible(isVisible, for: handle)
+            makiVisibilityChanged(receiver: handle, objectID: objectID, isVisible: isVisible)
         }
+    }
+
+    func makiVisibilityChanged(receiver handle: WasabiHandle, objectID: String, isVisible: Bool) {
+        guard liveScene.node(handle) != nil else { return }
+        liveScene.setVisible(isVisible, for: handle)
+        if liveScene.node(handle)?.kind == .container { auxiliaryContainerVisibilityChanged(liveScene.node(handle)?.id ?? objectID) }
         needsDisplay = true
+        auxiliarySurfaces.allObjects.forEach { $0.needsDisplay = true }
     }
 
     func makiTargetChanged(objectID: String, x: Double, speed: Double) {
@@ -1373,32 +1647,48 @@ extension SkinRendererView: MakiRuntimeHost {
     }
 
     func makiLayoutSwitched(containerID: String, layoutID: String) {
-        guard let container = liveScene.firstHandle(for: containerID),
+        guard let container = liveScene.containerHandle(id: containerID),
               let layout = liveScene.layoutHandle(id: layoutID, in: container) else {
             makiRuntime?.recordExternalDiagnostic("Unsupported layout \(layoutID) requested by \(containerID).")
             return
         }
         liveScene.setActiveLayout(layout, for: container)
         if let size = liveScene.node(layout)?.localFrame.size {
-            windowHost?.resizeLogicalWindow(to: size)
+            host(for: containerID)?.resizeLogicalWindow(to: size)
         }
+        auxiliaryHost(for: containerID)?.regionPath = auxiliaryRegionPath(for: containerID)
         needsDisplay = true
+        auxiliarySurfaces.allObjects.forEach { $0.needsDisplay = true }
     }
 
     func makiLayoutResized(objectID: String, frame: CGRect) {
+        guard let handle = liveScene.firstHandle(for: objectID) else { return }
+        makiLayoutResized(receiver: handle, objectID: objectID, frame: frame)
+    }
+
+    func makiLayoutResized(receiver handle: WasabiHandle, objectID: String, frame: CGRect) {
         guard frame.width > 0, frame.height > 0, frame.width <= 2_048, frame.height <= 2_048 else {
             makiRuntime?.recordExternalDiagnostic("Rejected unsafe layout resize for \(objectID).")
             return
         }
-        guard let handle = liveScene.firstHandle(for: objectID),
-              let node = liveScene.node(handle), node.kind == .layout || node.kind == .container else { return }
+        guard let node = liveScene.node(handle), node.kind == .layout || node.kind == .container else { return }
         liveScene.setLocalFrame(frame, for: handle)
-        windowHost?.resizeLogicalWindow(to: frame.size)
+        let containerID = node.kind == .container ? node.id : liveScene.containerID(containing: handle)
+        if let containerID { host(for: containerID)?.resizeLogicalWindow(to: frame.size) }
         needsDisplay = true
     }
 
     func makiRedock(objectID: String, before: Bool) {
-        if before { windowHost?.beforeRedock() } else { windowHost?.redock() }
+        guard let handle = liveScene.firstHandle(for: objectID) ?? primaryContainerHandle else { return }
+        makiRedock(receiver: handle, objectID: objectID, before: before)
+    }
+
+    func makiRedock(receiver handle: WasabiHandle, objectID: String, before: Bool) {
+        let containerID = liveScene.node(handle)?.kind == .container
+            ? liveScene.node(handle)?.id
+            : liveScene.containerID(containing: handle)
+        guard let containerID else { return }
+        if before { host(for: containerID)?.beforeRedock() } else { host(for: containerID)?.redock() }
         needsDisplay = true
     }
 

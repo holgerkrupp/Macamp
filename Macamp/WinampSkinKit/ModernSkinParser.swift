@@ -608,7 +608,10 @@ enum ModernSkinParser {
                 kind: .layout,
                 localFrame: CGRect(origin: .zero, size: layout.canvasSize),
                 parent: container,
-                visible: layout.containerIsDefaultVisible,
+                // The container owns window visibility. A hidden auxiliary
+                // container still needs a visible active layout when MAKI
+                // later shows it.
+                visible: true,
                 attributes: [
                     "container": containerID,
                     "sysregion": layout.sysRegion.map(String.init) ?? ""
@@ -708,6 +711,7 @@ enum ModernSkinParser {
                 zIndex: z,
                 attributes: [
                     "action": control.action.rawValue,
+                    "parameter": control.parameter.map(String.init) ?? "",
                     "orientation": control.orientation.map { $0 == .vertical ? "vertical" : "horizontal" } ?? "",
                     "sysregion": control.sysRegion.map(String.init) ?? "",
                     "image": control.normalSprite?.assetName ?? "",

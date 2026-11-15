@@ -169,9 +169,9 @@ struct WasabiScenePreviewSnapshot {
 /// transform and visibility scope; drawable nodes are handed to the caller
 /// in a context already translated by every local parent frame.
 enum WasabiScenePainter {
-    static func renderNodes(in scene: WasabiScene) -> [WasabiSceneRenderNode] {
+    static func renderNodes(in scene: WasabiScene, container: WasabiHandle? = nil) -> [WasabiSceneRenderNode] {
         var result: [WasabiSceneRenderNode] = []
-        visit(scene, handles: scene.rootHandles, context: nil) { node in
+        visit(scene, handles: container.map { [$0] } ?? scene.rootHandles, context: nil) { node in
             result.append(node)
         }
         return result
@@ -180,10 +180,11 @@ enum WasabiScenePainter {
     @MainActor
     static func paint(
         _ scene: WasabiScene,
+        container: WasabiHandle? = nil,
         in context: CGContext,
         draw: (WasabiSceneRenderNode) -> Void
     ) {
-        visit(scene, handles: scene.rootHandles, context: context, draw: draw)
+        visit(scene, handles: container.map { [$0] } ?? scene.rootHandles, context: context, draw: draw)
     }
 
     @MainActor

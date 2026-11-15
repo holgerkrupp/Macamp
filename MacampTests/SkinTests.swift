@@ -730,7 +730,7 @@ struct SkinTests {
         let xml = """
         <WinampAbstractionLayer>
           <container id="auxiliary" default_visible="0">
-            <layout id="component" w="1200" h="900"><layer id="component-bg" /></layout>
+            <layout id="component" w="1200" h="900"><layer id="component-bg" /><button id="aux-control" x="0" y="0" w="10" h="10" action="play" /></layout>
           </container>
           <container id="main" default_visible="1" default_layout="compact">
             <layout id="normal" w="760" h="394"><button id="normal-control" x="0" y="0" w="10" h="10" /></layout>
@@ -747,6 +747,71 @@ struct SkinTests {
         let main = try #require(descriptor.scene.firstHandle(for: "main"))
         let activeLayout = try #require(descriptor.scene.activeLayout(for: main))
         #expect(descriptor.scene.node(activeLayout)?.id == "compact")
+        let auxiliary = try #require(descriptor.scene.containerHandle(id: "auxiliary"))
+        #expect(descriptor.scene.containerSize(auxiliary) == CGSize(width: 1200, height: 900))
+        #expect(descriptor.scene.primaryContainer(matching: descriptor.canvasSize) == main)
+        var visibleScene = descriptor.scene
+        visibleScene.setVisible(true, for: auxiliary)
+        #expect(visibleScene.hitTest(CGPoint(x: 5, y: 5), within: "auxiliary")?.id == "aux-control")
+        #expect(visibleScene.hitTest(CGPoint(x: 5, y: 5), within: "main")?.id == "compact-control")
+    }
+
+    @Test @MainActor func modernAuxiliaryContainerResizesItsOwnWindowAndKeepsScopedLayout() async throws {
+        let xml = """
+        <WinampAbstractionLayer>
+          <elements><bitmap id="background" file="background.png" /></elements>
+          <container id="main" default_visible="1" default_layout="normal">
+            <layout id="normal" w="200" h="80"><layer id="main-background" image="background" x="0" y="0" w="200" h="80" /><button id="main-control" x="2" y="2" w="12" h="12" action="play" /></layout>
+          </container>
+          <container id="playlist" default_visible="0" default_layout="compact">
+            <layout id="compact" w="240" h="120"><layer id="playlist-background" image="background" x="0" y="0" w="240" h="120" /><component id="playlist-content" param="guid:pl" x="0" y="0" w="240" h="120" /></layout>
+            <layout id="expanded" w="400" h="300"><layer id="playlist-expanded-background" image="background" x="0" y="0" w="400" h="300" /><button id="playlist-control" x="2" y="2" w="12" h="12" action="play" /></layout>
+          </container>
+        </WinampAbstractionLayer>
+        """
+        let background = SkinDiagnosticFixtures.diagnosticPNG(size: CGSize(width: 200, height: 80), background: .darkGray, fills: [])
+        let source = try temporarySkin(entries: [("skin.xml", Data(xml.utf8)), ("background.png", background)], extension: "wal")
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let defaultsName = "Macamp.AuxiliaryContainers.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skins = SkinLibraryStore(defaults: defaults, root: root)
+        await skins.importSkin(from: source)
+        #expect(skins.lastError == nil)
+        #expect(skins.activeCatalog.format == .modern)
+
+        let renderer = SkinRendererView(
+            coordinator: PlaybackCoordinator(playlistStore: makeIsolatedUnifiedPlaylistStore()),
+            skinStore: skins,
+            settings: SettingsStore(defaults: defaults),
+            openMedia: { _ in },
+            playlistToggle: {},
+            equalizerToggle: {},
+            visualizationToggle: {}
+        )
+        let mainHost = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 200, height: 80))
+        let auxiliaryHost = WinampSkinWindowHost(normalLogicalSize: CGSize(width: 240, height: 120))
+        renderer.windowHost = mainHost
+        renderer.attachAuxiliaryHost(auxiliaryHost, for: "playlist")
+
+        #expect(renderer.auxiliaryContainerIDs().map(\.id) == ["playlist"])
+        renderer.makiLayoutSwitched(containerID: "playlist", layoutID: "expanded")
+        #expect(auxiliaryHost.currentLogicalSize == CGSize(width: 400, height: 300))
+        #expect(mainHost.currentLogicalSize == CGSize(width: 200, height: 80))
+        #expect(renderer.liveSceneForTesting.activeLayout(for: try #require(renderer.liveSceneForTesting.containerHandle(id: "playlist"))) == renderer.liveSceneForTesting.layoutHandle(id: "expanded", in: renderer.liveSceneForTesting.containerHandle(id: "playlist")))
+
+        renderer.makiLayoutResized(objectID: "playlist", frame: CGRect(x: 0, y: 0, width: 350, height: 240))
+        #expect(auxiliaryHost.currentLogicalSize == CGSize(width: 350, height: 240))
+        renderer.makiRedock(objectID: "playlist", before: true)
+        #expect(auxiliaryHost.dockingState == .preparingToRedock)
+        renderer.makiRedock(objectID: "playlist", before: false)
+        #expect(auxiliaryHost.dockingState == .docked)
+        renderer.makiVisibilityChanged(objectID: "playlist", isVisible: true)
+        #expect(auxiliaryHost.window.isVisible)
+        renderer.makiVisibilityChanged(objectID: "playlist", isVisible: false)
+        #expect(!auxiliaryHost.window.isVisible)
     }
 
     @Test func modernParserMapsPlaylistAndEqualizerControls() throws {
@@ -995,6 +1060,10 @@ struct SkinTests {
         let first = scene.addNode(id: "duplicate", kind: .button, localFrame: CGRect(x: 4, y: 4, width: 20, height: 16), parent: layout)
         let second = scene.addNode(id: "duplicate", kind: .button, localFrame: CGRect(x: 30, y: 4, width: 20, height: 16), parent: layout)
         scene.setActiveLayout(layout, for: container)
+        let playlist = scene.addNode(id: "playlist", kind: .container, localFrame: CGRect(x: 0, y: 0, width: 240, height: 120))
+        let compact = scene.addNode(id: "compact", kind: .layout, localFrame: CGRect(x: 0, y: 0, width: 240, height: 120), parent: playlist)
+        _ = scene.addNode(id: "expanded", kind: .layout, localFrame: CGRect(x: 0, y: 0, width: 400, height: 300), parent: playlist)
+        scene.setActiveLayout(compact, for: playlist)
 
         let host = TestMakiHost()
         let runtime = MakiRuntime(programs: [], bindings: [], host: host, limits: .init(), skinID: "handles", persistentState: .standard, scene: scene)
@@ -1010,6 +1079,16 @@ struct SkinTests {
         #expect(runtime.invoke(receiver: runtime.registry.systemHandle, method: "getContainer", arguments: [.string("main")]) == .object(container))
         #expect(runtime.invoke(receiver: container, method: "getLayout", arguments: [.string("normal")]) == .object(layout))
         #expect(runtime.invoke(receiver: layout, method: "getContainer", arguments: []) == .object(container))
+        _ = runtime.invoke(receiver: playlist, method: "switchToLayout", arguments: [.string("expanded")])
+        #expect(host.layoutSwitches.last?.containerID == "playlist")
+        #expect(host.layoutSwitches.last?.layoutID == "expanded")
+        _ = runtime.invoke(receiver: playlist, method: "hide", arguments: [])
+        #expect(runtime.invoke(receiver: playlist, method: "isVisible", arguments: []) == .integer(0))
+        #expect(host.visibilityChanges.last?.receiver == playlist)
+        _ = runtime.invoke(receiver: container, method: "resize", arguments: [.integer(0), .integer(0), .integer(300), .integer(140)])
+        #expect(host.resizeChanges.last?.receiver == container)
+        _ = runtime.invoke(receiver: playlist, method: "redock", arguments: [])
+        #expect(host.redockChanges.last?.receiver == playlist)
     }
 
     @Test @MainActor func makiDispatchResolvesCollidingMethodsByReceiverClass() throws {
@@ -2370,6 +2449,10 @@ private final class TestMakiHost: MakiRuntimeHost {
     var eventReceivers: [WasabiHandle] = []
     var eventArguments: [[MakiValue]] = []
     var actions: [WasabiHandle] = []
+    var layoutSwitches: [(containerID: String, layoutID: String)] = []
+    var visibilityChanges: [(receiver: WasabiHandle, isVisible: Bool)] = []
+    var resizeChanges: [(receiver: WasabiHandle, frame: CGRect)] = []
+    var redockChanges: [(receiver: WasabiHandle, before: Bool)] = []
     func makiPlaybackStatus() -> Int { 0 }
     func makiXMLParameter(objectID: String, name: String) -> String? {
         guard name == "x" else { return nil }
@@ -2382,6 +2465,12 @@ private final class TestMakiHost: MakiRuntimeHost {
         }
     }
     func makiVisibilityChanged(objectID: String, isVisible: Bool) { }
+    func makiVisibilityChanged(receiver: WasabiHandle, objectID: String, isVisible: Bool) { visibilityChanges.append((receiver, isVisible)) }
+    func makiLayoutSwitched(containerID: String, layoutID: String) {
+        layoutSwitches.append((containerID, layoutID))
+    }
+    func makiLayoutResized(receiver: WasabiHandle, objectID: String, frame: CGRect) { resizeChanges.append((receiver, frame)) }
+    func makiRedock(receiver: WasabiHandle, objectID: String, before: Bool) { redockChanges.append((receiver, before)) }
     func makiTargetChanged(objectID: String, x: Double, speed: Double) { targets.append((objectID, x, speed)) }
     func makiTargetGeometryChanged(objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double) {
         if let x { targets.append((objectID, x, speed)) }

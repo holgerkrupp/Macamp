@@ -562,6 +562,40 @@ nonisolated struct WasabiScene: Sendable, Equatable {
         activeLayoutByContainer[container]
     }
 
+    func containerHandle(id: String) -> WasabiHandle? {
+        handles(for: id).first { nodes[$0]?.kind == .container }
+    }
+
+    func containerID(containing handle: WasabiHandle) -> String? {
+        var cursor = handle
+        var visited: Set<WasabiHandle> = []
+        while !visited.contains(cursor), let node = nodes[cursor] {
+            visited.insert(cursor)
+            if node.kind == .container { return node.id }
+            guard let parent = node.parent else { return nil }
+            cursor = parent
+        }
+        return nil
+    }
+
+    func containerSize(_ container: WasabiHandle) -> CGSize? {
+        guard nodes[container]?.kind == .container,
+              let layout = activeLayoutByContainer[container] else { return nil }
+        return nodes[layout]?.localFrame.size
+    }
+
+    /// Finds the authored player container for the catalog's selected canvas.
+    /// Auxiliary containers may be larger and are rendered in their own hosts.
+    func primaryContainer(matching canvasSize: CGSize) -> WasabiHandle? {
+        let containers = rootHandles.filter { nodes[$0]?.kind == .container }
+        return containers.first { nodes[$0]?.id == "main" }
+            ?? containers.first { container in
+                guard let layout = activeLayoutByContainer[container] else { return false }
+                return nodes[layout]?.localFrame.size == canvasSize
+            }
+            ?? containers.first
+    }
+
     func layoutHandle(id: String, in container: WasabiHandle? = nil) -> WasabiHandle? {
         let candidates = handles(for: id).filter { nodes[$0]?.kind == .layout }
         guard let container else { return candidates.first }
@@ -582,12 +616,15 @@ nonisolated struct WasabiScene: Sendable, Equatable {
         return false
     }
 
-    func hitTest(_ point: CGPoint) -> WasabiSceneNode? {
-        nodes.values
+    func hitTest(_ point: CGPoint, within containerID: String? = nil) -> WasabiSceneNode? {
+        let container = containerID.flatMap(containerHandle(id:))
+        return nodes.values
             .filter { node in
                 node.kind != .container && node.kind != .layout && node.kind != .group &&
                 !node.ghost && effectiveVisible(node.handle) && effectiveAlpha(node.handle) > 0 &&
-                isInActiveLayout(node.handle) && (worldFrame(of: node.handle)?.contains(point) ?? false)
+                isInActiveLayout(node.handle) &&
+                (containerID == nil || (container != nil && self.containerID(containing: node.handle) == containerID)) &&
+                (worldFrame(of: node.handle)?.contains(point) ?? false)
             }
             // Hit testing follows the same hierarchical paint order as the
             // scene painter. A child of a later sibling must be above an

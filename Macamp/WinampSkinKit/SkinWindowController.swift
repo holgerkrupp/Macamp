@@ -47,6 +47,7 @@ final class SkinWindowController: NSWindowController {
             equalizerToggle: { [weak auxiliaryWindows] in auxiliaryWindows?.toggleEqualizer() },
             visualizationToggle: visualizationToggle
         )
+        auxiliaryWindows.attachRenderer(renderer)
         renderer.onFileURLsDropped = onDroppedURLs
         let shadeSize = skinStore.activeCatalog.format == .classic ? CGSize(width: canvas.width, height: 14) : nil
         host = WinampSkinWindowHost(normalLogicalSize: canvas, shadeLogicalSize: shadeSize, scale: CGFloat(scale))
@@ -69,6 +70,7 @@ final class SkinWindowController: NSWindowController {
         } else {
             host.window.center()
         }
+        auxiliaryWindows.syncModernContainers()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -106,20 +108,28 @@ final class SkinWindowController: NSWindowController {
         host.regionPath = renderer.regionPath
         window.hasShadow = settings.playerShadow
         window.level = settings.playerFloating ? .floating : .normal
+        auxiliaryWindows.syncModernContainers()
     }
 }
 
 @MainActor
 private final class SkinAuxiliaryWindowController: NSObject {
+    private struct ModernAuxiliaryWindow {
+        let host: WinampSkinWindowHost
+        let surface: WasabiAuxiliaryContainerView
+    }
+
     private let coordinator: PlaybackCoordinator
     private let skinStore: SkinLibraryStore
     private let settings: SettingsStore
     private let choosePlaylistURLs: (ClassicPlaylistImportKind) -> [URL]
     private let importPlaylistURLs: ([URL], MediaImportAction) -> Void
     private let onAddFromService: () -> Void
+    private weak var renderer: SkinRendererView?
     private var playlistHost: WinampSkinWindowHost?
     private var equalizerHost: WinampSkinWindowHost?
     private var unifiedPlaylistWindow: NSWindow?
+    private var modernAuxiliaryWindows: [String: ModernAuxiliaryWindow] = [:]
     private weak var mainHost: WinampSkinWindowHost?
     private let docking = WindowDockingController()
     private let windowGroup = WinampSkinWindowGroup()
@@ -140,9 +150,82 @@ private final class SkinAuxiliaryWindowController: NSObject {
         self.onAddFromService = onAddFromService
     }
 
+    func attachRenderer(_ renderer: SkinRendererView) {
+        self.renderer = renderer
+    }
+
+    func syncModernContainers() {
+        guard skinStore.activeCatalog.format == .modern, let renderer else {
+            for (id, window) in modernAuxiliaryWindows {
+                window.host.window.orderOut(nil)
+                renderer?.detachAuxiliaryHost(for: id)
+                windowGroup.remove(window.host)
+            }
+            modernAuxiliaryWindows.removeAll()
+            return
+        }
+
+        let descriptions = renderer.auxiliaryContainerIDs()
+        let desiredIDs = Set(descriptions.map(\.id))
+        let removedIDs = modernAuxiliaryWindows.keys.filter { !desiredIDs.contains($0) }
+        for id in removedIDs {
+            guard let window = modernAuxiliaryWindows.removeValue(forKey: id) else { continue }
+            window.host.window.orderOut(nil)
+            renderer.detachAuxiliaryHost(for: id)
+            windowGroup.remove(window.host)
+        }
+
+        for description in descriptions {
+            let id = description.id
+            if let existing = modernAuxiliaryWindows[id] {
+                existing.host.setScale(CGFloat(settings.skinScale), display: false)
+                existing.host.resizeLogicalWindow(to: description.size, display: false)
+                existing.host.regionPath = renderer.auxiliaryRegionPath(for: id)
+                renderer.auxiliaryContainerVisibilityChanged(id)
+                continue
+            }
+            let host = WinampSkinWindowHost(
+                normalLogicalSize: description.size,
+                scale: CGFloat(settings.skinScale),
+                allowsResize: true
+            )
+            host.window.isReleasedWhenClosed = false
+            host.window.hasShadow = settings.playerShadow
+            host.window.level = settings.playerFloating ? .floating : .normal
+            host.minimumLogicalSize = CGSize(width: min(160, description.size.width), height: min(100, description.size.height))
+            let surface = WasabiAuxiliaryContainerView(renderer: renderer, containerID: id, size: description.size)
+            host.setContentView(surface)
+            host.regionPath = renderer.auxiliaryRegionPath(for: id)
+            host.clickThroughTransparentPixels = settings.clickThroughTransparentPixels
+            host.clickThroughTest = { [weak renderer] point in renderer?.isVisible(at: point, in: id) ?? false }
+            host.onLogicalFrameChange = { [weak self, weak window = host.window] _ in
+                guard let window else { return }
+                self?.docking.update(window: window)
+            }
+            renderer.attachAuxiliaryHost(host, for: id)
+            windowGroup.add(host)
+            modernAuxiliaryWindows[id] = ModernAuxiliaryWindow(host: host, surface: surface)
+            if description.initiallyVisible { host.window.orderFront(nil) }
+        }
+    }
+
+    private func toggleAuthoredContainer(_ id: String) {
+        guard let window = modernAuxiliaryWindows[id] else { return }
+        renderer?.setAuxiliaryContainer(id, visible: !window.host.window.isVisible)
+        if window.host.window.isVisible { NSApp.activate() }
+    }
+
+    private func showAuthoredContainer(_ id: String) {
+        guard let window = modernAuxiliaryWindows[id] else { return }
+        renderer?.setAuxiliaryContainer(id, visible: true)
+        window.host.window.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+    }
+
     func attachMainHost(_ host: WinampSkinWindowHost) {
         mainHost = host
         windowGroup.add(host)
+        for window in modernAuxiliaryWindows.values { windowGroup.add(window.host) }
         if let playlistHost { windowGroup.add(playlistHost) }
         if let equalizerHost { windowGroup.add(equalizerHost) }
     }
@@ -164,6 +247,10 @@ private final class SkinAuxiliaryWindowController: NSObject {
 
     func togglePlaylist() {
         if skinStore.activeCatalog.format == .modern {
+            if let id = renderer?.auxiliaryContainerID(forRole: "playlist"), modernAuxiliaryWindows[id] != nil {
+                toggleAuthoredContainer(id)
+                return
+            }
             let window = showUnifiedPlaylistWindow()
             if window.isVisible { window.orderOut(nil) }
             else { window.makeKeyAndOrderFront(nil); NSApp.activate() }
@@ -182,6 +269,10 @@ private final class SkinAuxiliaryWindowController: NSObject {
 
     func showPlaylist() {
         if skinStore.activeCatalog.format == .modern {
+            if let id = renderer?.auxiliaryContainerID(forRole: "playlist"), modernAuxiliaryWindows[id] != nil {
+                showAuthoredContainer(id)
+                return
+            }
             let window = showUnifiedPlaylistWindow()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate()
@@ -252,6 +343,11 @@ private final class SkinAuxiliaryWindowController: NSObject {
     }
 
     func toggleEqualizer() {
+        if skinStore.activeCatalog.format == .modern,
+           let id = renderer?.auxiliaryContainerIDForEqualizer(), modernAuxiliaryWindows[id] != nil {
+            toggleAuthoredContainer(id)
+            return
+        }
         if let equalizerHost, equalizerHost.window.isVisible {
             windowGroup.undock(equalizerHost)
             equalizerHost.window.orderOut(nil)
@@ -264,6 +360,11 @@ private final class SkinAuxiliaryWindowController: NSObject {
     }
 
     func showEqualizer() {
+        if skinStore.activeCatalog.format == .modern,
+           let id = renderer?.auxiliaryContainerIDForEqualizer(), modernAuxiliaryWindows[id] != nil {
+            showAuthoredContainer(id)
+            return
+        }
         let host = equalizerHost ?? makeEqualizerHost()
         equalizerHost = host
         windowGroup.add(host)

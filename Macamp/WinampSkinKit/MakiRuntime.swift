@@ -193,12 +193,15 @@ protocol MakiRuntimeHost: AnyObject {
     func makiPlaybackStatus() -> Int
     func makiXMLParameter(objectID: String, name: String) -> String?
     func makiVisibilityChanged(objectID: String, isVisible: Bool)
+    func makiVisibilityChanged(receiver: WasabiHandle, objectID: String, isVisible: Bool)
     func makiTargetChanged(objectID: String, x: Double, speed: Double)
     func makiTargetGeometryChanged(objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double)
     func makiTargetGeometryChanged(receiver: WasabiHandle, objectID: String, x: Double?, y: Double?, width: Double?, height: Double?, alpha: Double?, speed: Double)
     func makiLayoutSwitched(containerID: String, layoutID: String)
     func makiLayoutResized(objectID: String, frame: CGRect)
+    func makiLayoutResized(receiver: WasabiHandle, objectID: String, frame: CGRect)
     func makiRedock(objectID: String, before: Bool)
+    func makiRedock(receiver: WasabiHandle, objectID: String, before: Bool)
     func makiTargetReached(objectID: String)
     func makiTargetReached(receiver: WasabiHandle, objectID: String)
     func makiVolumeChanged(_ value: Double)
@@ -238,7 +241,10 @@ extension MakiRuntimeHost {
     }
     func makiLayoutSwitched(containerID: String, layoutID: String) {}
     func makiLayoutResized(objectID: String, frame: CGRect) {}
+    func makiVisibilityChanged(receiver: WasabiHandle, objectID: String, isVisible: Bool) { makiVisibilityChanged(objectID: objectID, isVisible: isVisible) }
+    func makiLayoutResized(receiver: WasabiHandle, objectID: String, frame: CGRect) { makiLayoutResized(objectID: objectID, frame: frame) }
     func makiRedock(objectID: String, before: Bool) {}
+    func makiRedock(receiver: WasabiHandle, objectID: String, before: Bool) { makiRedock(objectID: objectID, before: before) }
     func makiPlaybackItem() -> PlaybackItem? { nil }
     func makiElapsed() -> Duration { .zero }
     func makiDuration() -> Duration? { nil }
@@ -315,6 +321,7 @@ final class MakiRuntime {
     private var targetX: [WasabiHandle: Double] = [:]
     private var targetSpeed: [WasabiHandle: Double] = [:]
     private var visibleObjects: [String: Bool] = [:]
+    private var visibleHandles: [WasabiHandle: Bool] = [:]
     private var scriptedTexts: [String: String] = [:]
     private var targetStates: [String: [String: Double]] = [:]
     private var sceneTargetStates: [WasabiHandle: [String: Double]] = [:]
@@ -576,6 +583,19 @@ final class MakiRuntime {
     }
 
     func isVisible(objectID: String) -> Bool? { visibleObjects[objectID.lowercased()] }
+
+    func isVisible(receiver: WasabiHandle) -> Bool? { visibleHandles[receiver] }
+
+    func setVisible(objectID: String, isVisible: Bool) {
+        visibleObjects[objectID.lowercased()] = isVisible
+        host?.makiVisibilityChanged(objectID: objectID, isVisible: isVisible)
+    }
+
+    func setVisible(receiver: WasabiHandle, objectID: String, isVisible: Bool) {
+        visibleObjects[objectID.lowercased()] = isVisible
+        visibleHandles[receiver] = isVisible
+        host?.makiVisibilityChanged(receiver: receiver, objectID: objectID, isVisible: isVisible)
+    }
 
     func xmlParameter(objectID: String, name: String) -> String? {
         xmlParameters[objectID.lowercased()]?[name.lowercased()]
@@ -890,7 +910,7 @@ final class MakiRuntime {
             return .object(registry.instantiate(className: className, id: arguments.first?.string))
         case "getparent": return object.parent.map(MakiValue.object) ?? .void
         case "getparentlayout": return object.layout.map(MakiValue.object) ?? .void
-        case "isvisible": return .integer(visibleObjects[objectID] == false ? 0 : 1)
+        case "isvisible": return .integer((visibleHandles[receiver] ?? visibleObjects[objectID]) == false ? 0 : 1)
         case "getalpha": return .integer(Int32(((targetStates[objectID]?["alpha"] ?? 1) * 255).rounded()))
         case "setalpha":
             targetStates[objectID, default: [:]]["alpha"] = Double(arguments.first?.integer ?? 255) / 255
@@ -942,9 +962,9 @@ final class MakiRuntime {
             configAttributeValues[receiver] = arguments.first?.string ?? ""; host?.makiRuntimeNeedsDisplay(); return .void
         case "getattributename": return .string(object.id ?? "")
         case "hide":
-            visibleObjects[objectID] = false; host?.makiVisibilityChanged(objectID: objectID, isVisible: false); return .void
+            setVisible(receiver: receiver, objectID: objectID, isVisible: false); return .void
         case "show":
-            visibleObjects[objectID] = true; host?.makiVisibilityChanged(objectID: objectID, isVisible: true); return .void
+            setVisible(receiver: receiver, objectID: objectID, isVisible: true); return .void
         case "getxmlparam":
             let key = arguments.first?.string.lowercased() ?? ""
             return .string(xmlParameters[objectID]?[key] ?? host?.makiXMLParameter(objectID: objectID, name: key) ?? "")
@@ -1024,10 +1044,10 @@ final class MakiRuntime {
         case "killtimer": cancelTimer(objectID: objectID); return .void
         case "switchtolayout": host?.makiLayoutSwitched(containerID: objectID, layoutID: arguments.first?.string ?? "normal"); return .void
         case "resize":
-            if arguments.count >= 4 { host?.makiLayoutResized(objectID: objectID, frame: CGRect(x: CGFloat(arguments[0].number), y: CGFloat(arguments[1].number), width: CGFloat(arguments[2].number), height: CGFloat(arguments[3].number))) }
+            if arguments.count >= 4 { host?.makiLayoutResized(receiver: receiver, objectID: objectID, frame: CGRect(x: CGFloat(arguments[0].number), y: CGFloat(arguments[1].number), width: CGFloat(arguments[2].number), height: CGFloat(arguments[3].number))) }
             return .void
-        case "beforeredock": host?.makiRedock(objectID: objectID, before: true); return .void
-        case "redock": host?.makiRedock(objectID: objectID, before: false); return .void
+        case "beforeredock": host?.makiRedock(receiver: receiver, objectID: objectID, before: true); return .void
+        case "redock": host?.makiRedock(receiver: receiver, objectID: objectID, before: false); return .void
         case "snapadjust": host?.makiRuntimeNeedsDisplay(); return .void
         case "messagebox": record("MAKI messageBox is unsupported but was safely ignored."); return .void
         default:
