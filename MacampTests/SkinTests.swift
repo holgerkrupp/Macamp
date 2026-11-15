@@ -1304,6 +1304,15 @@ struct SkinTests {
         #expect(volume.active?.sourceRect == CGRect(x: 0, y: 422, width: 14, height: 11))
     }
 
+    @Test func classicPlaylistBitmapTextMapsSupportedGlyphsAndFallsBackForUnknownText() throws {
+        let glyphs = try #require(ClassicSpriteCatalog.bitmapTextSprites(for: "A 1?"))
+        #expect(glyphs.count == 4)
+        #expect(glyphs[0].sourceRect == CGRect(x: 0, y: 0, width: 5, height: 6))
+        #expect(glyphs[1].sourceRect == CGRect(x: 150, y: 0, width: 5, height: 6))
+        #expect(glyphs[2].sourceRect == CGRect(x: 5, y: 6, width: 5, height: 6))
+        #expect(ClassicSpriteCatalog.bitmapTextSprites(for: "café") == nil)
+    }
+
     @Test @MainActor func classicPlaylistUsesLogicalTiledWindowGeometry() {
         #expect(ClassicPlaylistSurface.defaultSize == CGSize(width: 275, height: 232))
         #expect(ClassicPlaylistSurface.defaultSize.width >= 275)

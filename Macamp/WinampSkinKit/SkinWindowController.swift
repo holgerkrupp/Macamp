@@ -853,10 +853,37 @@ final class ClassicPlaylistSurface: NSView {
             let status = coordinator.availabilityLabel(for: item)
             let details = "\(source) · \(status)"
             let text = "\(title)  \(duration)  [\(details)]"
-            text.draw(in: row.insetBy(dx: 2, dy: 0), withAttributes: [
+            drawPlaylistText(text, in: row.insetBy(dx: 2, dy: 0), color: isCurrent ? palette.currentText : palette.normalText)
+        }
+    }
+
+    private func drawPlaylistText(_ text: String, in frame: CGRect, color: NSColor) {
+        let asset = skinStore.activeCatalog.images.first { ($0.key as NSString).lastPathComponent.lowercased() == "text.bmp" }?.value
+        let shown = String(text.prefix(max(0, Int(frame.width / 5))))
+        let rgb = color.usingColorSpace(.deviceRGB)
+        guard let asset,
+              rgb?.redComponent == 1, rgb?.greenComponent == 1, rgb?.blueComponent == 1,
+              let sprites = ClassicSpriteCatalog.bitmapTextSprites(for: shown) else {
+            shown.draw(in: frame, withAttributes: [
                 .font: NSFont.systemFont(ofSize: 9),
-                .foregroundColor: isCurrent ? palette.currentText : palette.normalText
+                .foregroundColor: color
             ])
+            return
+        }
+
+        let startX = frame.minX
+        for (index, sprite) in sprites.enumerated() {
+            let source = sprite.sourceRect
+            guard source.maxX <= asset.size.width, source.maxY <= asset.size.height else { continue }
+            let flipped = CGRect(x: source.minX, y: asset.size.height - source.maxY, width: source.width, height: source.height)
+            asset.draw(
+                in: CGRect(x: startX + CGFloat(index) * 5, y: frame.midY - 3, width: source.width, height: source.height),
+                from: flipped,
+                operation: .sourceOver,
+                fraction: 1,
+                respectFlipped: true,
+                hints: [.interpolation: NSImageInterpolation.none]
+            )
         }
     }
 

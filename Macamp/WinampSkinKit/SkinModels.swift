@@ -208,6 +208,18 @@ enum ClassicSpriteCatalog {
     }
 
     static func textSprite(for character: Character) -> SpriteReference? {
+        guard let position = textPosition(for: character) ?? textPosition(for: " ") else { return nil }
+        return sprite(.text, CGFloat(position.column * 5), CGFloat(position.row * 6), 5, 6)
+    }
+
+    static func bitmapTextSprites(for value: String) -> [SpriteReference]? {
+        let characters = Array(value)
+        let positions = characters.compactMap(textPosition(for:))
+        guard positions.count == characters.count else { return nil }
+        return positions.map { sprite(.text, CGFloat($0.column * 5), CGFloat($0.row * 6), 5, 6) }
+    }
+
+    private static func textPosition(for character: Character) -> (row: Int, column: Int)? {
         let pairs: [(Character, (row: Int, column: Int))] = [
             ("a", (0, 0)), ("b", (0, 1)), ("c", (0, 2)), ("d", (0, 3)), ("e", (0, 4)), ("f", (0, 5)),
             ("g", (0, 6)), ("h", (0, 7)), ("i", (0, 8)), ("j", (0, 9)), ("k", (0, 10)), ("l", (0, 11)),
@@ -223,8 +235,7 @@ enum ClassicSpriteCatalog {
         ]
         let lookup = Dictionary(uniqueKeysWithValues: pairs)
         let normalized = String(character).lowercased().first ?? " "
-        guard let position = lookup[normalized] ?? lookup[character] else { return lookup[" "].map { sprite(.text, CGFloat($0.column * 5), CGFloat($0.row * 6), 5, 6) } }
-        return sprite(.text, CGFloat(position.column * 5), CGFloat(position.row * 6), 5, 6)
+        return lookup[normalized] ?? lookup[character]
     }
 
     static func bigNumberSprite(for character: Character, sheet: ClassicSpriteSheet) -> SpriteReference? {
