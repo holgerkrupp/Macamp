@@ -192,15 +192,21 @@ struct MacampCommands: Commands {
                 .keyboardShortcut("1", modifiers: [.command, .option])
             Button("Show Playlist") { dependencies.classicPlayer.showPlaylist() }
             Button("Show Equalizer") { dependencies.classicPlayer.showEqualizer() }
-            Button("Show Visualization") {
-                if let window = dependencies.visualizations.window, window.isVisible {
-                    window.makeKeyAndOrderFront(nil)
-                    NSApp.activate()
-                } else {
-                    dependencies.visualizations.toggle()
+            Button("Show Visualization") { dependencies.visualizations.show() }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+            Menu("Visualization Mode") {
+                Picker("Mode", selection: Binding(
+                    get: { BuiltInVisualization(rawValue: dependencies.settings.selectedVisualization) ?? .spectrum },
+                    set: { dependencies.visualizations.select($0); dependencies.visualizations.show() }
+                )) {
+                    ForEach(BuiltInVisualization.allCases) { Text($0.title).tag($0) }
+                }
+                Menu("MilkDrop Presets") {
+                    ForEach(MilkDropView.presets.indices, id: \.self) { index in
+                        Button(MilkDropView.presets[index]) { dependencies.visualizations.selectMilkDropPreset(at: index) }
+                    }
                 }
             }
-                .keyboardShortcut("v", modifiers: [.command, .shift])
             Button("Show Library") { openWindow(id: "library") }
                 .keyboardShortcut("l", modifiers: [.command, .option])
             Toggle("Show Menu Bar Item", isOn: $showMenuBarExtra)

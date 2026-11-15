@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		4872E5B4306BEDAC00CABE90 /* Ressources.md in Resources */ = {isa = PBXBuildFile; fileRef = 4872E5B3306BEDAC00CABE90 /* Ressources.md */; };
 		48E8FCF4301FC1750029A598 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 48E8FCF3301FC1750029A598 /* AppIcon.icon */; };
+		D30000000000000000000002 /* Butterchurn in Resources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000001 /* Butterchurn */; };
 		D20000000000000000000001 /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000001 /* Auth */; };
 		D20000000000000000000002 /* EventProducer in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000002 /* EventProducer */; };
 		D20000000000000000000003 /* Player in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000003 /* Player */; };
@@ -30,6 +31,7 @@
 		000000000000000000000121 /* MacampTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacampTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4872E5B3306BEDAC00CABE90 /* Ressources.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = Ressources.md; sourceTree = "<group>"; };
 		48E8FCF3301FC1750029A598 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
+		D30000000000000000000001 /* Butterchurn */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ThirdParty/Butterchurn; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -68,6 +70,7 @@
 			children = (
 				4872E5B3306BEDAC00CABE90 /* Ressources.md */,
 				48E8FCF3301FC1750029A598 /* AppIcon.icon */,
+				D30000000000000000000001 /* Butterchurn */,
 				000000000000000000000010 /* Macamp */,
 				000000000000000000000011 /* MacampTests */,
 				000000000000000000000020 /* Products */,
@@ -175,6 +178,7 @@
 			files = (
 				4872E5B4306BEDAC00CABE90 /* Ressources.md in Resources */,
 				48E8FCF4301FC1750029A598 /* AppIcon.icon in Resources */,
+				D30000000000000000000002 /* Butterchurn in Resources */,
 			);
 		};
 		000000000000000240000000 /* Resources */ = {

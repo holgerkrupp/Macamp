@@ -2,6 +2,10 @@
 
 Built-in modes are spectrum bars, oscilloscope, mirrored spectrum, radial spectrum, starfield tunnel, classic peak hold, album-art ambience, and retro pattern. The renderer consumes a shared analyzed frame, independent of playback providers. The floating visualization and visualization regions in Classic and Modern skins read the same latest frame.
 
+Choose **Window → Visualization Mode → MilkDrop** for the Butterchurn renderer. **MilkDrop Presets** selects one of three Macamp presets. The floating window uses contiguous mono PCM from the existing analysis tap and sends at most one frame at a time to the bundled WebGL renderer. There is no Web Audio capture or second audio output. The native spectrum remains available if WebGL cannot start.
+
+The bundled engine is Butterchurn 3.0.0-beta.5. Its unmodified module matches the upstream npm distribution and the copy in [hfyeomans/MacAmp](https://github.com/hfyeomans/MacAmp/tree/cb0c77f/Butterchurn). The WebKit script-injection approach is adapted from [ButterchurnWebView](https://github.com/hfyeomans/MacAmp/blob/cb0c77f/MacAmpApp/Views/Windows/ButterchurnWebView.swift). Both MIT notices ship with the app. Original MilkDrop preset import is tracked in [#76](https://github.com/holgerkrupp/Macamp/issues/76).
+
 Local file playback exposes post-EQ PCM from the local audio engine. A tap copies mono samples into a four-slot bounded single-producer/single-consumer ring; it performs no allocation, lock acquisition, or UI/stream delivery on the real-time callback. When the ring is full, the callback drops the newest frame. The consumer applies a Hann window and Accelerate/vDSP FFT, then emits log-spaced bands and a waveform at the configured UI frame rate. Paused or unsupported routes show an unavailable/silent state instead of fabricated levels.
 
 Apple Music, hosted playback, and AVPlayer URL routes do not expose decoded PCM to Macamp. Macamp does not capture a microphone or system audio, and it does not simulate data by default. `LocalPCMAudioAnalysisSource` accepts only decoded local-engine buffers, after the equalizer node.

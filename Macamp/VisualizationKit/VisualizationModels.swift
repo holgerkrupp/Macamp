@@ -16,6 +16,7 @@ struct PCMFrame: @unchecked Sendable { var samples: [Float]; var sampleRate: Dou
 struct VisualizationAnalysisFrame: Equatable, Sendable {
     var bands: [Float]
     var waveform: [Float]
+    var pcm: [Float] = []
 }
 
 enum VisualizationAudioData: Sendable {
