@@ -301,6 +301,7 @@ struct LocalMediaTests {
 
         let radio = PlaybackItem(id: "radio-route", providerID: .localMedia, providerItemID: "https://radio.example/live.mp3", title: "Radio", mediaKind: .radioStation, isExplicit: false)
         try await provider.play(item: radio)
+        #expect(!provider.capabilities.contains(.seek))
         #expect(!provider.effectCapabilities.contains(.pitch))
         #expect(!provider.effectCapabilities.contains(.crossfade))
         await #expect(throws: ProviderError.self) { try await provider.setPitchSemitones(4) }

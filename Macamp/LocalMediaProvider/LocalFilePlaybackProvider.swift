@@ -13,7 +13,13 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         .playlists, .localMetadata, .artwork, .backgroundPlayback
     ]
     var capabilities: PlaybackCapabilities {
-        isCurrentRouteProcessed ? baseCapabilities.union([.nativeEqualizer, .pcmAudio]) : baseCapabilities
+        var routeCapabilities = isCurrentRouteProcessed
+            ? baseCapabilities.union([.nativeEqualizer, .pcmAudio])
+            : baseCapabilities
+        if state.currentItem?.mediaKind == .radioStation {
+            routeCapabilities.remove(.seek)
+        }
+        return routeCapabilities
     }
     var effectCapabilities: AudioEffectCapabilities {
         isCurrentRouteProcessed ? [.enable, .preamp, .equalizerBands, .pitch, .tempo, .reverb, .crossfade] : []
