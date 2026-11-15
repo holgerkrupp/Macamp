@@ -3,7 +3,7 @@ import Observation
 import UniformTypeIdentifiers
 
 enum BuiltInVisualization: String, CaseIterable, Identifiable, Sendable {
-    case spectrum, oscilloscope, mirroredSpectrum, radialSpectrum, starfield, classicPeakHold, artworkAmbience, retroPattern, goom, milkDrop
+    case spectrum, oscilloscope, mirroredSpectrum, radialSpectrum, starfield, classicPeakHold, artworkAmbience, retroPattern, goom, avs, milkDrop
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -16,6 +16,7 @@ enum BuiltInVisualization: String, CaseIterable, Identifiable, Sendable {
         case .artworkAmbience: "Album-art Ambience"
         case .retroPattern: "Retro Pattern"
         case .goom: "GOOM"
+        case .avs: "AVS Studio"
         case .milkDrop: "MilkDrop"
         }
     }
@@ -25,6 +26,7 @@ enum BuiltInVisualization: String, CaseIterable, Identifiable, Sendable {
 final class VisualizationRenderView: NSView {
     private(set) var frameData: VisualizationAudioData = .silent
     var mode: BuiltInVisualization = .spectrum { didSet { needsDisplay = true } }
+    var avsPreset: AVSPreset? { didSet { needsDisplay = true } }
     var intensity: CGFloat = 0.7 { didSet { needsDisplay = true } }
     private var peakHold = PeakHoldEnvelope()
     private var animationPhase: CGFloat = 0
@@ -55,6 +57,7 @@ final class VisualizationRenderView: NSView {
         case .artworkAmbience: drawAmbience(frame.bands)
         case .retroPattern: drawPattern(frame)
         case .goom: drawGoom(frame.bands)
+        case .avs: avsPreset?.draw(frame, in: bounds) ?? drawSpectrum(frame.bands, mirrored: false, peaks: false)
         case .milkDrop: drawSpectrum(frame.bands, mirrored: false, peaks: false)
         }
         drawBadge()
@@ -193,6 +196,7 @@ final class VisualizationRenderView: NSView {
 final class VisualizationFrameStore {
     private(set) var data: VisualizationAudioData = .unavailable("This playback route does not expose PCM audio.")
     private(set) var inlineMode: InlineVisualizationMode = .spectrum
+    var avsPreset: AVSPreset?
     private var peakHold = PeakHoldEnvelope()
     var peakHoldBands: [Float] { peakHold.values }
     private var framesTask: Task<Void, Never>?
@@ -242,6 +246,7 @@ final class VisualizationFrameStore {
 final class VisualizationWindowController: NSWindowController, NSWindowDelegate {
     private let source: LocalPCMAudioAnalysisSource
     private let coordinator: PlaybackCoordinator
+    private let visualizationFrames: VisualizationFrameStore
     private let renderView = VisualizationRenderView(frame: CGRect(x: 0, y: 0, width: 640, height: 360))
     private let contentView = NSView(frame: CGRect(x: 0, y: 0, width: 640, height: 396))
     private let presetControls = NSStackView()
@@ -249,10 +254,13 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
     private let presetCyclingButton = NSButton(checkboxWithTitle: "Cycle", target: nil, action: nil)
     private let settings: SettingsStore
     private let presetStore: MilkDropPresetStore
+    private let avsPresetStore: AVSPresetStore
     private let relatedWindows: () -> [NSWindow]
     private let docking = WindowDockingController()
     private var customMilkDropPresets: [MilkDropPreset] = []
+    private var customAVSPresets: [AVSPreset] = []
     private var presetImportWarnings: [String] = []
+    private var avsPresetImportWarnings: [String] = []
     private var milkDropTextureRevision = 0
     private var milkDropTexturePayloadCache: [String: String] = [:]
     private var framesTask: Task<Void, Never>?
@@ -264,16 +272,23 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
     init(
         source: LocalPCMAudioAnalysisSource,
         coordinator: PlaybackCoordinator,
+        visualizationFrames: VisualizationFrameStore,
         settings: SettingsStore,
         presetStore: MilkDropPresetStore = MilkDropPresetStore(),
+        avsPresetStore: AVSPresetStore = AVSPresetStore(),
         relatedWindows: @escaping () -> [NSWindow] = { [] }
     ) {
-        self.source = source; self.coordinator = coordinator; self.settings = settings
-        self.presetStore = presetStore; self.relatedWindows = relatedWindows
+        self.source = source; self.coordinator = coordinator; self.visualizationFrames = visualizationFrames; self.settings = settings
+        self.presetStore = presetStore; self.avsPresetStore = avsPresetStore; self.relatedWindows = relatedWindows
         let storedPresets = presetStore.allPresets()
         customMilkDropPresets = storedPresets.presets
         presetImportWarnings = storedPresets.warnings
+        let storedAVSPresets = avsPresetStore.allPresets()
+        customAVSPresets = storedAVSPresets.presets
+        avsPresetImportWarnings = storedAVSPresets.warnings
         renderView.mode = BuiltInVisualization(rawValue: settings.selectedVisualization) ?? .spectrum
+        renderView.avsPreset = customAVSPresets.indices.contains(settings.selectedAVSPreset) ? customAVSPresets[settings.selectedAVSPreset] : nil
+        visualizationFrames.avsPreset = renderView.mode == .avs ? renderView.avsPreset : nil
         renderView.intensity = CGFloat(settings.visualizationIntensity)
         let window = NSWindow(contentRect: contentView.frame, styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Macamp Visualization"
@@ -307,11 +322,13 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
     func select(_ mode: BuiltInVisualization) {
         settings.selectedVisualization = mode.rawValue
         renderView.mode = mode
-        presetControls.isHidden = mode != .milkDrop
+        presetControls.isHidden = !mode.usesPresetControls
         milkDropFailed = false
         window?.title = "Macamp Visualization"
         if mode != .milkDrop { stopMilkDrop() }
         updatePresetControls()
+        if mode == .avs { renderView.avsPreset = selectedAVSPreset }
+        visualizationFrames.avsPreset = mode == .avs ? selectedAVSPreset : nil
     }
 
     func selectMilkDropPreset(at index: Int) {
@@ -328,6 +345,48 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
     var milkDropPresetCount: Int { MilkDropView.presets.count + customMilkDropPresets.count }
 
     var milkDropImportWarnings: [String] { presetImportWarnings }
+
+    var avsPresetTitles: [String] { customAVSPresets.map(\.title) }
+    var avsImportWarnings: [String] { avsPresetImportWarnings }
+
+    private var selectedAVSPreset: AVSPreset? {
+        customAVSPresets.indices.contains(settings.selectedAVSPreset) ? customAVSPresets[settings.selectedAVSPreset] : nil
+    }
+
+    func selectAVSPreset(at index: Int) {
+        guard customAVSPresets.indices.contains(index) else { return }
+        settings.selectedAVSPreset = index
+        renderView.avsPreset = selectedAVSPreset
+        select(.avs)
+        show()
+    }
+
+    func importAVSPresets() {
+        let panel = NSOpenPanel()
+        panel.title = "Import AVS Presets"
+        panel.allowedContentTypes = [UTType(filenameExtension: "avs") ?? .data]
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        guard panel.runModal() == .OK else { return }
+        let imported = avsPresetStore.importPresets(from: panel.urls)
+        let all = avsPresetStore.allPresets()
+        customAVSPresets = all.presets
+        avsPresetImportWarnings = imported.warnings + all.warnings
+        updatePresetControls()
+        guard imported.count > 0, !customAVSPresets.isEmpty else { return }
+        settings.selectedAVSPreset = 0
+        selectAVSPreset(at: settings.selectedAVSPreset)
+    }
+
+    func previousAVSPreset() { stepAVSPreset(by: -1) }
+    func nextAVSPreset() { stepAVSPreset(by: 1) }
+
+    private func stepAVSPreset(by offset: Int) {
+        guard !customAVSPresets.isEmpty else { return }
+        let selected = min(max(settings.selectedAVSPreset, 0), customAVSPresets.count - 1)
+        selectAVSPreset(at: (selected + offset + customAVSPresets.count) % customAVSPresets.count)
+    }
 
     func importMilkDropPresets() {
         let panel = NSOpenPanel()
@@ -431,15 +490,24 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
 
     private func updatePresetControls() {
         presetPicker.removeAllItems()
-        presetPicker.addItems(withTitles: milkDropPresetTitles)
-        let selected = min(max(settings.selectedMilkDropPreset, 0), max(0, milkDropPresetTitles.count - 1))
+        let titles = renderView.mode == .avs ? avsPresetTitles : milkDropPresetTitles
+        presetPicker.addItems(withTitles: titles)
+        let requested = renderView.mode == .avs ? settings.selectedAVSPreset : settings.selectedMilkDropPreset
+        let selected = min(max(requested, 0), max(0, titles.count - 1))
         presetPicker.selectItem(at: selected)
-        presetControls.isHidden = renderView.mode != .milkDrop
+        presetControls.isHidden = !renderView.mode.usesPresetControls
     }
 
-    @objc private func previousPresetAction() { previousMilkDropPreset() }
-    @objc private func nextPresetAction() { nextMilkDropPreset() }
-    @objc private func presetPickerAction(_ sender: NSPopUpButton) { selectMilkDropPreset(at: sender.indexOfSelectedItem) }
+    @objc private func previousPresetAction() {
+        if renderView.mode == .avs { previousAVSPreset() } else { previousMilkDropPreset() }
+    }
+    @objc private func nextPresetAction() {
+        if renderView.mode == .avs { nextAVSPreset() } else { nextMilkDropPreset() }
+    }
+    @objc private func presetPickerAction(_ sender: NSPopUpButton) {
+        if renderView.mode == .avs { selectAVSPreset(at: sender.indexOfSelectedItem) }
+        else { selectMilkDropPreset(at: sender.indexOfSelectedItem) }
+    }
     @objc private func presetCyclingAction(_ sender: NSButton) {
         settings.milkDropPresetCycling = sender.state == .on
         updatePresetCycling()
@@ -488,8 +556,9 @@ final class VisualizationWindowController: NSWindowController, NSWindowDelegate 
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(30))
                 guard !Task.isCancelled, let self else { return }
-                guard self.window?.isVisible == true, self.renderView.mode == .milkDrop else { continue }
-                self.nextMilkDropPreset()
+                guard self.window?.isVisible == true else { continue }
+                if self.renderView.mode == .milkDrop { self.nextMilkDropPreset() }
+                else if self.renderView.mode == .avs { self.nextAVSPreset() }
             }
         }
     }
@@ -561,4 +630,8 @@ extension VisualizationAudioData {
         default: nil
         }
     }
+}
+
+private extension BuiltInVisualization {
+    var usesPresetControls: Bool { self == .milkDrop || self == .avs }
 }

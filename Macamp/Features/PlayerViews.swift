@@ -521,11 +521,34 @@ struct VisualizationPickerView: View {
                     }
                 }
             }
+            GroupBox("AVS Studio presets") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Button("Import .avs or Folder…") { dependencies.visualizations.importAVSPresets() }
+                        Picker("Preset", selection: Binding(
+                            get: { min(dependencies.settings.selectedAVSPreset, max(0, dependencies.visualizations.avsPresetTitles.count - 1)) },
+                            set: { dependencies.visualizations.selectAVSPreset(at: $0) }
+                        )) {
+                            ForEach(Array(dependencies.visualizations.avsPresetTitles.enumerated()), id: \.offset) { index, title in
+                                Text(title).tag(index)
+                            }
+                        }
+                        .frame(maxWidth: 280)
+                        Button("Previous") { dependencies.visualizations.previousAVSPreset() }
+                        Button("Next") { dependencies.visualizations.nextAVSPreset() }
+                    }
+                    if !dependencies.visualizations.avsImportWarnings.isEmpty {
+                        ForEach(dependencies.visualizations.avsImportWarnings, id: \.self) { warning in
+                            Label(warning, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
             HStack { Picker("Frame-rate limit", selection: Binding(get: { dependencies.settings.visualizationFrameRate }, set: { dependencies.settings.visualizationFrameRate = $0; dependencies.visualizations.applySettings() })) { Text("30 fps").tag(30); Text("60 fps").tag(60) }.frame(width: 180); Slider(value: Binding(get: { dependencies.settings.visualizationIntensity }, set: { dependencies.settings.visualizationIntensity = $0; dependencies.visualizations.applySettings() }), in: 0...1); Text("Intensity") }
             Spacer()
         }.padding(24).navigationTitle("Visualizations")
     }
-    private func icon(_ mode: BuiltInVisualization) -> String { switch mode { case .spectrum, .classicPeakHold: "chart.bar.fill"; case .oscilloscope: "waveform.path"; case .mirroredSpectrum: "arrow.up.and.down"; case .radialSpectrum: "circle.hexagongrid.fill"; case .starfield, .milkDrop, .goom: "sparkles"; case .artworkAmbience: "photo.artframe"; case .retroPattern: "aqi.medium" } }
+    private func icon(_ mode: BuiltInVisualization) -> String { switch mode { case .spectrum, .classicPeakHold: "chart.bar.fill"; case .oscilloscope: "waveform.path"; case .mirroredSpectrum: "arrow.up.and.down"; case .radialSpectrum: "circle.hexagongrid.fill"; case .starfield, .milkDrop, .goom, .avs: "sparkles"; case .artworkAmbience: "photo.artframe"; case .retroPattern: "aqi.medium" } }
 }
 
 struct DiagnosticsView: View {

@@ -851,6 +851,10 @@ final class SkinRendererView: NSView {
         }
         let bands = analysis.bands
         guard !bands.isEmpty else { return }
+        if let avsPreset = visualizationFrames.avsPreset {
+            avsPreset.draw(analysis, in: frame)
+            return
+        }
         if visualizationFrames.inlineMode == .waveform {
             drawWaveform(analysis.waveform, in: frame, color: NSColor.systemGreen)
             return

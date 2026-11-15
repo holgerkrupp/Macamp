@@ -28,6 +28,7 @@ struct VisualizationTests {
 
     @Test func goomIsAvailableAndVisualizationModeSelectionPersists() throws {
         #expect(BuiltInVisualization(rawValue: "goom")?.title == "GOOM")
+        #expect(BuiltInVisualization(rawValue: "avs")?.title == "AVS Studio")
         #expect(BuiltInVisualization(rawValue: "milkDrop")?.title == "MilkDrop")
         #expect(BuiltInVisualization.allCases.contains(.spectrum))
         let suite = "MacampVisualizationTests-\(UUID().uuidString)"
@@ -35,6 +36,8 @@ struct VisualizationTests {
         defer { defaults.removePersistentDomain(forName: suite) }
         SettingsStore(defaults: defaults).selectedVisualization = BuiltInVisualization.goom.rawValue
         #expect(SettingsStore(defaults: defaults).selectedVisualization == "goom")
+        SettingsStore(defaults: defaults).selectedAVSPreset = 2
+        #expect(SettingsStore(defaults: defaults).selectedAVSPreset == 2)
     }
 
     @Test func milkDropPresetCyclingPreferencePersists() throws {
@@ -45,6 +48,103 @@ struct VisualizationTests {
         #expect(!settings.milkDropPresetCycling)
         settings.milkDropPresetCycling = true
         #expect(SettingsStore(defaults: defaults).milkDropPresetCycling)
+    }
+
+    @Test func avsImportsLegacySimplePresetAndSkipsUnknownEffects() throws {
+        var bytes = Array("Nullsoft AVS Preset 0.1\u{1A}".utf8)
+        bytes.append(1) // Root clears the framebuffer.
+        func appendInt(_ value: UInt32, to bytes: inout [UInt8]) {
+            bytes.append(UInt8(value & 0xff))
+            bytes.append(UInt8((value >> 8) & 0xff))
+            bytes.append(UInt8((value >> 16) & 0xff))
+            bytes.append(UInt8((value >> 24) & 0xff))
+        }
+        appendInt(0, to: &bytes) // Simple effect.
+        appendInt(12, to: &bytes) // flags, one color.
+        appendInt(0, to: &bytes)
+        appendInt(1, to: &bytes)
+        appendInt(0x00ff00, to: &bytes)
+        var scope: [UInt8] = [1]
+        for expression in ["x=i;", "", "", "n=64;"] {
+            scope.append(contentsOf: expression.utf8)
+            scope.append(0)
+        }
+        appendInt(4, to: &scope) // Waveform source.
+        appendInt(1, to: &scope)
+        appendInt(0x00ffff, to: &scope)
+        appendInt(1, to: &scope) // Line drawing.
+        appendInt(36, to: &bytes)
+        appendInt(UInt32(scope.count), to: &bytes)
+        bytes.append(contentsOf: scope)
+        var legacyScope = [UInt8](repeating: 0, count: 1_024)
+        let legacyScripts = ["sc=0.2; x=-2*(i-0.5-v*sc*0.2); y=0.24+0.7*(i-0.5+v*sc*2);", "", "", "n=sqrt(w*w+h*h)/2;"]
+        for (index, script) in legacyScripts.enumerated() {
+            legacyScope.replaceSubrange((index * 256)..<(index * 256 + script.utf8.count), with: script.utf8)
+        }
+        var scopeTail: [UInt8] = []
+        appendInt(4, to: &scopeTail)
+        appendInt(1, to: &scopeTail)
+        appendInt(0x00ffff, to: &scopeTail)
+        appendInt(1, to: &scopeTail)
+        legacyScope.append(contentsOf: scopeTail)
+        appendInt(36, to: &bytes)
+        appendInt(UInt32(legacyScope.count), to: &bytes)
+        bytes.append(contentsOf: legacyScope)
+        var nestedContents: [UInt8] = [0x80, 0, 0, 0, 0]
+        var nestedSimple: [UInt8] = []
+        appendInt(0, to: &nestedSimple)
+        appendInt(12, to: &nestedSimple)
+        appendInt(0, to: &nestedSimple)
+        appendInt(1, to: &nestedSimple)
+        appendInt(0xff0000, to: &nestedSimple)
+        nestedContents.append(contentsOf: nestedSimple)
+        appendInt(UInt32(bitPattern: -2), to: &bytes)
+        appendInt(UInt32(nestedContents.count), to: &bytes)
+        bytes.append(contentsOf: nestedContents)
+        var disabledContents: [UInt8] = [0x82, 0x02, 0, 0, 0]
+        disabledContents.append(contentsOf: nestedSimple)
+        appendInt(UInt32(bitPattern: -2), to: &bytes)
+        appendInt(UInt32(disabledContents.count), to: &bytes)
+        bytes.append(contentsOf: disabledContents)
+        appendInt(999, to: &bytes) // Unsupported effects are skipped.
+        appendInt(0, to: &bytes)
+
+        let preset = try AVSPresetParser.parse(Data(bytes), fileName: "Green bars.avs")
+
+        #expect(preset.title == "Green bars")
+        #expect(preset.simpleEffects.count == 2)
+        #expect(preset.simpleEffects.first?.colors == [0x00ff00])
+        #expect(preset.scopeEffects.count == 2)
+        #expect(preset.scopeEffects.first?.waveform == true)
+        #expect(preset.scopeEffects.first?.drawLines == true)
+        #expect(preset.scopeEffects.first?.equationsSupported == true)
+        #expect(preset.scopeEffects.last?.equationsSupported == true)
+        #expect(preset.unsupportedEffectCount == 1)
+        #expect(throws: AVSPresetError.self) { try AVSPresetParser.parse(Data(bytes.dropLast()), fileName: "truncated.avs") }
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampAVSImport-\(UUID().uuidString)", isDirectory: true)
+        let sourceFolder = root.appendingPathComponent("chosen-folder", isDirectory: true)
+        let nestedFolder = sourceFolder.appendingPathComponent("nested", isDirectory: true)
+        let store = AVSPresetStore(directory: root.appendingPathComponent("stored", isDirectory: true))
+        try FileManager.default.createDirectory(at: nestedFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data(bytes).write(to: nestedFolder.appendingPathComponent("Folder preset.avs"))
+        let imported = store.importPresets(from: [sourceFolder])
+        let restored = store.allPresets()
+        #expect(imported.count == 1)
+        #expect(restored.presets.map(\.title) == ["Folder preset"])
+        #expect(restored.warnings.contains { $0.contains("unsupported effect") })
+    }
+
+    @Test func avsSuperScopeExpressionSubsetEvaluatesPureMathOnly() {
+        let program = AVSExpressionProgram("x=cos(i*2*$PI); y=if(above(v,0),v,-v);")
+        var variables = ["i": 0.5, "v": -0.25]
+
+        #expect(program.isValid)
+        #expect(program.run(&variables))
+        #expect(abs((variables["x"] ?? 0) + 1) < 0.0001)
+        #expect(variables["y"] == 0.25)
+        #expect(!AVSExpressionProgram("x=fetch(1);").isValid)
     }
 
     @Test func milkDropPresetParserConvertsOrderedEquationsToBundledRendererFormat() throws {

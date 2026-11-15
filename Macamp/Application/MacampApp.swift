@@ -207,6 +207,15 @@ struct MacampCommands: Commands {
                         Button(MilkDropView.presets[index]) { dependencies.visualizations.selectMilkDropPreset(at: index) }
                     }
                 }
+                Menu("AVS Presets") {
+                    if dependencies.visualizations.avsPresetTitles.isEmpty {
+                        Text("Import an AVS preset to begin").disabled(true)
+                    } else {
+                        ForEach(Array(dependencies.visualizations.avsPresetTitles.enumerated()), id: \.offset) { index, title in
+                            Button(title) { dependencies.visualizations.selectAVSPreset(at: index) }
+                        }
+                    }
+                }
             }
             Button("Show Library") { openWindow(id: "library") }
                 .keyboardShortcut("l", modifiers: [.command, .option])

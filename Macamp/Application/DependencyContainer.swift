@@ -60,6 +60,7 @@ final class DependencyContainer {
     @ObservationIgnored lazy var visualizations = VisualizationWindowController(
         source: localPCMAnalysis,
         coordinator: playback,
+        visualizationFrames: visualizationFrames,
         settings: settings,
         relatedWindows: { [weak self] in self?.visualizationRelatedWindows() ?? [] }
     )
