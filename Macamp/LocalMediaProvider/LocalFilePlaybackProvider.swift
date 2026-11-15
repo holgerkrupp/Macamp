@@ -170,7 +170,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         let accessBookmarkStore = isQueueOnly ? queueBookmarkStore : bookmarkStore
         for url in urls {
             beginAccessing(url)
-            if persistBookmarks {
+            if persistBookmarks, url.isFileURL {
                 do { try accessBookmarkStore.add(url) }
                 catch { importWarnings.append("Could not remember \(url.lastPathComponent): \(error.localizedDescription)") }
             }
@@ -179,8 +179,10 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
         if persistBookmarks {
             for url in Set(report.locations.values) where !urls.contains(url) {
                 beginAccessing(url)
-                do { try accessBookmarkStore.add(url) }
-                catch { importWarnings.append("Could not remember \(url.lastPathComponent): \(error.localizedDescription)") }
+                if url.isFileURL {
+                    do { try accessBookmarkStore.add(url) }
+                    catch { importWarnings.append("Could not remember \(url.lastPathComponent): \(error.localizedDescription)") }
+                }
             }
         }
         locations.merge(report.locations) { _, replacement in replacement }

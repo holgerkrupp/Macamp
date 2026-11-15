@@ -40,6 +40,28 @@ struct LocalMediaTests {
         #expect(playlist.entries.isEmpty)
     }
 
+    @Test func importsDirectAndPlaylistRadioStreamsWithoutLocalAssetOrBookmarkProbes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampRadioImport-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let playlist = root.appendingPathComponent("stations.m3u")
+        try "#EXTM3U\n#EXTINF:-1,Local Jazz - Live\nhttps://radio.example/live.mp3\n".write(to: playlist, atomically: true, encoding: .utf8)
+        let direct = URL(string: "https://news.example/stream")!
+
+        let report = await LocalMediaImporter.importURLs([direct, playlist])
+
+        #expect(report.items.count == 2)
+        #expect(report.items[0].mediaKind == .radioStation)
+        #expect(report.items[0].title == "news.example")
+        #expect(report.items[0].sourceURL == direct)
+        #expect(report.items[0].duration == nil)
+        #expect(report.items[1].mediaKind == .radioStation)
+        #expect(report.items[1].title == "Live")
+        #expect(report.items[1].artist == "Local Jazz")
+        #expect(report.items[1].sourceURL?.absoluteString == "https://radio.example/live.mp3")
+        #expect(report.warnings.isEmpty)
+    }
+
     @Test func importerAdvertisesCommonAVFoundationAudioFormatsAndReportsDecodeErrors() async throws {
         #expect(LocalMediaImporter.mediaExtensions == ["mp3", "aac", "m4a", "alac", "flac", "wav", "aif", "aiff"])
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacampUnsupportedAudio-\(UUID().uuidString)", isDirectory: true)

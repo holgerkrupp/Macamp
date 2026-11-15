@@ -100,13 +100,24 @@ enum LocalMediaImporter {
     }
 
     private static func makeItem(_ entry: M3UPlaylistEntry) async throws -> PlaybackItem {
-        let asset = AVURLAsset(url: entry.url)
-        let durationTime = try? await asset.load(.duration)
-        let metadata = (try? await asset.load(.commonMetadata)) ?? []
-        let metadataTitle = await stringValue(for: .commonKeyTitle, in: metadata)
-        let metadataArtist = await stringValue(for: .commonKeyArtist, in: metadata)
-        let album = await stringValue(for: .commonKeyAlbumName, in: metadata)
-        let artworkData = await dataValue(for: .commonKeyArtwork, in: metadata)
+        let isRemote = ["http", "https"].contains(entry.url.scheme?.lowercased() ?? "")
+        let metadata: [AVMetadataItem]
+        let durationTime: CMTime?
+        if isRemote {
+            // Radio streams are often unbounded and do not publish asset metadata.
+            // Do not wait on a duration probe or discard a station because that
+            // optional metadata request failed.
+            metadata = []
+            durationTime = nil
+        } else {
+            let asset = AVURLAsset(url: entry.url)
+            durationTime = try? await asset.load(.duration)
+            metadata = (try? await asset.load(.commonMetadata)) ?? []
+        }
+        let metadataTitle = isRemote ? nil : await stringValue(for: .commonKeyTitle, in: metadata)
+        let metadataArtist = isRemote ? nil : await stringValue(for: .commonKeyArtist, in: metadata)
+        let album = isRemote ? nil : await stringValue(for: .commonKeyAlbumName, in: metadata)
+        let artworkData = isRemote ? nil : await dataValue(for: .commonKeyArtwork, in: metadata)
         let audioFile: AVAudioFile?
         if entry.url.isFileURL, entry.url.pathExtension.lowercased() != "m3u8" {
             do { audioFile = try AVAudioFile(forReading: entry.url) }
@@ -133,12 +144,12 @@ enum LocalMediaImporter {
             id: itemID,
             providerID: .localMedia,
             providerItemID: rawID,
-            title: entry.title ?? metadataTitle ?? entry.url.deletingPathExtension().lastPathComponent,
+            title: entry.title ?? metadataTitle ?? (isRemote ? entry.url.host() : nil) ?? entry.url.deletingPathExtension().lastPathComponent,
             artist: entry.artist ?? metadataArtist,
             albumTitle: album,
             duration: duration,
             artwork: artworkData.map(ArtworkReference.embedded) ?? .systemSymbol("music.note"),
-            mediaKind: entry.url.pathExtension.lowercased() == "m3u8" ? .radioStation : .localFile,
+            mediaKind: isRemote || entry.url.pathExtension.lowercased() == "m3u8" ? .radioStation : .localFile,
             isExplicit: false
         )
         item.bitrateKbps = technical.bitrateKbps
