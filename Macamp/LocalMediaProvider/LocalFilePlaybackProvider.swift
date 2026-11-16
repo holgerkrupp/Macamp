@@ -7,7 +7,14 @@ nonisolated private func installLocalAudioAnalysisTap(
     on equalizer: AVAudioUnitEQ,
     source: LocalPCMAudioAnalysisSource
 ) {
-    equalizer.installTap(onBus: 0, bufferSize: 2_048, format: nil) { buffer, _ in
+    let outputFormat = equalizer.outputFormat(forBus: 0)
+    guard let analysisFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: outputFormat.sampleRate,
+        channels: outputFormat.channelCount,
+        interleaved: false
+    ) else { return }
+    equalizer.installTap(onBus: 0, bufferSize: 2_048, format: analysisFormat) { buffer, _ in
         source.append(buffer)
     }
 }
