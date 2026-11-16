@@ -68,7 +68,7 @@ final class SimulatedAudioAnalysisSource: AudioAnalysisSource {
 
 /// Accepts only decoded local playback buffers from the app's audio engine. The tap
 /// callback writes into a bounded SPSC ring and never waits for the renderer.
-final class LocalPCMAudioAnalysisSource: AudioAnalysisSource, @unchecked Sendable {
+nonisolated final class LocalPCMAudioAnalysisSource: AudioAnalysisSource, @unchecked Sendable {
     let mode: AudioAnalysisMode = .pcm
 
     nonisolated private static let slotCount = 4
@@ -80,7 +80,7 @@ final class LocalPCMAudioAnalysisSource: AudioAnalysisSource, @unchecked Sendabl
     @MainActor private var continuations: [UUID: AsyncStream<VisualizationAudioData>.Continuation] = [:]
     @MainActor private var frameRate = 30
 
-    private final class Slot: @unchecked Sendable {
+    nonisolated private final class Slot: @unchecked Sendable {
         nonisolated(unsafe) let samples = UnsafeMutablePointer<Float>.allocate(capacity: 8_192)
         nonisolated(unsafe) var count = 0
         nonisolated(unsafe) var sampleRate = 0.0

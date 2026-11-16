@@ -3,6 +3,15 @@ import Foundation
 import Observation
 import Synchronization
 
+nonisolated private func installLocalAudioAnalysisTap(
+    on equalizer: AVAudioUnitEQ,
+    source: LocalPCMAudioAnalysisSource
+) {
+    equalizer.installTap(onBus: 0, bufferSize: 2_048, format: nil) { buffer, _ in
+        source.append(buffer)
+    }
+}
+
 @MainActor
 @Observable
 final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSessionRestoring, AudioEffectController {
@@ -1075,9 +1084,7 @@ final class LocalFilePlaybackProvider: QueueEditingPlaybackProvider, PlaybackSes
 
     private func installAnalysisTapIfNeeded() {
         guard !hasAnalysisTap, let analysisSource else { return }
-        equalizer.installTap(onBus: 0, bufferSize: 2_048, format: nil) { buffer, _ in
-            analysisSource.append(buffer)
-        }
+        installLocalAudioAnalysisTap(on: equalizer, source: analysisSource)
         hasAnalysisTap = true
     }
 
