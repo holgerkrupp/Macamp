@@ -576,7 +576,22 @@ struct SettingsView: View {
     let dependencies: DependencyContainer
     var body: some View {
         TabView {
-            Form { Toggle("Show classic player on launch", isOn: Binding(get: { dependencies.settings.showPlayerOnLaunch }, set: { dependencies.settings.showPlayerOnLaunch = $0 })); Toggle("Keep classic player above other windows", isOn: Binding(get: { dependencies.settings.playerFloating }, set: { dependencies.settings.playerFloating = $0; dependencies.classicPlayer.applySettings() })); Text("Launch at login and menu-bar-only mode are not enabled in this milestone.").font(.caption).foregroundStyle(.secondary) }.padding().tabItem { Label("General", systemImage: "gear") }
+            Form {
+                Toggle("Show classic player on launch", isOn: Binding(
+                    get: { dependencies.settings.showPlayerOnLaunch },
+                    set: { dependencies.settings.showPlayerOnLaunch = $0 }
+                ))
+                Toggle("Keep player on top of other windows", isOn: Binding(
+                    get: { dependencies.settings.playerFloating },
+                    set: {
+                        dependencies.settings.playerFloating = $0
+                        dependencies.classicPlayer.applySettings()
+                    }
+                ))
+                Text("Launch at login and menu-bar-only mode are not enabled in this milestone.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }.padding().tabItem { Label("General", systemImage: "gear") }
             Form { Picker("Active provider", selection: Binding(get: { dependencies.playback.activeProviderID ?? .appleMusic }, set: { dependencies.selectProvider($0) })) { ForEach(dependencies.providerRegistry.availableDescriptors) { descriptor in Text(descriptor.displayName).tag(descriptor.id) } }; LabeledContent("Active status", value: dependencies.playback.authenticationState.rawValue); Text("Provider capabilities and account limitations are shown by Music Services. Unavailable services remain out of the connection menu until their official integration is configured.").font(.caption).foregroundStyle(.secondary) }.padding().tabItem { Label("Providers", systemImage: "dot.radiowaves.left.and.right") }
             Form { Picker("Integer scale", selection: Binding(get: { dependencies.settings.skinScale }, set: { dependencies.settings.skinScale = $0; dependencies.classicPlayer.applySettings() })) { ForEach(1...4, id: \.self) { Text("\($0)×").tag($0) } }; Toggle("Transparent-pixel click-through", isOn: Binding(get: { dependencies.settings.clickThroughTransparentPixels }, set: { dependencies.settings.clickThroughTransparentPixels = $0 })); Toggle("Shadow", isOn: Binding(get: { dependencies.settings.playerShadow }, set: { dependencies.settings.playerShadow = $0; dependencies.classicPlayer.applySettings() })) }.padding().tabItem { Label("Skin", systemImage: "paintbrush") }
             Form { Picker("Mode", selection: Binding(get: { BuiltInVisualization(rawValue: dependencies.settings.selectedVisualization) ?? .spectrum }, set: { dependencies.visualizations.select($0) })) { ForEach(BuiltInVisualization.allCases) { Text($0.title).tag($0) } }; Text("Visualizations are available for decoded local audio.") }.padding().tabItem { Label("Visualization", systemImage: "waveform") }

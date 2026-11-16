@@ -191,6 +191,13 @@ struct MacampCommands: Commands {
         CommandGroup(after: .windowArrangement) {
             Button("Show Player") { dependencies.classicPlayer.show() }
                 .keyboardShortcut("1", modifiers: [.command, .option])
+            Toggle("Always on Top", isOn: Binding(
+                get: { dependencies.settings.playerFloating },
+                set: { enabled in
+                    dependencies.settings.playerFloating = enabled
+                    dependencies.classicPlayer.applySettings()
+                }
+            ))
             Button("Show Playlist") { dependencies.classicPlayer.showPlaylist() }
             Button("Show Equalizer") { dependencies.classicPlayer.showEqualizer() }
             Button("Show Visualization") { dependencies.visualizations.show() }
