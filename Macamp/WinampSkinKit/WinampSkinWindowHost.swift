@@ -40,6 +40,11 @@ enum WinampSkinWindowDockingState: Equatable {
     case docked
 }
 
+@MainActor
+private final class WinampSkinBorderlessWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+}
+
 /// Shared host for borderless Winamp windows.
 ///
 /// Skin content remains expressed in logical Winamp pixels. Only this host
@@ -100,7 +105,7 @@ final class WinampSkinWindowHost: NSObject, NSWindowDelegate {
         self.shadeLogicalSize = shadeLogicalSize
         self.scale = max(0.01, scale)
         let style: NSWindow.StyleMask = allowsResize ? [.borderless, .miniaturizable, .resizable] : [.borderless, .miniaturizable]
-        let window = NSWindow(
+        let window = WinampSkinBorderlessWindow(
             contentRect: CGRect(origin: .zero, size: WinampSkinWindowGeometry.screenSize(for: normalLogicalSize, scale: self.scale)),
             styleMask: style,
             backing: .buffered,

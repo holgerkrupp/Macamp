@@ -76,7 +76,7 @@ final class DependencyContainer {
         visualizationToggle: { [weak self] in self?.visualizations.toggle() },
         mediaAction: { [weak self] action in self?.requestSkinMediaImport(action) },
         onDroppedURLs: { [weak self] urls in
-            Task { await self?.importMediaURLs(urls, action: .appendToQueue) }
+            self?.importDroppedMedia(urls)
         },
         choosePlaylistURLs: { kind in
             switch kind {
@@ -191,5 +191,14 @@ final class DependencyContainer {
         if offersSourceSwitch { alert.addButton(withTitle: "Switch to Local Files") }
         let response = alert.runModal()
         if offersSourceSwitch, response == .alertSecondButtonReturn { selectProvider(.localMedia) }
+    }
+
+    func importDroppedMedia(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        playback.beginPendingQueueImport()
+        Task { @MainActor [self] in
+            defer { playback.finishPendingQueueImport() }
+            await importMediaURLs(urls, action: .appendToQueue)
+        }
     }
 }

@@ -23,6 +23,8 @@ final class PlaybackCoordinator {
     @ObservationIgnored private let settingsStore: SettingsStore
     @ObservationIgnored let playlistStore: UnifiedPlaylistStore
     @ObservationIgnored private var persistenceTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingQueueImportCount = 0
+    @ObservationIgnored private var queueImportWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var lastAppliedProviderID: PlaybackProviderID?
     @ObservationIgnored private var isAutoAdvancing = false
     @ObservationIgnored private let logger = Logger(subsystem: "dev.holgerkrupp.Macamp", category: "Playback")
@@ -154,6 +156,7 @@ final class PlaybackCoordinator {
         apply(ProviderSnapshot(authenticationState: provider.authenticationState, state: provider.state, queue: provider.queue))
     }
     func play() async {
+        await waitForPendingQueueImports()
         if queue.items.isEmpty { return await perform(required: .playback) { try await $0.play() } }
         guard let currentIndex = queue.currentIndex else { return await playQueueEntry(at: 0) }
         let item = queue.items[currentIndex]
@@ -250,6 +253,26 @@ final class PlaybackCoordinator {
         refreshActiveLocalAudioRun()
         return true
     }
+
+    func beginPendingQueueImport() {
+        pendingQueueImportCount += 1
+    }
+
+    func finishPendingQueueImport() {
+        guard pendingQueueImportCount > 0 else { return }
+        pendingQueueImportCount -= 1
+        guard pendingQueueImportCount == 0 else { return }
+        let waiters = queueImportWaiters
+        queueImportWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    private func waitForPendingQueueImports() async {
+        while pendingQueueImportCount > 0 {
+            await withCheckedContinuation { queueImportWaiters.append($0) }
+        }
+    }
+
     func removeQueueItems(at offsets: IndexSet) async {
         guard !offsets.isEmpty else { return }
         let removesCurrent = queue.currentIndex.map(offsets.contains) ?? false

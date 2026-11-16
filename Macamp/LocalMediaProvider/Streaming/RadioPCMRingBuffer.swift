@@ -6,12 +6,19 @@ nonisolated final class RadioRenderGate: @unchecked Sendable {
 }
 
 nonisolated enum RadioAudioRenderer {
+    private typealias RenderBlock = @Sendable (
+        UnsafeMutablePointer<ObjCBool>,
+        UnsafePointer<AudioTimeStamp>,
+        AVAudioFrameCount,
+        UnsafeMutablePointer<AudioBufferList>
+    ) -> OSStatus
+
     static func makeSourceNode(
         format: AVAudioFormat,
         ring: RadioPCMRingBuffer,
         gate: RadioRenderGate
     ) -> AVAudioSourceNode {
-        AVAudioSourceNode(format: format) { _, _, frameCount, outputData in
+        let renderBlock: RenderBlock = { _, _, frameCount, outputData in
             let buffers = UnsafeMutableAudioBufferListPointer(outputData)
             guard buffers.count >= 2,
                   let leftData = buffers[0].mData,
@@ -29,6 +36,7 @@ nonisolated enum RadioAudioRenderer {
             }
             return noErr
         }
+        return AVAudioSourceNode(format: format, renderBlock: renderBlock)
     }
 }
 
