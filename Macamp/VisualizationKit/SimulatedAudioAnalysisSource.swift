@@ -71,8 +71,8 @@ final class SimulatedAudioAnalysisSource: AudioAnalysisSource {
 final class LocalPCMAudioAnalysisSource: AudioAnalysisSource, @unchecked Sendable {
     let mode: AudioAnalysisMode = .pcm
 
-    private static let slotCount = 4
-    private static let maximumSamplesPerSlot = 8_192
+    nonisolated private static let slotCount = 4
+    nonisolated private static let maximumSamplesPerSlot = 8_192
     private let slots: [Slot]
     private let writeIndex = Atomic<Int>(0)
     private let readIndex = Atomic<Int>(0)
@@ -82,15 +82,15 @@ final class LocalPCMAudioAnalysisSource: AudioAnalysisSource, @unchecked Sendabl
 
     private final class Slot: @unchecked Sendable {
         nonisolated(unsafe) let samples = UnsafeMutablePointer<Float>.allocate(capacity: 8_192)
-        var count = 0
-        var sampleRate = 0.0
+        nonisolated(unsafe) var count = 0
+        nonisolated(unsafe) var sampleRate = 0.0
         deinit { samples.deallocate() }
     }
 
     init() { slots = (0..<Self.slotCount).map { _ in Slot() } }
     /// Called directly by the post-EQ AVAudioNode tap. AVAudioPCMBuffer remains owned
     /// by AVFoundation; the samples are copied before this call returns.
-    func append(_ buffer: AVAudioPCMBuffer) {
+    nonisolated func append(_ buffer: AVAudioPCMBuffer) {
         guard let channels = buffer.floatChannelData else { return }
         append(channelData: channels, channelCount: Int(buffer.format.channelCount),
                frameCount: Int(buffer.frameLength), sampleRate: buffer.format.sampleRate)
@@ -98,7 +98,7 @@ final class LocalPCMAudioAnalysisSource: AudioAnalysisSource, @unchecked Sendabl
 
     /// Low-level tap ingress, exposed so other decoded-audio callbacks can use the
     /// same bounded handoff without creating an intermediate array.
-    func append(
+    nonisolated func append(
         channelData: UnsafePointer<UnsafeMutablePointer<Float>>,
         channelCount: Int,
         frameCount: Int,

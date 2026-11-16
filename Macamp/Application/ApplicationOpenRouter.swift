@@ -65,7 +65,7 @@ final class ApplicationOpenRouter {
     }
 
     private func dispatchFileImport(_ urls: [URL], action: MediaImportAction) {
-        Task { await dependencies.importMediaURLs(urls, action: action) }
+        dependencies.enqueueMediaImport(urls, action: action)
     }
 
     private func dispatchOAuthCallback(_ url: URL) {

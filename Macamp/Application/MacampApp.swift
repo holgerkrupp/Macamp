@@ -269,7 +269,7 @@ struct MacampCommands: Commands {
 
     private func importURLs(_ urls: [URL], action: MediaImportAction) {
         guard !urls.isEmpty else { return }
-        Task { await dependencies.importMediaURLs(urls, action: action) }
+        dependencies.enqueueMediaImport(urls, action: action)
     }
 
     private func repeatName(_ mode: RepeatMode) -> String {

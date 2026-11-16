@@ -4,6 +4,8 @@ import AVFoundation
 import AppKit
 @testable import Macamp
 
+private final class LocalMediaTestBundleToken: NSObject {}
+
 @Suite("Local media")
 struct LocalMediaTests {
     @Test func parsesRelativeM3UEntriesAndExtendedMetadata() {
@@ -77,6 +79,21 @@ struct LocalMediaTests {
         #expect(report.items.isEmpty)
         #expect(report.warnings.count == 1)
         #expect(report.warnings[0].contains("could not be decoded by macOS"))
+    }
+
+    @Test @MainActor func playsBundledMP3ThroughTheLocalAudioEngine() async throws {
+        let fixture = try #require(Bundle(for: LocalMediaTestBundleToken.self).url(forResource: "radio-test", withExtension: "mp3"))
+        let report = await LocalMediaImporter.importURLs([fixture])
+        #expect(report.items.count == 1)
+        #expect(report.items.first?.fileExtension == "mp3")
+        let provider = LocalFilePlaybackProvider(analysisSource: LocalPCMAudioAnalysisSource())
+
+        try await provider.play(items: report.items, startingAt: 0)
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(provider.state.status == .playing)
+        #expect(provider.state.currentItem?.fileExtension == "mp3")
+        try await provider.stop()
     }
 
     @Test @MainActor func importsAndRoutesLocalVideoThroughTheSharedAVPlayer() async throws {

@@ -76,7 +76,7 @@ final class DependencyContainer {
         visualizationToggle: { [weak self] in self?.visualizations.toggle() },
         mediaAction: { [weak self] action in self?.requestSkinMediaImport(action) },
         onDroppedURLs: { [weak self] urls in
-            self?.importDroppedMedia(urls)
+            self?.enqueueMediaImport(urls, action: .appendToQueue)
         },
         choosePlaylistURLs: { kind in
             switch kind {
@@ -86,7 +86,7 @@ final class DependencyContainer {
             }
         },
         importPlaylistURLs: { [weak self] urls, action in
-            Task { await self?.importMediaURLs(urls, action: action) }
+            self?.enqueueMediaImport(urls, action: action)
         },
         onAddFromService: { [weak self] in self?.showMusicCatalogPicker() }
     )
@@ -176,7 +176,7 @@ final class DependencyContainer {
         case .playlist: urls = ApplicationMediaImportPanel.choosePlaylists()
         }
         guard !urls.isEmpty else { return }
-        Task { await importMediaURLs(urls, action: action) }
+        enqueueMediaImport(urls, action: action)
     }
 
     func importMediaURLs(_ urls: [URL], action: MediaImportAction) async {
@@ -193,12 +193,15 @@ final class DependencyContainer {
         if offersSourceSwitch, response == .alertSecondButtonReturn { selectProvider(.localMedia) }
     }
 
-    func importDroppedMedia(_ urls: [URL]) {
+    func enqueueMediaImport(_ urls: [URL], action: MediaImportAction) {
         guard !urls.isEmpty else { return }
-        playback.beginPendingQueueImport()
+        let waitsForQueue = action != .addToLibrary
+        if waitsForQueue { playback.beginPendingQueueImport() }
         Task { @MainActor [self] in
-            defer { playback.finishPendingQueueImport() }
-            await importMediaURLs(urls, action: .appendToQueue)
+            defer {
+                if waitsForQueue { playback.finishPendingQueueImport() }
+            }
+            await importMediaURLs(urls, action: action)
         }
     }
 }
